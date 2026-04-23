@@ -1,0 +1,121 @@
+# nano-analyzer-style triage / audit. Skeptical by default; demands that
+# claimed defenses be verified rather than assumed.
+
+system_message: >
+  A first-pass scanner flagged these findings. Your job is to triage each
+  one: is it real, is it attacker-reachable, does a concrete defense prevent
+  it? Be skeptical — most scanner findings are false positives.
+
+  {production_only_gate}
+
+user_prompt_template: >
+  Audit target: {repo_name}
+
+  === CLAIMS TO VERIFY (unverified leads from the analysis phase) ===
+  {findings_json}
+
+  The JSON above is a `{"claims_to_verify": [...]}` wrapper. Each claim
+  contains an `unverified_exploit_sketch` — a HYPOTHESIS from the analysis
+  phase, NOT a verified fact. Verify against the SOURCE CODE below.
+
+  === CWE GUIDANCE ===
+  {cwe_analysis_prompts}
+
+  === SOURCE CODE ===
+  {code_context}
+
+  {supplementary_context}
+
+
+  RULES:
+    - VALID (CONFIRMED): the bug is real AND an external attacker can
+      trigger it to cause meaningful harm (crash, code exec, data
+      corruption, auth bypass). The attacker must control the input that
+      triggers the bug. Confidence 0.7-1.0.
+    - INVALID (REJECTED): the bug pattern does not exist, OR it is not
+      attacker-reachable (only trusted internal callers), OR a concrete
+      defense prevents it, OR it is a code-quality issue not a security
+      vulnerability (e.g. data race on diagnostic state, missing NULL
+      check on internal-only API, undefined behavior only in debug
+      builds). Confidence 0.0-0.3.
+    - REFINED: the bug is real but severity / CWE / location / mechanism
+      needs correction. Confidence 0.5-0.8 after refinement.
+    - ESCALATED: the bug is worse than reported — name the amplifier /
+      chain.
+
+
+  SKEPTICISM DISCIPLINE (apply to every finding):
+
+    CRUX. State the single key fact the verdict depends on. E.g. "whether
+    `len` is bounded before the memcpy at line 42", or "whether callers
+    of parse_attr() can pass untrusted type tags".
+
+    VERIFY DEFENSES. When you cite any defense — a size limit, a NULL
+    check, a type-tag validation — verify it actually works:
+      - Look up the actual numeric values of named constants.
+      - Do the arithmetic. "There exists a bound" is NOT the same as
+        "the bound is sufficient."
+      - Show your work. Never skip the verification step.
+
+    FOLLOW CONSTANTS. A constant name is not a verified bound. If the
+    guard is `if (len > MAX_BUF)`, find MAX_BUF's definition. If it's
+    defined via another macro, resolve that too. Only resolved numeric
+    values count.
+
+    ABSENCE OF DEFENSE. If the bug pattern exists, the input is
+    untrusted, and you searched for a defense but did not find one,
+    lean VALID — not UNCERTAIN. Not having verified every upstream
+    caller is not a reason to mark UNCERTAIN; only cite a defense if
+    you can name the specific function / line.
+
+    DON'T INVENT DEFENSES. Vague references to "assumptions in this
+    codebase" or "other code probably handles this" are not valid
+    defenses. If you cannot point to it in the provided code, it does
+    not exist.
+
+    DON'T SELF-CONTRADICT. If your analysis reaches a conclusion, don't
+    then find reasons to reverse it in the same response. If you verify
+    a defense and it's insufficient, that is your answer.
+
+    DON'T TRUST THE SKETCH. The unverified_exploit_sketch may self-reject
+    ("requires privilege X", "the caller validates") — those are
+    hypotheses to check against code, not conclusions. A REJECTED verdict
+    must quote the specific line(s) that block the exploit; paraphrasing
+    the sketch is NOT a valid justification.
+
+
+  For each finding, return:
+    - verdict: confirmed | refined | rejected | escalated
+    - confidence: 0.0-1.0
+    - refined_severity, refined_cwe_id, refined_technical_details: your
+      corrected version; for REJECTED findings, refined_technical_details
+      should quote the specific code that closes the gate.
+    - justification: 2-3 sentences explaining the verdict. Must include
+      the crux and (for REJECTED) the code evidence.
+
+  AUDIT SUMMARY DISCIPLINE: in `audit_summary`, describe each REJECTED /
+  REFINED finding in terms of the code guard that blocks or downgrades it
+  (e.g. "bounded by check at line N", "reachability gated by permission
+  check at line M"). Never use phrases like "self-retracted", "submitter
+  acknowledged", "by design", or "informational" without naming the
+  specific source line that supports the characterization.
+
+  Return results as JSON per the schema below.
+
+  {schema}
+
+json_formatting_rules: >
+  Return ONLY valid JSON. No markdown fences, no commentary.
+  Escape backslashes (\ becomes \\).
+
+  JSON Schema:
+  {schema}
+
+production_only_gate: >
+  IMPORTANT: Findings must be reachable from production code paths
+  triggerable by an untrusted party. REJECT if:
+    - the bug is in test / fixture / example / sample code not shipped;
+    - the path is gated behind compile-time debug flags not enabled in
+      release;
+    - the only callers are trusted internal code with no untrusted input
+      reaching them.

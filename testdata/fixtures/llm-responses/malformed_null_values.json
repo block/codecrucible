@@ -1,0 +1,18 @@
+{
+  "repo_name": "example/null-values",
+  "description": "Response with null text fields",
+  "public_api_routes": [],
+  "security_issues": [
+    {
+      "issue": null,
+      "file_path": null,
+      "start_line": 1,
+      "end_line": 5,
+      "technical_details": "Some details about the finding.",
+      "severity": 6.0,
+      "cwe_id": "CWE-200"
+    }
+  ],
+  "security_risk": 6.0,
+  "risk_justification": "Moderate risk due to information disclosure."
+}

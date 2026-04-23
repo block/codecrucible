@@ -1,0 +1,36 @@
+{
+  "repo_name": "frontend/dashboard",
+  "description": "React dashboard application with authentication",
+  "public_api_routes": [],
+  "security_issues": [
+    {
+      "issue": "Cross-Site Scripting (XSS)",
+      "file_path": "src/components/UserProfile.jsx",
+      "start_line": 115,
+      "end_line": 120,
+      "technical_details": "User-supplied HTML is rendered via dangerouslySetInnerHTML without sanitization.",
+      "severity": 7.0,
+      "cwe_id": "CWE-79: Improper Neutralization of Input During Web Page Generation"
+    },
+    {
+      "issue": "Use of Weak Cryptographic Algorithm",
+      "file_path": "src/utils/crypto.js",
+      "start_line": 22,
+      "end_line": 30,
+      "technical_details": "MD5 is used for password hashing instead of a modern algorithm like bcrypt or argon2.",
+      "severity": 5.5,
+      "cwe_id": "CWE-327: Use of a Broken or Risky Cryptographic Algorithm"
+    },
+    {
+      "issue": "Missing Authentication for Critical Function",
+      "file_path": "src/api/admin.js",
+      "start_line": 8,
+      "end_line": 15,
+      "technical_details": "Admin endpoint /api/admin/users lacks authentication middleware, allowing unauthenticated access to user management.",
+      "severity": 9.0,
+      "cwe_id": "CWE-306: Missing Authentication for Critical Function"
+    }
+  ],
+  "security_risk": 9.0,
+  "risk_justification": "Multiple vulnerabilities including a critical missing authentication issue on admin endpoints."
+}
