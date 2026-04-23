@@ -248,6 +248,93 @@ func TestRegisterModel_ReplacesExisting(t *testing.T) {
 	}
 }
 
+func TestRegisterUserModels_AddsAndOverrides(t *testing.T) {
+	saved := make([]ModelConfig, len(defaultModels))
+	copy(saved, defaultModels)
+	defer func() { defaultModels = saved }()
+
+	err := RegisterUserModels([]ModelConfig{
+		// New entry — extends the registry.
+		{
+			Name:            "acme-llama-70b",
+			Provider:        "openai-compat",
+			InputPricePerM:  0.5,
+			OutputPricePerM: 1.5,
+			ContextLimit:    131072,
+			MaxOutputTokens: 8192,
+			Encoding:        "cl100k_base",
+		},
+		// Override of a built-in — same Name, different pricing.
+		{
+			Name:            "claude-sonnet-4-6",
+			Provider:        "anthropic",
+			InputPricePerM:  1.5, // halved vs built-in
+			OutputPricePerM: 7.5,
+			ContextLimit:    200000,
+			MaxOutputTokens: 16384,
+			Encoding:        "claude",
+		},
+	})
+	if err != nil {
+		t.Fatalf("RegisterUserModels: %v", err)
+	}
+
+	added, ok := LookupModel("acme-llama-70b")
+	if !ok {
+		t.Fatal("user-defined model not registered")
+	}
+	if added.Endpoint != "acme-llama-70b/invocations" {
+		t.Errorf("empty Endpoint should default to <name>/invocations, got %q", added.Endpoint)
+	}
+	if added.Provider != "openai-compat" {
+		t.Errorf("Provider: got %q, want %q", added.Provider, "openai-compat")
+	}
+
+	overridden, _ := LookupModel("claude-sonnet-4-6")
+	if overridden.InputPricePerM != 1.5 {
+		t.Errorf("user override did not take effect: InputPricePerM got %v, want 1.5", overridden.InputPricePerM)
+	}
+
+	// Size grew by exactly one (the new one). The override replaced in place.
+	if len(defaultModels) != len(saved)+1 {
+		t.Errorf("registry grew by %d, want 1", len(defaultModels)-len(saved))
+	}
+}
+
+func TestRegisterUserModels_PreservesExplicitEndpoint(t *testing.T) {
+	saved := make([]ModelConfig, len(defaultModels))
+	copy(saved, defaultModels)
+	defer func() { defaultModels = saved }()
+
+	err := RegisterUserModels([]ModelConfig{{
+		Name:     "azure-gpt-5",
+		Provider: "openai-compat",
+		Endpoint: "deployments/my-azure-deploy/chat/completions",
+	}})
+	if err != nil {
+		t.Fatalf("RegisterUserModels: %v", err)
+	}
+
+	m, _ := LookupModel("azure-gpt-5")
+	if m.Endpoint != "deployments/my-azure-deploy/chat/completions" {
+		t.Errorf("Endpoint: got %q, want the explicit value", m.Endpoint)
+	}
+}
+
+func TestRegisterUserModels_RejectsEmptyName(t *testing.T) {
+	saved := make([]ModelConfig, len(defaultModels))
+	copy(saved, defaultModels)
+	defer func() { defaultModels = saved }()
+
+	err := RegisterUserModels([]ModelConfig{
+		{Name: "ok-model", ContextLimit: 100000},
+		{Name: " ", ContextLimit: 100000}, // whitespace-only name
+	})
+	if err == nil {
+		t.Fatal("expected error for empty name, got nil")
+	}
+}
+
 func TestDefaultModelRegistry_FieldValues(t *testing.T) {
 	tests := []struct {
 		name       string

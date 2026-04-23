@@ -1,22 +1,27 @@
 package config
 
 import (
+	"fmt"
 	"strings"
 	"sync"
 )
 
 // ModelConfig describes a model's capabilities, pricing, and endpoint.
+//
+// Both yaml and mapstructure tags are set so the same struct literal in
+// defaultModels can also be populated by Viper from a user's config file
+// (Viper uses mapstructure for Unmarshal).
 type ModelConfig struct {
-	Name                     string  `yaml:"name"`
-	Provider                 string  `yaml:"provider"` // "databricks", "anthropic", "openai", "google"
-	Endpoint                 string  `yaml:"endpoint"`
-	InputPricePerM           float64 `yaml:"input_price_per_million"`
-	OutputPricePerM          float64 `yaml:"output_price_per_million"`
-	ContextLimit             int     `yaml:"context_limit"`
-	MaxOutputTokens          int     `yaml:"max_output_tokens"`
-	Temperature              float64 `yaml:"temperature"`
-	Encoding                 string  `yaml:"tokenizer_encoding"`
-	SupportsStructuredOutput bool    `yaml:"supports_structured_output"`
+	Name                     string  `yaml:"name"                       mapstructure:"name"`
+	Provider                 string  `yaml:"provider"                   mapstructure:"provider"` // "databricks", "anthropic", "openai", "google"
+	Endpoint                 string  `yaml:"endpoint"                   mapstructure:"endpoint"`
+	InputPricePerM           float64 `yaml:"input_price_per_million"    mapstructure:"input_price_per_million"`
+	OutputPricePerM          float64 `yaml:"output_price_per_million"   mapstructure:"output_price_per_million"`
+	ContextLimit             int     `yaml:"context_limit"              mapstructure:"context_limit"`
+	MaxOutputTokens          int     `yaml:"max_output_tokens"          mapstructure:"max_output_tokens"`
+	Temperature              float64 `yaml:"temperature"                mapstructure:"temperature"`
+	Encoding                 string  `yaml:"tokenizer_encoding"         mapstructure:"tokenizer_encoding"`
+	SupportsStructuredOutput bool    `yaml:"supports_structured_output" mapstructure:"supports_structured_output"`
 }
 
 // modelsMu protects defaultModels for concurrent access.
@@ -149,6 +154,25 @@ func RegisterModel(m ModelConfig) {
 		}
 	}
 	defaultModels = append(defaultModels, m)
+}
+
+// RegisterUserModels registers user-defined model configs into the registry.
+// Each entry must have a non-empty Name. Entries with a name that matches a
+// built-in are replaced (case-insensitive), so this is also how users override
+// built-in pricing / context limits without forking. Empty Endpoint defaults
+// to "<name>/invocations" to match the built-in convention (Databricks serving
+// path; other providers ignore it).
+func RegisterUserModels(models []ModelConfig) error {
+	for i, m := range models {
+		if strings.TrimSpace(m.Name) == "" {
+			return fmt.Errorf("models[%d]: name is required", i)
+		}
+		if m.Endpoint == "" {
+			m.Endpoint = m.Name + "/invocations"
+		}
+		RegisterModel(m)
+	}
+	return nil
 }
 
 // DefaultModelRegistry returns a copy of the built-in model configs.

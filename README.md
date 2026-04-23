@@ -443,6 +443,51 @@ All providers are also reachable via Databricks model serving when
 Unknown models get conservative defaults (128K context, 8192 max output,
 unstructured). Override with `--context-limit` / `--max-output-tokens`.
 
+### Adding models via config
+
+The table above is the *built-in* registry compiled into the binary. You can
+extend or override it from the config file under a `models:` key — useful when
+a new model ships, when you run behind a proxy with a custom endpoint, or when
+you want to retune pricing / context limits without recompiling.
+
+```yaml
+models:
+  # Extend: a model the binary doesn't know about yet.
+  - name: claude-sonnet-4-8
+    provider: anthropic
+    input_price_per_million: 3.0
+    output_price_per_million: 15.0
+    context_limit: 1000000
+    max_output_tokens: 64000
+    tokenizer_encoding: claude
+    supports_structured_output: true
+
+  # Override: change a built-in's pricing without forking.
+  - name: claude-sonnet-4-6
+    provider: anthropic
+    input_price_per_million: 1.5   # negotiated rate
+    output_price_per_million: 7.5
+    context_limit: 200000
+    max_output_tokens: 16384
+    tokenizer_encoding: claude
+    supports_structured_output: true
+
+  # Azure / self-hosted: point at a non-standard endpoint.
+  - name: azure-gpt-5
+    provider: openai-compat
+    endpoint: deployments/my-azure-deploy/chat/completions
+    context_limit: 400000
+    max_output_tokens: 16384
+    tokenizer_encoding: o200k_base
+```
+
+Entries are keyed by `name`: a user entry sharing a name with a built-in
+replaces it wholesale (case-insensitive), a new name extends the registry.
+Empty `endpoint` defaults to `<name>/invocations` to match the built-in
+convention (Databricks serving path; other providers ignore it). `name` is
+required; other fields follow the same YAML schema as the built-in registry.
+
+
 ## Architecture
 
 ```

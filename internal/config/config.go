@@ -75,6 +75,13 @@ type Config struct {
 	// ResolvePhases. Populated by config file (phases.audit.provider: ...)
 	// or env (PHASES_AUDIT_PROVIDER=...).
 	Phases Phases `mapstructure:"phases"`
+
+	// Models extends (or overrides) the built-in model registry. Each entry
+	// is passed to RegisterModel at Load time, keyed by Name — so user
+	// entries sharing a built-in name replace the built-in wholesale. Lets
+	// operators add a new provider endpoint or retune pricing / context
+	// limits without recompiling. See RegisterUserModels.
+	Models []ModelConfig `mapstructure:"models"`
 }
 
 // Load reads configuration from the given Viper instance.
@@ -108,6 +115,14 @@ func Load(v *viper.Viper) (*Config, error) {
 			return nil, fmt.Errorf("parsing --context-source %q: %w", raw, err)
 		}
 		cfg.ContextSources = append(cfg.ContextSources, cs)
+	}
+
+	// Merge user-declared models into the global registry. Entries sharing a
+	// name with a built-in replace it; new names extend. Running this on
+	// every Load is a no-op when cfg.Models is empty, and idempotent (same
+	// entry twice) when it isn't.
+	if err := RegisterUserModels(cfg.Models); err != nil {
+		return nil, fmt.Errorf("registering models from config: %w", err)
 	}
 
 	return &cfg, nil

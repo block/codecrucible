@@ -324,6 +324,102 @@ func TestParseContextSourceKV(t *testing.T) {
 	}
 }
 
+func TestLoad_RegistersModelsFromConfigFile(t *testing.T) {
+	// Isolate the global registry from other tests.
+	saved := make([]ModelConfig, len(defaultModels))
+	copy(saved, defaultModels)
+	defer func() { defaultModels = saved }()
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	cfgBody := `
+models:
+  # Extend: a local Ollama model.
+  - name: llama-4-405b
+    provider: ollama
+    input_price_per_million: 0.0
+    output_price_per_million: 0.0
+    context_limit: 131072
+    max_output_tokens: 8192
+    tokenizer_encoding: cl100k_base
+    supports_structured_output: false
+
+  # Override: retune a built-in.
+  - name: claude-sonnet-4-6
+    provider: anthropic
+    endpoint: claude-sonnet-4-6/invocations
+    input_price_per_million: 2.0
+    output_price_per_million: 10.0
+    context_limit: 200000
+    max_output_tokens: 16384
+    tokenizer_encoding: claude
+    supports_structured_output: true
+`
+	if err := os.WriteFile(cfgPath, []byte(cfgBody), 0644); err != nil {
+		t.Fatalf("writing config: %v", err)
+	}
+
+	v, err := SetupViper(cfgPath)
+	if err != nil {
+		t.Fatalf("SetupViper: %v", err)
+	}
+	cfg, err := Load(v)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if len(cfg.Models) != 2 {
+		t.Fatalf("cfg.Models: got %d entries, want 2", len(cfg.Models))
+	}
+
+	// Extension round-trip: the new model is in the registry, and empty
+	// Endpoint was defaulted from Name.
+	llama, ok := LookupModel("llama-4-405b")
+	if !ok {
+		t.Fatal("llama-4-405b not found in registry after Load")
+	}
+	if llama.Endpoint != "llama-4-405b/invocations" {
+		t.Errorf("llama Endpoint: got %q, want default", llama.Endpoint)
+	}
+	if llama.Provider != "ollama" {
+		t.Errorf("llama Provider: got %q, want ollama", llama.Provider)
+	}
+
+	// Override round-trip: built-in pricing was replaced.
+	sonnet, _ := LookupModel("claude-sonnet-4-6")
+	if sonnet.InputPricePerM != 2.0 {
+		t.Errorf("claude-sonnet-4-6 override InputPricePerM: got %v, want 2.0", sonnet.InputPricePerM)
+	}
+	if sonnet.OutputPricePerM != 10.0 {
+		t.Errorf("claude-sonnet-4-6 override OutputPricePerM: got %v, want 10.0", sonnet.OutputPricePerM)
+	}
+}
+
+func TestLoad_EmptyModelNameErrors(t *testing.T) {
+	saved := make([]ModelConfig, len(defaultModels))
+	copy(saved, defaultModels)
+	defer func() { defaultModels = saved }()
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	cfgBody := `
+models:
+  - provider: openai-compat
+    context_limit: 128000
+`
+	if err := os.WriteFile(cfgPath, []byte(cfgBody), 0644); err != nil {
+		t.Fatalf("writing config: %v", err)
+	}
+
+	v, err := SetupViper(cfgPath)
+	if err != nil {
+		t.Fatalf("SetupViper: %v", err)
+	}
+	if _, err := Load(v); err == nil {
+		t.Fatal("expected Load to error for models entry without name")
+	}
+}
+
 func TestLoad_ContextSourcesRaw(t *testing.T) {
 	v := viper.New()
 	SetDefaults(v)

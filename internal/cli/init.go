@@ -126,6 +126,27 @@ phases:
 # skip-audit: false
 audit-confidence-threshold: 0.3   # reject findings below this (0.0-1.0)
 
+# --- Model registry ------------------------------------------------------
+# Extend or override the built-in model registry without recompiling. Keyed
+# by name (case-insensitive): matching a built-in replaces it wholesale, a
+# new name extends. Empty endpoint defaults to <name>/invocations.
+#
+# models:
+#   - name: claude-sonnet-4-8     # a model the binary doesn't know yet
+#     provider: anthropic
+#     input_price_per_million: 3.0
+#     output_price_per_million: 15.0
+#     context_limit: 1000000
+#     max_output_tokens: 64000
+#     tokenizer_encoding: claude
+#     supports_structured_output: true
+#   - name: azure-gpt-5           # self-hosted / Azure deployment
+#     provider: openai-compat
+#     endpoint: deployments/my-azure-deploy/chat/completions
+#     context_limit: 400000
+#     max_output_tokens: 16384
+#     tokenizer_encoding: o200k_base
+
 # --- Output --------------------------------------------------------------
 
 # output: results.sarif
