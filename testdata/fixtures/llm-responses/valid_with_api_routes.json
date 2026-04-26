@@ -1,0 +1,40 @@
+{
+  "repo_name": "backend/payment-service",
+  "description": "Payment processing microservice with REST API",
+  "public_api_routes": [
+    {
+      "route": "POST /api/v1/payments",
+      "citation": "cmd/server/routes.go:35"
+    },
+    {
+      "route": "GET /api/v1/payments/{id}",
+      "citation": "cmd/server/routes.go:42"
+    },
+    {
+      "route": "POST /api/v1/refunds",
+      "citation": "cmd/server/routes.go:50"
+    }
+  ],
+  "security_issues": [
+    {
+      "issue": "Insecure Direct Object Reference",
+      "file_path": "internal/handlers/payment.go",
+      "start_line": 67,
+      "end_line": 75,
+      "technical_details": "Payment lookup uses user-supplied ID without verifying ownership, allowing access to other users' payment records.",
+      "severity": 7.5,
+      "cwe_id": "CWE-639: Authorization Bypass Through User-Controlled Key"
+    },
+    {
+      "issue": "Insufficient Logging of Security Events",
+      "file_path": "internal/handlers/refund.go",
+      "start_line": 30,
+      "end_line": 35,
+      "technical_details": "Refund operations are not logged, making it impossible to audit or detect fraudulent refund activity.",
+      "severity": 4.0,
+      "cwe_id": "CWE-778: Insufficient Logging"
+    }
+  ],
+  "security_risk": 7.5,
+  "risk_justification": "IDOR vulnerability on payment endpoint poses significant risk to data confidentiality."
+}

@@ -1,0 +1,148 @@
+# Feature Detection Prompt
+#
+# First shot of a multi-shot pipeline. Decides which analysis_sections.yaml
+# entries to include. Feature names MUST match the `features` lists in
+# analysis_sections.yaml exactly — they are map keys.
+#
+# Tuning note: this phase is SKIPPED when the repo fits in one chunk
+# (scan.log: "feature detection skipped"), so it only affects large repos.
+# Over-reporting features here is cheap (extra prompt text); under-reporting
+# loses whole analysis sections. Bias toward inclusion.
+
+system_message: >
+  You are the gating pass of a security pipeline. You decide which analysis
+  modules run on this codebase. Report a feature if the codebase CONTAINS
+  it, even lightly used — a single SQL query means database_operations is
+  present. The downstream modules handle relevance; your job is to not
+  silently drop coverage. When uncertain, include.
+
+user_prompt_template: >
+  Repository: {repo_name}
+
+
+  Repomix XML Content:
+  ---
+  {xml_content}
+  ---
+
+
+  Identify which features below are present. A feature is PRESENT if there
+  is at least one concrete instance — one route, one query, one crypto call.
+  Imports alone do not count; dead imports are noise. Usage counts.
+
+
+  FEATURES:
+
+
+  public_api
+    HTTP route handlers, REST endpoints, any externally-reachable request
+    handler. Express app.get/post/etc, Flask @app.route, Django urls.py,
+    Spring @RequestMapping, Go net/http HandleFunc, FastAPI path ops.
+
+
+  authentication
+    Login flows, credential verification, token issuance, auth middleware.
+    passport, jwt.sign/verify, bcrypt.compare, session creation,
+    OAuth/OIDC handlers.
+
+
+  authorization
+    Permission checks beyond "is logged in" — role checks, ownership
+    checks, policy evaluation, ACLs, can()/authorize() helpers.
+
+
+  database_operations
+    SQL or NoSQL queries — raw or via ORM. Any db.query, .find(),
+    .save(), SELECT/INSERT/UPDATE/DELETE, Mongo operations, Redis
+    commands that hold state.
+
+
+  user_input_handling
+    Request body/query/param parsing, form processing, file upload
+    acceptance. Essentially any handler that reads req.*.
+
+
+  file_operations
+    fs.readFile/writeFile, open(), os.Open, file upload storage, file
+    download serving, archive extraction, path construction from input.
+
+
+  cryptography
+    crypto.* calls, hashlib, javax.crypto, signing, encryption, HMAC,
+    key derivation, TLS config, certificate handling.
+
+
+  session_management
+    express-session, Flask session, Django sessions, cookie-based or
+    server-side session stores, session create/destroy/regenerate.
+
+
+  external_api_calls
+    Outbound HTTP from the server — fetch, axios, requests, http.Client,
+    webhook delivery, third-party SDK calls that hit the network.
+
+
+  third_party_dependencies
+    package.json, requirements.txt, go.mod, Cargo.toml, Gemfile, pom.xml
+    — a manifest with external deps. Almost always present; include it.
+
+
+  infrastructure_as_code
+    .tf, .tfvars, Terraform modules; CloudFormation; Kubernetes manifests;
+    Helm charts; docker-compose beyond trivial; Pulumi; CDK.
+
+
+  blockchain_crypto_finance
+    Smart contracts (.sol, .vy), wallet ops, transaction signing, DeFi
+    primitives, on-chain calls, OR off-chain financial logic with real
+    money semantics — ledgers, balances, transfers, payments.
+
+
+  websockets
+    ws/socket.io/WebSocket handlers, upgrade handling, message-event
+    handlers on persistent connections.
+
+
+  graphql
+    Schema definitions (.graphql, gql``), resolvers, Apollo/graphql-js/
+    graphene/gqlgen setup, Query/Mutation types.
+
+
+  grpc
+    .proto service definitions, generated stubs in use, gRPC server
+    registration, interceptors.
+
+
+  xml_processing
+    XML parsers invoked — lxml, ElementTree, DocumentBuilder, XmlReader,
+    SAX, DOM — on any input. SOAP counts.
+
+
+  deserialization
+    pickle, yaml.load, ObjectInputStream, BinaryFormatter, Marshal.load,
+    PHP unserialize. NOT bare JSON.parse — that gates under
+    user_input_handling.
+
+
+  template_rendering
+    Server-side template engines — EJS, Jinja2, Handlebars, Pug, ERB,
+    Blade, Thymeleaf, Freemarker. render()/render_template() calls.
+
+
+  shell_command_execution
+    child_process.exec/spawn, subprocess, os.system, Runtime.exec,
+    backticks, any path that runs an external binary.
+
+
+  sensitive_data_handling
+    Code that processes passwords, tokens, API keys, card numbers, SSNs,
+    PII fields. Present in almost any app with auth; bias to include.
+
+
+  Return ONLY a JSON object per the schema. No markdown fence, no prose.
+
+
+  JSON Schema:
+  ---
+  {schema}
+  ---

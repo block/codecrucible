@@ -1,0 +1,576 @@
+# CWE-Specific Deep Analysis Prompts
+# Each entry provides focused analysis guidance for a specific CWE category.
+# Used during the audit phase to scrutinize initial findings.
+
+cwe_prompts:
+  CWE-89:
+    title: "SQL Injection"
+    analysis_prompt: >
+      Examine every location where SQL statements are constructed or executed. Look beyond obvious string
+      concatenation (e.g., "SELECT * FROM users WHERE id=" + userId) and inspect ORM-level raw query methods
+      such as Django's .raw(), .extra(), SQLAlchemy's text(), or ActiveRecord's .find_by_sql(). Check whether
+      parameterized queries or prepared statements are used consistently—a single missed binding is sufficient
+      for exploitation. Investigate stored procedures for internal dynamic SQL (EXECUTE IMMEDIATE, sp_executesql
+      with concatenation). Identify second-order injection where user input is stored safely but later
+      retrieved and interpolated into a new query without re-sanitization. Examine batch and bulk insert
+      operations where developers sometimes fall back to string formatting for performance. Check for blind
+      injection vectors where boolean conditions or time-based delays could leak data even when query results
+      are not directly returned. Inspect any query-builder patterns where column names, table names, or ORDER BY
+      clauses are derived from user input, as these cannot be parameterized and require strict allowlisting.
+    validation_checks:
+      - "Confirm that all user-supplied values pass through parameterized query bindings and are never interpolated via string concatenation, f-strings, or format()."
+      - "Verify that ORM raw query interfaces (.raw(), text(), $queryRaw) use placeholder syntax (?, :name, $1) rather than inline values."
+      - "Check that dynamic identifiers (column names, table names, sort directions) are validated against a strict allowlist, not merely escaped."
+      - "Inspect stored procedures for internal use of EXECUTE IMMEDIATE or EXEC with concatenated parameters."
+      - "Trace data flow for second-order injection: values stored in the database that are later used in query construction without re-parameterization."
+      - "Examine LIKE clauses for proper escaping of wildcard characters (%, _) in addition to parameterization."
+    false_positive_indicators:
+      - "Query uses parameterized bindings exclusively and the flagged concatenation only constructs non-value clauses (e.g., static table aliases)."
+      - "The interpolated value is an integer derived from an internal enum or constant, never from user input."
+      - "An ORM query builder is used end-to-end with no raw SQL fragments, and the framework auto-parameterizes all values."
+
+  CWE-78:
+    title: "OS Command Injection"
+    analysis_prompt: >
+      Scrutinize every invocation of system-level command execution functions including subprocess.Popen,
+      subprocess.run, os.system, os.popen, child_process.exec, Runtime.exec, and backtick operators.
+      Determine whether shell=True (or its equivalent) is set, which enables shell metacharacter interpretation
+      and dramatically increases injection surface. When shell=False, verify that arguments are passed as a list
+      rather than a single string, and confirm no element of that list is derived from unsanitized user input.
+      Look for argument injection where a user-controlled value is passed as a flag (e.g., --output=/etc/passwd)
+      even when the command itself is static. Check for template strings or f-strings used to build command
+      strings. Examine whether shlex.quote(), escapeshellarg(), or equivalent escaping is applied, and verify
+      it matches the target shell (bash vs cmd.exe vs PowerShell). Investigate indirect command injection via
+      environment variables (PATH manipulation, LD_PRELOAD) or config files that influence command behavior.
+      Look for commands that accept filenames which could contain shell metacharacters (semicolons, pipes,
+      backticks) unless the filename is properly quoted.
+    validation_checks:
+      - "Verify that subprocess calls use shell=False and pass arguments as a list, not a single string."
+      - "Confirm that user-supplied values are never interpolated into command strings, even when shell=False."
+      - "Check for argument injection by verifying user input cannot introduce new flags (e.g., values starting with -- are rejected or preceded by --)."
+      - "Inspect all uses of os.system(), os.popen(), and backtick operators—these always invoke a shell and are inherently dangerous with user input."
+      - "Verify that any escaping function used (shlex.quote, escapeshellarg) is appropriate for the target platform and shell."
+      - "Check whether environment variables (PATH, LD_PRELOAD, IFS) can be influenced by user input before command execution."
+    false_positive_indicators:
+      - "The command string is entirely composed of hardcoded literals with no user-controlled components."
+      - "Arguments are passed as a list with shell=False, and all list elements are validated against a strict allowlist of known-safe values."
+      - "The subprocess call is wrapped in a sandboxed environment (container, seccomp) that restricts executable paths."
+
+  CWE-79:
+    title: "Cross-Site Scripting (XSS)"
+    analysis_prompt: >
+      Analyze every location where user-supplied data is rendered into HTML responses, JavaScript contexts,
+      or DOM manipulation operations. Determine whether the template engine in use (Jinja2, Handlebars, ERB,
+      Razor, Thymeleaf) applies auto-escaping by default and whether it has been explicitly disabled via
+      filters like |safe, {{{triple-braces}}}, raw, or <%== %>. Check for reflected XSS where query parameters
+      or form data flow directly into response bodies. Identify stored XSS where user input persisted in a
+      database is later rendered without encoding. Examine DOM-based XSS through client-side code using
+      innerHTML, outerHTML, document.write, jQuery's .html(), or React's dangerouslySetInnerHTML—verify
+      whether the value passed to these sinks originates from user-controllable sources (location.hash,
+      location.search, postMessage, document.referrer). Check for context-dependent encoding failures:
+      data placed inside JavaScript strings requires JS escaping, data in HTML attributes requires attribute
+      encoding, and data in URLs requires URL encoding—HTML entity encoding alone is insufficient in these
+      contexts. Inspect Content Security Policy headers for unsafe-inline or unsafe-eval directives that
+      weaken XSS mitigations. Look for mutation XSS (mXSS) vectors in sanitizer bypass scenarios.
+    validation_checks:
+      - "Confirm the template engine has auto-escaping enabled globally and that |safe, raw, or equivalent bypass filters are justified and applied only to trusted content."
+      - "Verify that innerHTML, outerHTML, document.write, and jQuery .html() are never called with user-controlled data; prefer textContent or .text()."
+      - "Check that React components do not use dangerouslySetInnerHTML with unsanitized input, and that any sanitization uses a battle-tested library (DOMPurify)."
+      - "Inspect context-dependent encoding: JavaScript string contexts use JS-specific escaping, URL contexts use encodeURIComponent, and HTML attribute contexts use attribute encoding."
+      - "Verify Content-Security-Policy headers are present and do not include unsafe-inline or unsafe-eval in script-src."
+      - "Check for DOM sources (location.hash, location.search, postMessage handlers) flowing into DOM sinks without sanitization."
+    false_positive_indicators:
+      - "The template engine auto-escapes by default and the flagged output does not use any bypass filter."
+      - "The value rendered is an integer, boolean, or enum derived from server-side logic with no user-controlled string component."
+      - "A mature HTML sanitizer (DOMPurify, Bleach) is applied to the value before rendering, and the sanitizer configuration does not allow script or event handler attributes."
+      - "The output context is plain text (Content-Type: text/plain) or the response includes a restrictive CSP that blocks inline script execution."
+
+  CWE-22:
+    title: "Path Traversal"
+    analysis_prompt: >
+      Examine every file system operation where a file path is constructed using user-supplied input—including
+      file reads, writes, deletes, directory listings, and archive extraction. Check whether path.join(),
+      os.path.join(), or equivalent functions are used and whether the developer understands that these
+      functions do not prevent traversal (e.g., os.path.join("/safe/dir", "../../../etc/passwd") resolves
+      upward). Verify that the resolved absolute path is validated to fall within the intended base directory
+      using os.path.realpath() or equivalent, and that this check happens after symlink resolution. Look for
+      null byte injection (%00) in languages/runtimes where null bytes can truncate path strings (older PHP,
+      some C libraries). Check for URL-encoded traversal sequences (%2e%2e%2f, %252e%252e%252f for double
+      encoding) that may bypass naive input filters. Inspect archive extraction (zip, tar) for entries
+      containing ../ paths (zip slip vulnerability). Examine whether the application follows symlinks that
+      could point outside the allowed directory. Check for path traversal in cloud storage key construction
+      (S3, GCS) where the "directory" abstraction is purely conventional.
+    validation_checks:
+      - "Verify that the resolved absolute path (after realpath/canonical resolution) is checked to start with the intended base directory prefix."
+      - "Confirm that path validation occurs after symlink resolution to prevent symlink-based escapes."
+      - "Check that archive extraction validates each entry's path does not contain ../ sequences or resolve outside the target directory (zip slip)."
+      - "Inspect for double-encoding and null-byte sequences that could bypass traversal filters."
+      - "Verify that user-supplied filenames are sanitized to remove or reject path separator characters (/, \\) and traversal sequences."
+      - "Check that cloud storage key construction validates user input does not include ../ or absolute paths."
+    false_positive_indicators:
+      - "The path is constructed from a server-generated identifier (UUID, database ID) with no user-controlled path components."
+      - "The application uses a chroot, container mount, or OS-level sandboxing that restricts file system access regardless of path."
+      - "A framework-level file-serving function (e.g., Django's static file handler, Express static middleware) handles path resolution securely by design."
+
+  CWE-287:
+    title: "Improper Authentication"
+    analysis_prompt: >
+      Review the authentication architecture end-to-end, from credential submission through session
+      establishment. Check for endpoints or routes that lack authentication middleware entirely—look for
+      route registration patterns where auth middleware is applied selectively and verify no critical endpoint
+      is accidentally excluded. Examine token validation logic for JWT implementations: verify signature
+      validation is enforced (alg:none attack), the correct algorithm is pinned (RS256 vs HS256 confusion),
+      expiration (exp) and not-before (nbf) claims are checked, and the issuer/audience are validated.
+      Look for timing side-channels in credential comparison—string equality (== or ===) leaks information
+      via response time; use constant-time comparison (hmac.compare_digest, crypto.timingSafeEqual). Check
+      for credential stuffing vulnerabilities: are there rate limits, account lockout policies, or CAPTCHA
+      on login endpoints? Examine password reset flows for token predictability, expiration enforcement, and
+      token invalidation after use. Verify that session tokens have sufficient entropy (at least 128 bits)
+      and are transmitted securely (Secure, HttpOnly, SameSite cookie flags). Check multi-factor authentication
+      bypass vectors such as backup code brute-forcing, TOTP window tolerance, and fallback to weaker methods.
+    validation_checks:
+      - "Verify that every route serving sensitive data or performing state changes has authentication middleware applied, with no accidental exclusions."
+      - "Confirm JWT validation enforces algorithm pinning (rejects alg:none), checks exp/nbf/iss/aud claims, and uses the correct key for the algorithm."
+      - "Check that credential comparison uses constant-time functions (hmac.compare_digest, crypto.timingSafeEqual) to prevent timing attacks."
+      - "Verify login endpoints implement rate limiting, account lockout, or progressive delays to mitigate credential stuffing."
+      - "Confirm password reset tokens are cryptographically random, expire within a short window, and are single-use."
+      - "Check that session cookies set Secure, HttpOnly, and SameSite attributes appropriately."
+    false_positive_indicators:
+      - "The endpoint is intentionally public (login page, health check, public API documentation) and is documented as such."
+      - "Authentication is handled by an upstream reverse proxy, API gateway, or service mesh that is verified to enforce it before requests reach the application."
+      - "The flagged timing difference is in a non-security-sensitive comparison (e.g., comparing a session token to check cache hit, not for authentication)."
+
+  CWE-862:
+    title: "Missing Authorization"
+    analysis_prompt: >
+      Examine every endpoint and function that accesses or modifies resources to determine whether
+      authorization checks are performed after authentication. Distinguish between authentication (who
+      you are) and authorization (what you're allowed to do)—a valid session token does not imply
+      permission to access any resource. Look for horizontal privilege escalation where User A can
+      access User B's data by changing a resource identifier in the request. Verify that resource
+      ownership is validated: when a user requests /api/orders/123, confirm the application checks
+      that order 123 belongs to the authenticated user, not just that the user is authenticated.
+      Check middleware ordering—authorization middleware must run after authentication middleware, and
+      both must execute before the handler. Look for inconsistencies between UI restrictions and API
+      enforcement: if a button is hidden in the frontend, verify the corresponding API endpoint still
+      enforces the check server-side. Examine role-based access control for role hierarchy bypass (can
+      a manager access admin endpoints by manipulating role claims?). Inspect batch operations and
+      GraphQL resolvers where authorization may be checked on the top-level query but not on nested
+      resource access. Check for parameter pollution where duplicate parameters override authorization
+      context.
+    validation_checks:
+      - "Verify that every endpoint performing data access checks the authenticated user's permission to access the specific resource, not just that they are logged in."
+      - "Confirm that authorization middleware executes after authentication and before the route handler, with no ordering gaps."
+      - "Check for horizontal privilege escalation by verifying resource ownership validation (e.g., WHERE user_id = :currentUser) on all data queries."
+      - "Inspect batch and bulk endpoints to confirm authorization is checked per-item, not just on the batch request."
+      - "Verify that GraphQL nested resolvers enforce authorization independently and do not rely solely on parent resolver checks."
+      - "Confirm that role-based checks prevent role hierarchy bypass (e.g., a user cannot escalate by modifying a role claim in a token or request)."
+    false_positive_indicators:
+      - "Authorization is enforced at a data layer (row-level security, database policies) that the application code does not need to duplicate."
+      - "The endpoint is intentionally accessible to all authenticated users (e.g., a shared dashboard, public directory lookup)."
+      - "An API gateway or service mesh enforces authorization rules before the request reaches the application."
+
+  CWE-639:
+    title: "Authorization Bypass Through User-Controlled Key (IDOR)"
+    analysis_prompt: >
+      Identify every endpoint where a resource identifier is supplied by the client—path parameters
+      (/users/:id/profile), query parameters (?invoice_id=456), or request body fields. Determine
+      whether the application verifies that the authenticated user is authorized to access the
+      resource identified by that key. Check whether resource identifiers are predictable (sequential
+      integers, auto-increment IDs) versus opaque (UUIDv4, cryptographic hashes), recognizing that
+      opaque identifiers are defense-in-depth but not a substitute for authorization checks. Examine
+      batch and list endpoints where an array of IDs is submitted—verify authorization is enforced on
+      each individual ID, not just the first or the request as a whole. Look for indirect reference
+      patterns where the application maps a user-facing identifier to an internal one; verify the
+      mapping itself is scoped to the authenticated user. Check for IDOR in file download endpoints,
+      export functions, and webhook configurations where changing an ID could expose another tenant's
+      data. Inspect GraphQL queries and mutations for node/relay-style ID parameters that resolve
+      resources across tenant boundaries without permission checks.
+    validation_checks:
+      - "Confirm that every endpoint accepting a resource ID from the client validates the authenticated user's ownership or permission for that specific resource."
+      - "Verify that batch endpoints check authorization per-item, not just on the request level."
+      - "Check whether sequential/predictable identifiers are used and whether enumeration is feasible—recommend UUIDs as defense-in-depth."
+      - "Inspect file download and export endpoints for IDOR by verifying the resource belongs to the requesting user/tenant."
+      - "Verify that indirect reference maps (user-facing ID → internal ID) are scoped to the authenticated user's data."
+    false_positive_indicators:
+      - "The resource is intentionally public (e.g., a published blog post, product catalog item) and contains no sensitive data."
+      - "Row-level security or tenant isolation at the database layer ensures cross-tenant access is impossible regardless of application logic."
+      - "The identifier is a cryptographically signed token (HMAC'd ID) that the user cannot forge for other resources."
+
+  CWE-352:
+    title: "Cross-Site Request Forgery (CSRF)"
+    analysis_prompt: >
+      Identify every state-changing endpoint (POST, PUT, PATCH, DELETE) and verify that CSRF
+      protections are in place. Check whether CSRF tokens are included in forms and validated
+      server-side—inspect the token generation for sufficient entropy and verify tokens are bound
+      to the user session. Examine SameSite cookie attributes: SameSite=Lax prevents CSRF for
+      top-level navigations with unsafe methods but does not protect GET endpoints with side effects;
+      SameSite=Strict provides stronger protection but may break legitimate cross-site navigation.
+      Check for GET endpoints that perform state changes (logout, delete, settings modification),
+      as these are vulnerable regardless of CSRF token protections. Verify that custom header
+      requirements (X-Requested-With, X-CSRF-Token) are enforced and cannot be set cross-origin
+      without CORS misconfiguration. Examine CORS configuration for overly permissive
+      Access-Control-Allow-Origin (wildcard or reflecting the Origin header) combined with
+      Access-Control-Allow-Credentials: true, which undermines CSRF protections. Check login
+      endpoints for login CSRF where an attacker forces the victim to authenticate as the attacker.
+      Inspect APIs that accept both cookie-based and token-based authentication—cookie-based auth
+      requires CSRF protection while Bearer token auth does not.
+    validation_checks:
+      - "Verify that all state-changing endpoints (POST, PUT, PATCH, DELETE) require and validate a CSRF token or rely on SameSite cookie attributes."
+      - "Confirm that no GET endpoint performs state-changing operations (data modification, logout, account changes)."
+      - "Check that CORS configuration does not reflect arbitrary Origin values when credentials are allowed."
+      - "Verify that CSRF tokens are cryptographically random, bound to the user session, and validated on every state-changing request."
+      - "Inspect login endpoints for login CSRF protections."
+      - "Confirm that APIs using cookie-based authentication enforce CSRF protections, even if token-based auth endpoints do not."
+    false_positive_indicators:
+      - "The endpoint exclusively uses Bearer token authentication (Authorization header) and does not accept cookies for authentication."
+      - "SameSite=Strict or SameSite=Lax cookies are used and the endpoint does not perform state changes via GET."
+      - "The API is accessed only by non-browser clients (mobile apps, server-to-server) and does not accept cookie-based sessions."
+
+  CWE-502:
+    title: "Deserialization of Untrusted Data"
+    analysis_prompt: >
+      Search for all deserialization operations that process data from untrusted sources. In Python,
+      flag any use of pickle.loads(), pickle.load(), shelve, or yaml.load() (without Loader=SafeLoader)
+      on user-controlled input—these allow arbitrary code execution via crafted payloads. In Java,
+      identify ObjectInputStream.readObject() usage and check whether the input stream originates from
+      untrusted data (network, file upload, message queue); verify whether look-ahead deserialization
+      filters (ObjectInputFilter) or allowlist-based approaches are used. In PHP, check for
+      unserialize() on user input and whether allowed_classes is restricted. In .NET, examine
+      BinaryFormatter, NetDataContractSerializer, and SoapFormatter usage—all are dangerous with
+      untrusted data. For JSON deserialization, check for type-discriminated deserialization
+      (Jackson's enableDefaultTyping, Newtonsoft.Json's TypeNameHandling) that can instantiate
+      arbitrary classes. Examine message queue consumers and RPC frameworks that deserialize incoming
+      messages. Check for XML deserialization (XmlSerializer with user-controlled type, XStream
+      without allowlisting) and YAML deserialization (yaml.load vs yaml.safe_load in Python,
+      YAML.load in Ruby). Verify that any custom deserialization logic validates types before
+      instantiation.
+    validation_checks:
+      - "Confirm that pickle, shelve, and marshal are never used to deserialize data from untrusted sources; recommend JSON or Protocol Buffers instead."
+      - "Verify that yaml.load() is called with Loader=SafeLoader or replaced with yaml.safe_load() for all untrusted input."
+      - "Check that Java ObjectInputStream usage includes ObjectInputFilter allowlisting or is replaced with a safe alternative."
+      - "Verify that Jackson does not use enableDefaultTyping() or @JsonTypeInfo with untrusted input unless a PolymorphicTypeValidator allowlist is configured."
+      - "Inspect .NET code for BinaryFormatter or NetDataContractSerializer usage and confirm they are not used with untrusted data."
+      - "Check that PHP unserialize() calls specify allowed_classes as an array of safe types or false."
+    false_positive_indicators:
+      - "The deserialized data originates from a trusted internal source (signed message, encrypted cache) with integrity verification."
+      - "The application uses safe deserialization formats (JSON.parse without reviver, Protocol Buffers, FlatBuffers) that do not support arbitrary object instantiation."
+      - "An allowlist-based deserialization filter is in place that restricts instantiable classes to a known-safe set."
+
+  CWE-327:
+    title: "Use of a Broken or Risky Cryptographic Algorithm"
+    analysis_prompt: >
+      Identify all cryptographic operations and evaluate the algorithms and parameters used. Flag
+      MD5 and SHA-1 when used for security-sensitive purposes (password hashing, digital signatures,
+      HMAC key derivation, certificate verification)—note that MD5/SHA-1 for non-security checksums
+      like cache keys or deduplication are generally acceptable. Check for symmetric encryption using
+      DES, 3DES, RC4, or Blowfish, which are considered weak; AES with 128-bit or 256-bit keys is
+      the minimum standard. Examine the block cipher mode: ECB mode is always inappropriate for
+      multi-block data as it leaks patterns; verify CBC is used with proper IV randomization (not
+      a fixed or zero IV) and consider whether authenticated encryption (GCM, CCM) is more
+      appropriate. Check RSA key sizes—keys below 2048 bits are considered weak, and 4096 bits is
+      recommended for long-term security. Look for custom or hand-rolled cryptographic
+      implementations instead of vetted libraries (OpenSSL, libsodium, BouncyCastle). Check for
+      static or hardcoded IVs/nonces in encryption operations, which destroy the security guarantees
+      of CBC and CTR modes. Verify that random number generation uses cryptographically secure
+      sources (os.urandom, crypto.randomBytes, SecureRandom) and not math.random or rand().
+    validation_checks:
+      - "Confirm that MD5 and SHA-1 are not used for password hashing, digital signatures, or any security-sensitive integrity verification."
+      - "Verify that symmetric encryption uses AES-128 or AES-256 with an authenticated mode (GCM preferred) and not DES, 3DES, RC4, or ECB mode."
+      - "Check that RSA keys are at least 2048 bits and that elliptic curve parameters use standard curves (P-256, P-384, Curve25519)."
+      - "Verify that IVs and nonces are generated from a CSPRNG and are unique per encryption operation—never static, zero, or derived from predictable values."
+      - "Confirm that all random number generation for security purposes (tokens, keys, nonces) uses a CSPRNG, not Math.random() or similar."
+    false_positive_indicators:
+      - "MD5/SHA-1 is used for non-security purposes such as cache key generation, content deduplication, or ETags where collision resistance is not a security requirement."
+      - "The weak algorithm is used only for compatibility with a legacy system and is documented as a known risk with a migration plan."
+      - "The cryptographic operation uses a well-maintained library with secure defaults and the flagged concern is about an internal implementation detail handled by the library."
+
+  CWE-798:
+    title: "Use of Hard-coded Credentials"
+    analysis_prompt: >
+      Scan the entire codebase for hardcoded secrets including API keys, passwords, authentication
+      tokens, database connection strings with embedded credentials, private keys, and certificates.
+      Look for common patterns: variables named password, secret, api_key, token, or credential
+      assigned to string literals; base64-encoded strings that decode to credentials; configuration
+      files (application.yml, settings.py, .env committed to version control) containing plaintext
+      secrets. Check for credentials in test files that might point to real services rather than
+      mocks. Examine Dockerfiles and docker-compose files for ENV or ARG directives with embedded
+      secrets. Look for credentials in CI/CD configuration files (.github/workflows, .gitlab-ci.yml,
+      Jenkinsfile). Verify that the application retrieves secrets from environment variables, a
+      secret manager (Vault, AWS Secrets Manager, GCP Secret Manager), or an encrypted configuration
+      system rather than source code. Check for private keys (RSA, SSH, TLS) committed to the
+      repository. Inspect comment blocks and documentation for credentials left as examples that
+      match production patterns. Check git history for secrets that were committed and later removed
+      but remain in the repository history.
+    validation_checks:
+      - "Verify that no string literals matching credential patterns (API keys, passwords, tokens) appear in source code, configuration files, or environment setup scripts."
+      - "Confirm that .env files, private keys, and certificate files are listed in .gitignore and are not committed to the repository."
+      - "Check that Dockerfiles and CI/CD configurations do not embed secrets in ENV, ARG, or RUN commands—use build-time secret mounts or runtime injection."
+      - "Verify that test fixtures use mock credentials or test-specific service accounts, not production secrets."
+      - "Confirm the application loads secrets from environment variables or a secrets manager at runtime, not from hardcoded values."
+    false_positive_indicators:
+      - "The string is a well-known placeholder or example value (e.g., 'changeme', 'your-api-key-here', 'sk_test_...') used in documentation or templates."
+      - "The credential is for a local development-only service (localhost database, test container) with no access to production data."
+      - "The value is a public identifier (e.g., a publishable Stripe key, OAuth client ID) that is intended to be embedded in client-side code."
+      - "The hardcoded value is a cryptographic constant (salt prefix, algorithm identifier) that is not itself a secret."
+
+  CWE-434:
+    title: "Unrestricted Upload of File with Dangerous Type"
+    analysis_prompt: >
+      Examine every file upload endpoint and the full lifecycle of uploaded files—from receipt through
+      storage to retrieval. Check whether the application validates file type by extension, MIME type
+      (Content-Type header), or actual file content (magic bytes)—Content-Type headers are trivially
+      spoofed and extensions can be bypassed with double extensions (.php.jpg) or null bytes. Verify
+      that validation uses an allowlist of permitted types rather than a denylist of dangerous ones.
+      Inspect whether uploaded files are stored within the web root where they could be directly
+      accessed and executed by the web server (e.g., a .php file uploaded to a publicly served
+      directory). Check whether the application re-generates filenames using random identifiers or
+      preserves the original filename, which could contain path traversal sequences or special
+      characters. Examine image processing pipelines for ImageTragick-style vulnerabilities where
+      crafted image files trigger command execution. Verify that the storage location has restrictive
+      permissions and that the web server is configured to not execute files in the upload directory
+      (disable PHP, CGI handlers). Check for polyglot files that are valid in multiple formats
+      (GIFAR—a file that is both a GIF and a JAR). Inspect file size limits to prevent denial of
+      service via large uploads.
+    validation_checks:
+      - "Verify that file type validation uses an allowlist of permitted MIME types and extensions, not a denylist."
+      - "Confirm that file type is validated by inspecting magic bytes (file content), not just the Content-Type header or extension."
+      - "Check that uploaded files are stored outside the web root or in a location where the web server will not execute them."
+      - "Verify that uploaded filenames are regenerated (e.g., UUID-based) and the original filename is not used for storage paths."
+      - "Confirm file size limits are enforced to prevent denial-of-service via oversized uploads."
+      - "Check that image processing libraries are up to date and not vulnerable to known exploits (ImageTragick, libpng overflow)."
+    false_positive_indicators:
+      - "Files are stored in a blob store (S3, GCS) served via signed URLs with Content-Disposition: attachment, preventing browser execution."
+      - "The web server configuration explicitly disables script execution in the upload directory (e.g., RemoveHandler, php_flag engine off)."
+      - "The application only accepts uploads from authenticated internal services, not end users."
+
+  CWE-918:
+    title: "Server-Side Request Forgery (SSRF)"
+    analysis_prompt: >
+      Identify every location where the server makes HTTP requests, DNS lookups, or network connections
+      using URLs or hostnames that are partially or fully user-controlled. This includes URL parameters
+      for webhooks, image fetching, URL previews, PDF generation from URLs, and import-from-URL
+      features. Verify that the application validates the destination to prevent requests to internal
+      network addresses (10.x.x.x, 172.16-31.x.x, 192.168.x.x, 127.0.0.1, ::1, 169.254.169.254)
+      and cloud metadata endpoints (169.254.169.254 for AWS/GCP, 169.254.169.254/metadata for Azure).
+      Check for DNS rebinding attacks where a hostname resolves to a public IP during validation but
+      to an internal IP during the actual request—the mitigation is to resolve DNS once and use the
+      IP directly. Examine whether the application follows HTTP redirects, as a redirect can bounce
+      a request from an allowed external host to an internal target. Look for SSRF via protocol
+      schemes: file://, gopher://, dict://, and other non-HTTP schemes can be used to interact with
+      internal services. Check for partial SSRF where the attacker controls only part of the URL
+      (path, query string) but the host is fixed—this can still reach internal endpoints if the
+      host is an internal proxy. Verify that URL parsing is consistent (the parser used for
+      validation must behave identically to the HTTP client).
+    validation_checks:
+      - "Verify that user-supplied URLs are validated against an allowlist of permitted hosts or domains, not just a denylist of internal ranges."
+      - "Confirm that requests to RFC 1918 addresses, loopback, link-local, and cloud metadata endpoints (169.254.169.254) are blocked."
+      - "Check that DNS resolution is performed once and the resolved IP is validated before the request is made, preventing DNS rebinding."
+      - "Verify that HTTP redirect following is disabled or that each redirect target is re-validated against the same rules."
+      - "Confirm that only http:// and https:// schemes are permitted—block file://, gopher://, dict://, and other schemes."
+      - "Check that URL parsing for validation and request execution uses the same library to prevent parser differential attacks."
+    false_positive_indicators:
+      - "The URL is constructed entirely server-side from trusted configuration with no user-controlled components."
+      - "The request is made through an egress proxy that enforces network-level restrictions on internal access."
+      - "The user-controlled portion is limited to a path or query parameter appended to a hardcoded base URL, and the base URL points to an external service."
+
+  CWE-117:
+    title: "Improper Output Neutralization for Logs"
+    analysis_prompt: >
+      Examine all logging statements that include user-supplied data. Check whether newline characters
+      (\n, \r, \r\n) in user input could be used to inject forged log entries—an attacker could craft
+      input that, when logged, appears as a legitimate log line, potentially masking an attack or
+      creating false audit trails. Verify that structured logging frameworks (logfmt, JSON-structured
+      logging) are used instead of unstructured text logs, as structured formats naturally contain
+      user data within defined fields. Inspect log format strings for injection: if the logging
+      framework uses format specifiers (e.g., Python's % formatting with logging), check that user
+      input cannot introduce additional format specifiers that cause crashes or information leakage.
+      Look for CRLF injection in HTTP response headers that are subsequently logged, which could
+      corrupt log parsers. Check whether sensitive data (passwords, tokens, PII) is inadvertently
+      included in log messages. Examine whether log aggregation systems (Splunk, ELK, CloudWatch)
+      could interpret injected content as commands or structured query syntax. Verify that exception
+      logging does not capture and log full request bodies or headers containing sensitive data.
+    validation_checks:
+      - "Verify that user-supplied data included in log messages is sanitized to remove or escape newline and carriage return characters."
+      - "Confirm that structured logging (JSON, logfmt) is used, ensuring user data is contained within designated fields."
+      - "Check that log format strings do not allow user input to introduce additional format specifiers (%s, %d, {})."
+      - "Verify that sensitive data (passwords, tokens, session IDs, PII) is redacted or masked before logging."
+      - "Inspect exception handlers to confirm they do not log full request bodies or headers containing credentials."
+    false_positive_indicators:
+      - "The application uses a structured logging framework (e.g., zap, logrus, structlog) that automatically serializes values into defined fields."
+      - "The logged value is an internal identifier (numeric ID, enum) that cannot contain user-controlled characters."
+      - "Log output is consumed only by a system that safely handles embedded newlines (e.g., JSON log parser)."
+
+  CWE-362:
+    title: "Concurrent Execution Using Shared Resource with Improper Synchronization (TOCTOU)"
+    analysis_prompt: >
+      Identify check-then-act patterns where a condition is verified and then a dependent action is
+      taken without atomicity guarantees. In file system operations, look for patterns where a file's
+      existence, permissions, or content is checked (stat, access, exists) and then the file is
+      opened, read, or modified—an attacker may alter the file between the check and the use. In
+      database operations, look for read-modify-write sequences without proper locking or atomic
+      operations (SELECT followed by UPDATE without SELECT FOR UPDATE, optimistic locking, or
+      serializable isolation). Examine concurrent request handling for race conditions in balance
+      checks, inventory decrements, rate limiting, and coupon redemption—these often require atomic
+      operations (compare-and-swap, database constraints, Redis WATCH/MULTI). Check for TOCTOU in
+      authentication flows where a permission check and the protected action are separate operations.
+      Look for shared mutable state accessed from multiple threads or goroutines without proper
+      synchronization (mutexes, channels, atomic operations). Examine lazy initialization patterns
+      for double-checked locking correctness. Check for race conditions in cache operations where
+      multiple requests might compute and store the same value with inconsistent results.
+    validation_checks:
+      - "Verify that file system check-then-act operations (exists/stat → open/write) are replaced with atomic operations (open with O_CREAT|O_EXCL, rename for atomic writes)."
+      - "Confirm that database read-modify-write sequences use SELECT FOR UPDATE, optimistic locking (version columns), or serializable transactions."
+      - "Check that financial operations (balance checks, transfers, inventory decrements) use atomic database operations or constraints, not application-level check-then-act."
+      - "Verify that shared mutable state is protected by appropriate synchronization primitives (mutexes, channels, atomic variables)."
+      - "Inspect rate limiting implementations for race conditions that allow burst bypass (use atomic counters or Redis INCR, not get-then-set)."
+    false_positive_indicators:
+      - "The check-then-act pattern operates on immutable data or data that only the current user/session can modify."
+      - "The operation is idempotent, making the race condition inconsequential (e.g., cache warm-up with identical results)."
+      - "Database-level constraints (UNIQUE, CHECK, serializable isolation) provide atomicity guarantees regardless of application logic."
+
+  CWE-611:
+    title: "Improper Restriction of XML External Entity Reference (XXE)"
+    analysis_prompt: >
+      Identify all XML parsing operations and determine whether external entity processing is disabled.
+      In Java, check SAXParserFactory, DocumentBuilderFactory, XMLInputFactory, TransformerFactory, and
+      SchemaFactory for proper feature configuration—specifically that FEATURE_EXTERNAL_ENTITIES,
+      FEATURE_EXTERNAL_PARAMETER_ENTITIES, and FEATURE_DISALLOW_DOCTYPE_DECL are set correctly. In
+      Python, check that defusedxml is used instead of xml.etree.ElementTree, xml.dom.minidom, or lxml
+      with default settings. In PHP, verify that libxml_disable_entity_loader(true) is called before
+      parsing or that LIBXML_NOENT is not passed to simplexml_load_string/DOMDocument::loadXML. In
+      .NET, check that XmlReaderSettings.DtdProcessing is set to Prohibit or Ignore and that
+      XmlResolver is set to null. Look for XXE in less obvious locations: SOAP endpoints, SVG file
+      processing, DOCX/XLSX parsing (these are ZIP files containing XML), RSS/Atom feed parsing, and
+      SAML assertion processing. Check for billion laughs (XML bomb) attacks via recursive entity
+      expansion even when external entities are disabled—entity expansion limits should be configured.
+      Verify that XSLT processing does not allow document() function or external imports.
+    validation_checks:
+      - "Verify that XML parsers are configured to disable external entity processing (DTD, external general entities, external parameter entities)."
+      - "Confirm that DOCTYPE declarations are disallowed or that entity expansion is limited to prevent billion laughs attacks."
+      - "Check that XML parsing in file upload handlers (SVG, DOCX, XLSX, RSS) applies the same XXE protections as direct XML endpoints."
+      - "Verify that SAML and SOAP processing libraries are configured to reject external entities."
+      - "Inspect XSLT processors to confirm that document() and external imports are disabled."
+    false_positive_indicators:
+      - "The XML parser is explicitly configured to disable DTD processing and external entities (verified in the parser initialization code)."
+      - "The application uses a defused XML library (defusedxml in Python, safe defaults in modern .NET) that blocks XXE by default."
+      - "The XML input is generated internally by the application and never contains user-supplied content."
+
+  CWE-94:
+    title: "Improper Control of Generation of Code (Code Injection)"
+    analysis_prompt: >
+      Search for all dynamic code execution functions: eval(), exec(), Function() constructor,
+      setTimeout/setInterval with string arguments, vm.runInNewContext(), and
+      importlib.import_module() with user-controlled module names. Determine whether any user input
+      flows into these functions—even indirect flows through database values, configuration files,
+      or environment variables that users can influence. Examine template engines for Server-Side
+      Template Injection (SSTI): test whether user input rendered through Jinja2, Mako, Freemarker,
+      Twig, Velocity, or Pebble can break out of the template context and execute arbitrary code
+      (e.g., {{config.__class__.__init__.__globals__}} in Jinja2). Check for expression language
+      injection in frameworks like Spring (SpEL), Struts (OGNL), or JSP (EL). Look for dynamic
+      import or require statements where the module path is user-controlled, enabling arbitrary
+      module loading. Examine code generation patterns where user input is interpolated into source
+      code that is then compiled and executed (e.g., dynamic SQL generation that is then eval'd,
+      or Groovy/Python script generation). Check for reflection-based invocation where user input
+      determines which method or class is instantiated. Verify that sandboxing attempts (Python's
+      restricted exec, JavaScript vm module) are recognized as bypassable and not relied upon as
+      the sole mitigation.
+    validation_checks:
+      - "Verify that eval(), exec(), and Function() constructor are never called with user-controlled input; if used, confirm input is entirely server-generated."
+      - "Check that template engines render user input as data, not as template syntax—user input should never be part of the template string itself."
+      - "Inspect for SSTI by confirming that user input is passed as template variables, not concatenated into template source code."
+      - "Verify that dynamic import/require paths are validated against an allowlist of permitted modules."
+      - "Check that expression language contexts (SpEL, OGNL, EL) do not evaluate user-supplied expressions."
+      - "Confirm that setTimeout and setInterval are not called with string arguments containing user input."
+    false_positive_indicators:
+      - "The eval/exec call processes only server-generated code with no user input in the data flow."
+      - "The template engine auto-escapes and the user input is passed as a context variable, never interpolated into the template source."
+      - "A strict Content Security Policy prevents execution of injected scripts on the client side (for client-side eval concerns)."
+
+  CWE-200:
+    title: "Exposure of Sensitive Information"
+    analysis_prompt: >
+      Review all error handling paths, response bodies, and response headers for unintentional
+      information disclosure. Check whether uncaught exceptions return full stack traces, framework
+      version numbers, file paths, or database connection strings to the client—verify that
+      production error handlers return generic messages while logging details server-side. Examine
+      API responses for over-fetching: are full database records returned when only specific fields
+      are needed (e.g., returning a user object with password_hash, email, SSN alongside the
+      requested display_name)? Check for debug endpoints or development tools left enabled in
+      production (Django DEBUG=True, Express error handler with stack traces, Spring Boot Actuator
+      endpoints without authentication, PHP phpinfo()). Inspect HTTP response headers for server
+      software versions (Server, X-Powered-By, X-AspNet-Version) and remove or genericize them.
+      Look for sensitive data in URLs (tokens, passwords, API keys in query strings) that may be
+      logged by proxies, browsers, and analytics tools. Examine client-side source code and source
+      maps for embedded secrets, internal API endpoints, or sensitive business logic. Check for
+      directory listing enabled on web servers and verbose 404 pages that enumerate valid paths.
+    validation_checks:
+      - "Verify that production error handlers return generic error messages and do not expose stack traces, file paths, or internal details to clients."
+      - "Confirm that API responses include only the fields necessary for the consumer—no password hashes, internal IDs, or PII leakage."
+      - "Check that debug endpoints (phpinfo, Actuator, debug toolbar) are disabled or protected by authentication in production."
+      - "Verify that response headers do not reveal server software versions (Server, X-Powered-By, X-AspNet-Version)."
+      - "Confirm that sensitive data (tokens, credentials) is not included in URL query strings where it may be logged."
+      - "Check that client-side source maps are not deployed to production or are access-controlled."
+    false_positive_indicators:
+      - "The detailed error response is returned only in development/staging environments, gated by an environment variable or configuration flag."
+      - "The information exposed is already public (e.g., open-source framework version, public API documentation)."
+      - "The endpoint is restricted to authenticated internal users (admin panel) with appropriate access controls."
+
+  CWE-306:
+    title: "Missing Authentication for Critical Function"
+    analysis_prompt: >
+      Identify all endpoints and functions that perform critical operations—user management (create,
+      delete, promote), financial transactions, configuration changes, data export, system
+      administration, and deployment triggers—and verify that authentication is strictly enforced.
+      Distinguish this from CWE-862 (Missing Authorization): this CWE concerns operations accessible
+      with no identity verification at all, not insufficient permission checks. Look for admin
+      panels, management APIs, and internal tools that assume network-level isolation provides
+      sufficient protection (e.g., "only accessible from the internal network" without authentication).
+      Check for API endpoints that rely on API key authentication where the key is a shared secret
+      rather than per-user credentials. Examine health check, metrics, and monitoring endpoints
+      (Prometheus /metrics, Spring Boot Actuator) for exposure of sensitive operational data without
+      authentication. Look for deployment hooks, webhook receivers, and callback URLs that accept
+      unauthenticated requests to trigger critical operations. Verify that password reset, account
+      recovery, and email verification endpoints cannot be abused to perform privileged actions
+      without proper identity verification. Check for debug or maintenance endpoints that bypass
+      normal authentication flows.
+    validation_checks:
+      - "Verify that all administrative and management endpoints require authentication, not just network-level access restrictions."
+      - "Confirm that webhook receivers and callback URLs validate the sender's identity (signature verification, shared secret, mutual TLS)."
+      - "Check that monitoring and metrics endpoints (/metrics, /health with details, Actuator) do not expose sensitive data without authentication."
+      - "Verify that deployment triggers and CI/CD webhook endpoints require authentication or cryptographic signature verification."
+      - "Confirm that internal-only endpoints are protected by authentication in addition to network controls, following defense-in-depth."
+    false_positive_indicators:
+      - "The endpoint is a public health check returning only 'ok' status with no sensitive operational details."
+      - "Network-level isolation is enforced by infrastructure (service mesh, VPC, firewall rules) AND the endpoint serves non-sensitive data."
+      - "The endpoint is part of the authentication flow itself (login, token exchange) and is intentionally unauthenticated."
+
+  CWE-522:
+    title: "Insufficiently Protected Credentials"
+    analysis_prompt: >
+      Examine how the application stores, transmits, and handles user credentials throughout their
+      lifecycle. For password storage, verify that a modern adaptive hashing algorithm is used—bcrypt,
+      scrypt, or Argon2id with appropriate cost parameters (bcrypt work factor ≥ 10, Argon2id with
+      recommended memory/time/parallelism). Flag any use of MD5, SHA-1, SHA-256, or SHA-512 for
+      password hashing, even with a salt, as these fast hash functions are vulnerable to GPU-based
+      brute-force attacks. Verify that each password is hashed with a unique, randomly generated salt
+      (not a global or predictable salt). Check for plaintext password storage in databases,
+      configuration files, logs, or temporary files. Examine credential transmission to confirm
+      passwords are only sent over TLS—check for HTTP login forms, unencrypted API endpoints, and
+      FTP/SMTP credentials transmitted in cleartext. Look for password logging in authentication
+      handlers, audit trails, or error messages. Verify that API tokens and session credentials are
+      stored with equivalent protections—tokens in databases should be hashed (SHA-256 is acceptable
+      for tokens, unlike passwords). Check for credential exposure in memory dumps, core files, or
+      swap space—verify that sensitive strings are zeroed after use where the language permits.
+      Examine password change and reset flows to ensure old password hashes are not retained.
+    validation_checks:
+      - "Verify that passwords are hashed using bcrypt (work factor ≥ 10), scrypt, or Argon2id—not MD5, SHA-1, SHA-256, or any fast hash."
+      - "Confirm that each password hash uses a unique, cryptographically random salt, not a shared or predictable value."
+      - "Check that passwords are never stored in plaintext in any storage layer (database, config files, logs, temporary files)."
+      - "Verify that credentials are transmitted only over TLS and that login forms/API endpoints enforce HTTPS."
+      - "Confirm that API tokens and session identifiers stored in the database are hashed (SHA-256 is acceptable for tokens)."
+      - "Check that authentication handlers and error logging do not include plaintext passwords in log output."
+    false_positive_indicators:
+      - "SHA-256 is used to hash API tokens or session identifiers (not passwords)—this is appropriate as tokens have high entropy and do not need adaptive hashing."
+      - "The application delegates credential storage to an identity provider (OAuth, SAML, LDAP) and does not store passwords locally."
+      - "MD5/SHA-1 is used in a non-credential context (file checksums, cache keys) that does not involve password or secret storage."

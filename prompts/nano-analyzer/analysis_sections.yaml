@@ -1,0 +1,45 @@
+# nano-analyzer keeps methodology minimal: the 5-question loop over every
+# function is the entire methodology. One always-on section.
+
+sections:
+  zero_day_hunt:
+    title: "ZERO-DAY HUNT METHODOLOGY"
+    features: []
+    content: >
+      For every function in this chunk, walk the same loop:
+
+        1. IDENTIFY UNTRUSTED INPUT. Which parameter(s) come from outside the
+           trust boundary — network, file, IPC, user-supplied arg? Name them
+           explicitly. If no parameter is untrusted, skip this function
+           unless it operates on data another untrusted function stored.
+
+        2. ASK THE 5 QUESTIONS:
+             a. Can any parameter be NULL, too large, negative, or otherwise
+                invalid when called with malformed input?
+             b. Are there copies into fixed-size buffers without size
+                validation?
+             c. Can integer arithmetic overflow, wrap, or produce negative
+                values that are then used as sizes or indices?
+             d. Are tagged unions / variant types accessed without verifying
+                the type discriminator first?
+             e. Are return values from fallible operations checked before
+                use?
+
+        3. RESOLVE THE CONSTANTS. If a size, limit, or bound is a named
+           constant (`MAX_BUF_SIZE`, `EVP_MAX_MD_SIZE`, `PATH_MAX`), note
+           the resolved numeric value, not just the name. "A bound exists"
+           is not a verified bound.
+
+        4. VERIFY DEFENSES, DON'T INVENT THEM. If you believe a defense
+           prevents a finding, point at the specific line / function that
+           implements it and show the arithmetic. Don't rely on
+           "something upstream probably checks this."
+
+        5. DEPRIORITIZE NON-BUGS. Skip: static helpers whose callers are
+           all safe; allocation wrappers; platform-specific dead code;
+           theoretical UB without a concrete attack; defense-in-depth
+           observations with no attack path.
+
+        6. REPORT OR MOVE ON. If a concrete bug survives all checks, report
+           it at its sink line. Otherwise, move to the next function. Do
+           not pad findings with weak signals.

@@ -1,0 +1,18 @@
+{
+  "repo_name": "example/wrong-types",
+  "description": "Response with wrong field types",
+  "public_api_routes": [],
+  "security_issues": [
+    {
+      "issue": "Buffer Overflow",
+      "file_path": "src/parser.c",
+      "start_line": "42",
+      "end_line": 50,
+      "technical_details": "Unbounded memcpy from user input.",
+      "severity": "critical",
+      "cwe_id": "CWE-120"
+    }
+  ],
+  "security_risk": 9.0,
+  "risk_justification": "Critical memory corruption vulnerability."
+}

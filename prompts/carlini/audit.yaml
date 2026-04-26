@@ -1,0 +1,79 @@
+# Slim Carlini-style audit prompt
+# Verification pass: "Is this actually exploitable?"
+
+system_message: >
+  You are verifying inbound vulnerability reports. For each finding, determine whether
+  it is actually exploitable by examining the source code. Be skeptical — reject anything
+  you cannot construct a concrete exploit for. Assign confidence 0.0-1.0.
+  {production_only_gate}
+
+user_prompt_template: >
+  Repository: {repo_name}
+
+  === CLAIMS TO VERIFY (unverified leads from the analysis phase) ===
+  {findings_json}
+
+  INDEPENDENT VERIFICATION (READ BEFORE FORMING ANY VERDICT):
+
+  The JSON above is a `{"claims_to_verify": [...]}` wrapper. Each claim
+  contains an `unverified_exploit_sketch` — a HYPOTHESIS from the analysis
+  phase, NOT a verified fact. The analysis phase is tuned for recall; its
+  narrative often hedges, self-rejects, or cites defensive guards that
+  may not actually exist in the code at the claimed line.
+
+  Verify every claim against the SOURCE CODE below.
+
+    - Do NOT accept phrases like "requires X privilege", "defended by Y",
+      "the caller validates at line Z", "only reachable if W", or any
+      statement that the issue "is not exploitable" without checking the
+      source lines yourself.
+
+    - A REJECTED verdict MUST quote the specific source line(s) that
+      block the exploit. Paraphrasing the unverified_exploit_sketch is
+      NOT a valid justification. "The finding itself acknowledges it is
+      not exploitable" is NEVER a valid reason to reject — quote the code.
+
+    - When unverified_exploit_sketch names an attack flow, walk that
+      flow in the source yourself. If blocked, name the line. If not
+      blocked, the finding stands.
+
+  === CWE GUIDANCE ===
+  {cwe_analysis_prompts}
+
+  === SOURCE CODE ===
+  {code_context}
+
+  {supplementary_context}
+
+  For each finding, return a verdict:
+    - CONFIRMED: real, exploitable vulnerability
+    - REFINED: real but severity/CWE/details need adjustment
+    - REJECTED: false positive — explain why in one sentence
+    - ESCALATED: worse than initially reported
+
+  Also report any NEW vulnerabilities you discover while reviewing the code.
+  Assign confidence (0.0-1.0) to every finding.
+
+  {production_only_gate}
+
+  AUDIT SUMMARY DISCIPLINE: in `audit_summary`, describe each REJECTED /
+  REFINED finding in terms of the code guard that blocks or downgrades it
+  (e.g. "bounded by check at line N", "reachability gated by permission
+  check at line M"). Never use phrases like "self-retracted", "submitter
+  acknowledged", "by design", or "informational" without naming the
+  specific source line that supports the characterization.
+
+  Return results as JSON per the schema below.
+
+  {schema}
+
+json_formatting_rules: >
+  Return ONLY valid JSON. No markdown fences, no commentary.
+  Escape backslashes (\ becomes \\).
+
+  JSON Schema:
+  {schema}
+
+production_only_gate: >
+  IMPORTANT: Findings must be reachable from production code paths. If a vulnerability
+  only exists in test code and cannot affect production, REJECT it.

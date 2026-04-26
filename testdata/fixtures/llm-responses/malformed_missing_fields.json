@@ -1,0 +1,16 @@
+{
+  "repo_name": "example/incomplete",
+  "description": "Response missing security_risk and risk_justification",
+  "public_api_routes": [],
+  "security_issues": [
+    {
+      "issue": "Hardcoded Credentials",
+      "file_path": "config/database.go",
+      "start_line": 10,
+      "end_line": 12,
+      "technical_details": "Database password is hardcoded in source file.",
+      "severity": 8.0,
+      "cwe_id": "CWE-798"
+    }
+  ]
+}
