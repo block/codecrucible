@@ -97,7 +97,7 @@ var defaultModels = []ModelConfig{
 		OutputPricePerM:          30.0,
 		ContextLimit:             1000000,
 		MaxOutputTokens:          128000,
-		Temperature:              0.0,
+		Temperature:              1.0,
 		Encoding:                 "o200k_base",
 		SupportsStructuredOutput: true,
 	},

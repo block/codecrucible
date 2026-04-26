@@ -665,6 +665,61 @@ func TestChatCompletion_ModelParamsMergedIntoRequest(t *testing.T) {
 	}
 }
 
+func TestChatCompletion_RetriesOpenAIWithoutTemperature(t *testing.T) {
+	var attempts atomic.Int32
+	var retriedBody []byte
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if attempts.Add(1) == 1 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprint(w, `{"error":{"message":"Unsupported value: 'temperature' does not support 0 with this model. Only the default (1) value is supported.","type":"invalid_request_error","param":"temperature"}}`)
+			return
+		}
+
+		retriedBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, successResponse("ok", "gpt-5.5", "stop", 1, 1))
+	}))
+	defer srv.Close()
+
+	modelParams := map[string]any{"temperature": 0.0}
+	c := NewClient(ClientConfig{
+		BaseURL:  srv.URL,
+		Provider: "openai",
+		Token:    "t",
+		Timeout:  5 * time.Second,
+	})
+
+	resp, err := c.ChatCompletion(context.Background(), ChatRequest{
+		Model:       "gpt-5.5",
+		Messages:    []Message{{Role: "user", Content: "hi"}},
+		Temperature: 0.0,
+		MaxTokens:   100,
+		ModelParams: modelParams,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Content != "ok" {
+		t.Fatalf("Content = %q, want ok", resp.Content)
+	}
+	if got := attempts.Load(); got != 2 {
+		t.Fatalf("attempts = %d, want 2", got)
+	}
+
+	var reqBody map[string]any
+	if err := json.Unmarshal(retriedBody, &reqBody); err != nil {
+		t.Fatalf("failed to parse retried request body: %v", err)
+	}
+	if _, ok := reqBody["temperature"]; ok {
+		t.Fatalf("retried request still contains temperature: %v", reqBody["temperature"])
+	}
+	if _, ok := modelParams["temperature"]; !ok {
+		t.Fatal("request retry mutated caller-owned model params")
+	}
+}
+
 func TestChatCompletion_ModelParamsDeepMerge(t *testing.T) {
 	var receivedBody []byte
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

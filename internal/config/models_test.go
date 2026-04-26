@@ -186,6 +186,9 @@ func TestLookupModel_GPT55Capabilities(t *testing.T) {
 	if m.MaxOutputTokens != 128000 {
 		t.Errorf("MaxOutputTokens: got %d, want 128000", m.MaxOutputTokens)
 	}
+	if m.Temperature != 1.0 {
+		t.Errorf("Temperature: got %f, want 1.0", m.Temperature)
+	}
 	if m.Encoding != "o200k_base" {
 		t.Errorf("Encoding: got %q, want o200k_base", m.Encoding)
 	}
@@ -370,17 +373,18 @@ func TestRegisterUserModels_RejectsEmptyName(t *testing.T) {
 
 func TestDefaultModelRegistry_FieldValues(t *testing.T) {
 	tests := []struct {
-		name       string
-		maxOutput  int
-		encoding   string
-		structured bool
+		name        string
+		maxOutput   int
+		encoding    string
+		structured  bool
+		temperature float64
 	}{
-		{"claude-sonnet-4-6", 16384, "claude", true},
-		{"claude-opus-4-6", 32768, "claude", true},
-		{"gpt-5.2", 16384, "o200k_base", true},
-		{"gpt-5.5", 128000, "o200k_base", true},
-		{"gemini-3-pro", 65536, "cl100k_base", true},
-		{"gemini-3-flash", 65536, "cl100k_base", true},
+		{"claude-sonnet-4-6", 16384, "claude", true, 0.0},
+		{"claude-opus-4-6", 32768, "claude", true, 0.0},
+		{"gpt-5.2", 16384, "o200k_base", true, 0.0},
+		{"gpt-5.5", 128000, "o200k_base", true, 1.0},
+		{"gemini-3-pro", 65536, "cl100k_base", true, 0.0},
+		{"gemini-3-flash", 65536, "cl100k_base", true, 0.0},
 	}
 
 	for _, tt := range tests {
@@ -398,8 +402,8 @@ func TestDefaultModelRegistry_FieldValues(t *testing.T) {
 			if m.SupportsStructuredOutput != tt.structured {
 				t.Errorf("SupportsStructuredOutput: got %v, want %v", m.SupportsStructuredOutput, tt.structured)
 			}
-			if m.Temperature != 0.0 {
-				t.Errorf("Temperature: got %f, want 0.0", m.Temperature)
+			if m.Temperature != tt.temperature {
+				t.Errorf("Temperature: got %f, want %f", m.Temperature, tt.temperature)
 			}
 		})
 	}

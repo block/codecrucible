@@ -356,7 +356,7 @@ func (c *httpClient) buildURL(endpoint string) string {
 type apiRequest struct {
 	Model               string           `json:"model,omitempty"`
 	Messages            []Message        `json:"messages"`
-	Temperature         float64          `json:"temperature"`
+	Temperature         *float64         `json:"temperature,omitempty"`
 	MaxTokens           int              `json:"max_tokens,omitempty"`
 	MaxCompletionTokens int              `json:"max_completion_tokens,omitempty"`
 	ResponseFormat      *responseFormat  `json:"response_format,omitempty"`
@@ -394,9 +394,12 @@ func (c *httpClient) buildRequestBody(req ChatRequest, forceToolChoice, dropTemp
 	}
 
 	apiReq := apiRequest{
-		Model:       req.Model,
-		Messages:    req.Messages,
-		Temperature: req.Temperature,
+		Model:    req.Model,
+		Messages: req.Messages,
+	}
+	if !dropTemperature {
+		t := req.Temperature
+		apiReq.Temperature = &t
 	}
 	if useMaxCompletionTokens {
 		apiReq.MaxCompletionTokens = req.MaxTokens
@@ -436,7 +439,7 @@ func (c *httpClient) buildRequestBody(req ChatRequest, forceToolChoice, dropTemp
 		}
 	}
 
-	return marshalWithModelParams(apiReq, req.ModelParams)
+	return marshalWithModelParams(apiReq, requestParamsWithout(req.ModelParams, dropTemperature, "temperature"))
 }
 
 // extractInnerSchema extracts the inner "schema" object from the response_format
@@ -773,7 +776,7 @@ func (c *httpClient) buildAnthropicRequestBody(req ChatRequest, forceToolChoice,
 		}
 	}
 
-	return marshalWithModelParams(apiReq, req.ModelParams)
+	return marshalWithModelParams(apiReq, requestParamsWithout(req.ModelParams, dropTemperature, "temperature"))
 }
 
 func marshalWithModelParams(base any, modelParams map[string]any) ([]byte, error) {
@@ -791,6 +794,32 @@ func marshalWithModelParams(base any, modelParams map[string]any) ([]byte, error
 	}
 	mergeRequestParams(payload, modelParams)
 	return json.Marshal(payload)
+}
+
+func requestParamsWithout(modelParams map[string]any, drop bool, keys ...string) map[string]any {
+	if !drop || len(modelParams) == 0 || len(keys) == 0 {
+		return modelParams
+	}
+
+	dropKeys := make(map[string]bool, len(keys))
+	needsCopy := false
+	for _, key := range keys {
+		dropKeys[key] = true
+		if _, ok := modelParams[key]; ok {
+			needsCopy = true
+		}
+	}
+	if !needsCopy {
+		return modelParams
+	}
+
+	out := make(map[string]any, len(modelParams))
+	for key, value := range modelParams {
+		if !dropKeys[key] {
+			out[key] = value
+		}
+	}
+	return out
 }
 
 // atomicRequestKeys are request-body keys whose value the user's model-params
@@ -1050,6 +1079,8 @@ func isTemperatureIncompatibleError(body string) bool {
 	}
 	return strings.Contains(lower, "may only be set") ||
 		strings.Contains(lower, "must be") ||
+		strings.Contains(lower, "unsupported value") ||
+		strings.Contains(lower, "does not support") ||
 		strings.Contains(lower, "not supported") ||
 		strings.Contains(lower, "deprecated")
 }
