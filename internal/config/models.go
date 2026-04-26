@@ -90,6 +90,18 @@ var defaultModels = []ModelConfig{
 		SupportsStructuredOutput: true,
 	},
 	{
+		Name:                     "gpt-5.5",
+		Provider:                 "openai",
+		Endpoint:                 "gpt-5.5/invocations",
+		InputPricePerM:           5.00,
+		OutputPricePerM:          30.0,
+		ContextLimit:             1000000,
+		MaxOutputTokens:          128000,
+		Temperature:              0.0,
+		Encoding:                 "o200k_base",
+		SupportsStructuredOutput: true,
+	},
+	{
 		Name:                     "gpt-5.4-mini",
 		Provider:                 "openai",
 		Endpoint:                 "gpt-5.4-mini/invocations",

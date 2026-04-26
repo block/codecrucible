@@ -426,6 +426,7 @@ settings).
 | claude-opus-4-7 | anthropic | 1M | 128K | tool_use |
 | gpt-5.2 | openai | 400K | 16K | response_format JSON Schema |
 | gpt-5.4 | openai | 1M | 128K | response_format JSON Schema |
+| gpt-5.5 | openai | 1M | 128K | response_format JSON Schema |
 | gpt-5.4-mini | openai | 400K | 128K | response_format JSON Schema |
 | gpt-5.4-nano | openai | 400K | 128K | response_format JSON Schema |
 | gemini-3-pro | google | 1M | 64K | response_format JSON Schema |

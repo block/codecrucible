@@ -14,6 +14,7 @@ func TestDefaultModelRegistry_ContainsExpectedModels(t *testing.T) {
 		{"claude-opus-4-7", 1000000},
 		{"gpt-5.2", 400000},
 		{"gpt-5.4", 1000000},
+		{"gpt-5.5", 1000000},
 		{"gpt-5.4-mini", 400000},
 		{"gpt-5.4-nano", 400000},
 		{"gemini-3-pro", 1048576},
@@ -54,6 +55,7 @@ func TestLookupModel_ExactName(t *testing.T) {
 		{"claude-sonnet-4-6", "claude-sonnet-4-6", "claude-sonnet-4-6/invocations", true},
 		{"claude-opus-4-6", "claude-opus-4-6", "claude-opus-4-6/invocations", true},
 		{"gpt-5.2", "gpt-5.2", "gpt-5.2/invocations", true},
+		{"gpt-5.5", "gpt-5.5", "gpt-5.5/invocations", true},
 		{"gemini-3-pro", "gemini-3-pro", "gemini-3-pro/invocations", true},
 		{"nonexistent-model", "", "", false},
 	}
@@ -85,6 +87,7 @@ func TestLookupModel_CaseInsensitive(t *testing.T) {
 		{"Claude-Sonnet-4-6", "claude-sonnet-4-6"},
 		{"CLAUDE-SONNET-4-6", "claude-sonnet-4-6"},
 		{"GPT-5.2", "gpt-5.2"},
+		{"GPT-5.5", "gpt-5.5"},
 		{"Gemini-3-Pro", "gemini-3-pro"},
 	}
 
@@ -111,8 +114,8 @@ func TestLookupModel_PartialMatch(t *testing.T) {
 		// names are the same length; claude-opus-4-6 comes first in the registry.
 		{"opus", "claude-opus-4-6"},
 		// Multiple gpt entries: longest-match picks gpt-5.4-mini (first of the
-		// 12-char entries in declaration order). Exact queries (gpt-5.2, gpt-5.4)
-		// still hit the exact-match fast path.
+		// 12-char entries in declaration order). Exact GPT queries still hit
+		// the exact-match fast path.
 		{"gpt", "gpt-5.4-mini"},
 		// Two gemini entries: longest-match picks flash (14 chars vs 12).
 		// Exact queries (gemini-3-pro) still hit the exact-match fast path.
@@ -141,6 +144,7 @@ func TestLookupModelByEndpoint(t *testing.T) {
 		{"claude-sonnet-4-6/invocations", "claude-sonnet-4-6", true},
 		{"claude-opus-4-6/invocations", "claude-opus-4-6", true},
 		{"gpt-5.2/invocations", "gpt-5.2", true},
+		{"gpt-5.5/invocations", "gpt-5.5", true},
 		{"gemini-3-pro/invocations", "gemini-3-pro", true},
 		{"nonexistent/invocations", "", false},
 	}
@@ -158,6 +162,35 @@ func TestLookupModelByEndpoint(t *testing.T) {
 				t.Errorf("Name: got %q, want %q", m.Name, tt.wantName)
 			}
 		})
+	}
+}
+
+func TestLookupModel_GPT55Capabilities(t *testing.T) {
+	m, found := LookupModel("gpt-5.5")
+	if !found {
+		t.Fatal("gpt-5.5 not found")
+	}
+
+	if m.Provider != "openai" {
+		t.Errorf("Provider: got %q, want openai", m.Provider)
+	}
+	if m.InputPricePerM != 5.0 {
+		t.Errorf("InputPricePerM: got %f, want 5.0", m.InputPricePerM)
+	}
+	if m.OutputPricePerM != 30.0 {
+		t.Errorf("OutputPricePerM: got %f, want 30.0", m.OutputPricePerM)
+	}
+	if m.ContextLimit != 1000000 {
+		t.Errorf("ContextLimit: got %d, want 1000000", m.ContextLimit)
+	}
+	if m.MaxOutputTokens != 128000 {
+		t.Errorf("MaxOutputTokens: got %d, want 128000", m.MaxOutputTokens)
+	}
+	if m.Encoding != "o200k_base" {
+		t.Errorf("Encoding: got %q, want o200k_base", m.Encoding)
+	}
+	if !m.SupportsStructuredOutput {
+		t.Error("SupportsStructuredOutput: got false, want true")
 	}
 }
 
@@ -345,6 +378,7 @@ func TestDefaultModelRegistry_FieldValues(t *testing.T) {
 		{"claude-sonnet-4-6", 16384, "claude", true},
 		{"claude-opus-4-6", 32768, "claude", true},
 		{"gpt-5.2", 16384, "o200k_base", true},
+		{"gpt-5.5", 128000, "o200k_base", true},
 		{"gemini-3-pro", 65536, "cl100k_base", true},
 		{"gemini-3-flash", 65536, "cl100k_base", true},
 	}
