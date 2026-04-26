@@ -67,6 +67,12 @@ export GOOGLE_API_KEY=your-google-key
 ./codecrucible scan /path/to/repo --paths src/ --paths lib/
 ```
 
+When `--output results.sarif` writes to a file, CodeCrucible also writes
+phase artifacts beside it: `results.feature-detection.json`,
+`results.analysis.sarif`, and `results.audit.sarif` (when audit runs). Use
+`--phase-output-dir DIR` to choose an explicit artifact directory, including
+for stdout workflows.
+
 ## Installation
 
 ### From Source
@@ -157,6 +163,7 @@ Per-phase flags follow the pattern `--{phase}-{flag}` (e.g. `--audit-model`, `--
   --max-file-size int                  exclude files larger than this (default 102400)
   --max-output-tokens int              override model max output tokens (0 = model default)
   -o, --output string                  write SARIF to file (default: stdout)
+  --phase-output-dir string            write per-phase artifacts to this directory
   --paths strings                      paths within the repo to analyze
   --prompts-dir string                 prompt set directory (default: prompts/default)
   --request-timeout int                HTTP timeout in seconds (0 = default 600s)
@@ -548,6 +555,7 @@ Repository on disk
 └────────────────┬────────────────┘
                  ▼
           SARIF v2.1.0 output
+          + phase artifacts
 ```
 
 Each phase builds its own `llm.Client` from its `PhaseConfig` — there is no

@@ -28,6 +28,7 @@ type Config struct {
 	FeatureDetectionModel string         `mapstructure:"feature-detection-model"`
 	Concurrency           int            `mapstructure:"concurrency"`
 	Output                string         `mapstructure:"output"`
+	PhaseOutputDir        string         `mapstructure:"phase-output-dir"`
 	PromptsDir            string         `mapstructure:"prompts-dir"`
 	Include               []string       `mapstructure:"include"`
 	Exclude               []string       `mapstructure:"exclude"`
@@ -143,6 +144,7 @@ func SetDefaults(v *viper.Viper) {
 	v.SetDefault("feature-detection-model", "")
 	v.SetDefault("concurrency", 3)
 	v.SetDefault("output", "")
+	v.SetDefault("phase-output-dir", "")
 	v.SetDefault("prompts-dir", "")
 	v.SetDefault("custom-headers", []string{})
 	v.SetDefault("model-params", map[string]any{})

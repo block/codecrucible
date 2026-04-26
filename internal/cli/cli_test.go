@@ -66,6 +66,7 @@ func TestScanCommand_Help(t *testing.T) {
 		"--custom-requirements",
 		"--custom-headers",
 		"--output",
+		"--phase-output-dir",
 		"--prompts-dir",
 		"--include",
 		"--exclude",

@@ -91,6 +91,7 @@ pipeline and produces SARIF output suitable for GitHub Code Scanning integration
 
 	// Output
 	cmd.Flags().StringP("output", "o", "", "write output to file (default: stdout)")
+	cmd.Flags().String("phase-output-dir", "", "write per-phase artifacts to this directory (default: sidecars next to --output)")
 
 	// Bind scan flags to viper
 	cmd.PreRun = func(cmd *cobra.Command, args []string) {
@@ -144,7 +145,7 @@ func bindScanFlags(cmd *cobra.Command) {
 	flags := []string{
 		"paths", "fail-on-severity", "max-cost", "dry-run",
 		"include-tests", "include-docs", "compress", "custom-requirements",
-		"output", "prompts-dir", "include", "exclude", "custom-headers",
+		"output", "phase-output-dir", "prompts-dir", "include", "exclude", "custom-headers",
 		"skip-feature-detection", "concurrency", "max-file-size",
 		"context-limit", "max-output-tokens", "request-timeout",
 		"skip-audit", "audit-confidence-threshold", "audit-batch-size",
@@ -337,6 +338,14 @@ func runScan(cmd *cobra.Command, args []string) error {
 	schema := llm.SecurityAnalysisSchema()
 	outputMode := llm.OutputModeForModel(modelCfg.Name)
 	repoName := filepath.Base(repoRoot)
+	artifacts := newPhaseArtifactWriter(cfg)
+	if artifacts.Enabled() {
+		slog.Info("phase artifacts enabled",
+			"feature_detection", artifacts.Path("feature-detection"),
+			"analysis", artifacts.Path("analysis"),
+			"audit", artifacts.Path("audit"),
+		)
+	}
 
 	// --- Stage 5.25: Load & pack supplementary context ---
 	analysisCtx, auditCtx, err := loadSupplementaryContext(cmd.Context(), cfg, counter, promptLoader, modelCfg.ContextLimit)
@@ -393,8 +402,30 @@ func runScan(cmd *cobra.Command, args []string) error {
 		var fdCorrection float64
 		detectedFeatures, fdCorrection, err = runFeatureDetection(cmd.Context(), filtered, repoName, fdClient, fdEndpoint, fd.ModelCfg, promptLoader, fdOutputMode, fd.ModelParams, counter)
 		if err != nil {
+			if wErr := artifacts.WriteFeatureDetection(featureDetectionArtifact{
+				Phase:    "feature-detection",
+				Status:   "failed",
+				Repo:     repoName,
+				Provider: fd.Provider,
+				Model:    fd.ModelCfg.Name,
+				Error:    err.Error(),
+				Fallback: "all_sections",
+			}); wErr != nil {
+				return fmt.Errorf("writing feature-detection artifact: %w", wErr)
+			}
 			slog.Warn("feature detection failed, using all sections", "error", err)
 		} else {
+			if wErr := artifacts.WriteFeatureDetection(featureDetectionArtifact{
+				Phase:            "feature-detection",
+				Status:           "completed",
+				Repo:             repoName,
+				Provider:         fd.Provider,
+				Model:            fd.ModelCfg.Name,
+				DetectedFeatures: detectedFeatures,
+				TokenCorrection:  fdCorrection,
+			}); wErr != nil {
+				return fmt.Errorf("writing feature-detection artifact: %w", wErr)
+			}
 			slog.Info("feature detection complete", "features", detectedFeatures)
 		}
 		// Calibration is only valid when feature detection hit the same model
@@ -403,8 +434,24 @@ func runScan(cmd *cobra.Command, args []string) error {
 			tokenCorrection = fdCorrection
 		}
 	} else if cfg.SkipFeatureDetection {
+		if wErr := artifacts.WriteFeatureDetection(featureDetectionArtifact{
+			Phase:  "feature-detection",
+			Status: "skipped",
+			Repo:   repoName,
+			Reason: "--skip-feature-detection",
+		}); wErr != nil {
+			return fmt.Errorf("writing feature-detection artifact: %w", wErr)
+		}
 		slog.Info("feature detection skipped (--skip-feature-detection)")
 	} else {
+		if wErr := artifacts.WriteFeatureDetection(featureDetectionArtifact{
+			Phase:  "feature-detection",
+			Status: "skipped",
+			Repo:   repoName,
+			Reason: "repo fits in single chunk",
+		}); wErr != nil {
+			return fmt.Errorf("writing feature-detection artifact: %w", wErr)
+		}
 		slog.Info("feature detection skipped (repo fits in single chunk)")
 	}
 
@@ -631,6 +678,9 @@ func runScan(cmd *cobra.Command, args []string) error {
 		"completion_tokens", totalUsage.CompletionTokens,
 		"total_cost", fmt.Sprintf("$%.4f", totalCost),
 	)
+	if err := artifacts.WriteSARIF("analysis", merged); err != nil {
+		return fmt.Errorf("writing analysis artifact: %w", err)
+	}
 
 	// --- Stage 6.75: Audit phase (CWE-specific scrutiny) ---
 	if !cfg.SkipAudit && len(merged.Runs[0].Results) > 0 {
@@ -658,6 +708,9 @@ func runScan(cmd *cobra.Command, args []string) error {
 			totalUsage.PromptTokens += auditUsage.PromptTokens
 			totalUsage.CompletionTokens += auditUsage.CompletionTokens
 			totalCost += auditCost
+			if err := artifacts.WriteSARIF("audit", merged); err != nil {
+				return fmt.Errorf("writing audit artifact: %w", err)
+			}
 		}
 	} else if cfg.SkipAudit {
 		slog.Info("audit phase skipped (--skip-audit)")

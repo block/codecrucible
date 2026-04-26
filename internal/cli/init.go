@@ -150,5 +150,6 @@ audit-confidence-threshold: 0.3   # reject findings below this (0.0-1.0)
 # --- Output --------------------------------------------------------------
 
 # output: results.sarif
+# phase-output-dir: ./codecrucible-artifacts  # optional; default is sidecars next to output
 # prompts-dir: ./prompts/default   # prompt set directory (see prompts/ for available sets)
 `

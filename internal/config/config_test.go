@@ -38,6 +38,9 @@ func TestSetDefaults(t *testing.T) {
 	if got := v.GetString("model-params-json"); got != "" {
 		t.Errorf("default for %q: got %q, want empty", "model-params-json", got)
 	}
+	if got := v.GetString("phase-output-dir"); got != "" {
+		t.Errorf("default for %q: got %q, want empty", "phase-output-dir", got)
+	}
 }
 
 func TestLoad_FromDefaults(t *testing.T) {
