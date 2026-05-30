@@ -54,9 +54,47 @@ var defaultModels = []ModelConfig{
 		SupportsStructuredOutput: true,
 	},
 	{
+		// Claude Opus 4.7 (GA Apr 16 2026). Same pricing as Opus 4.6
+		// ($5/$25 per M in/out). 1M context, 128K max output.
+		// NOTE: Opus 4.7 ships an updated tokenizer — identical input
+		// can map to ~1.0–1.35× more tokens than 4.6 depending on
+		// content. The runtime tokenizer-calibration step corrects
+		// estimated chunk sizes after the first response.
 		Name:                     "claude-opus-4-7",
 		Provider:                 "anthropic",
 		Endpoint:                 "claude-opus-4-7/invocations",
+		InputPricePerM:           5.0,
+		OutputPricePerM:          25.0,
+		ContextLimit:             1000000,
+		MaxOutputTokens:          128000,
+		Temperature:              0.0,
+		Encoding:                 "claude",
+		SupportsStructuredOutput: true,
+	},
+	{
+		// Block-internal Databricks serving endpoint that fronts
+		// Claude Opus 4.6 (anthropic/claude-opus-4-6). Specs mirror
+		// claude-opus-4-6; provider is databricks so the URL builder
+		// targets the workspace's serving-endpoints path.
+		Name:                     "goose-claude-4-6-opus",
+		Provider:                 "databricks",
+		Endpoint:                 "goose-claude-4-6-opus/invocations",
+		InputPricePerM:           5.0,
+		OutputPricePerM:          25.0,
+		ContextLimit:             200000,
+		MaxOutputTokens:          32768,
+		Temperature:              0.0,
+		Encoding:                 "claude",
+		SupportsStructuredOutput: true,
+	},
+	{
+		// Block-internal Databricks serving endpoint that fronts
+		// Claude Opus 4.7. Specs mirror claude-opus-4-7; provider is
+		// databricks so the URL builder targets the workspace's
+		// serving-endpoints path.
+		Name:                     "goose-claude-4-7-opus",
+		Provider:                 "databricks",
+		Endpoint:                 "goose-claude-4-7-opus/invocations",
 		InputPricePerM:           5.0,
 		OutputPricePerM:          25.0,
 		ContextLimit:             1000000,

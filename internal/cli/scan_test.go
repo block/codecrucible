@@ -750,7 +750,10 @@ func TestApplyAuditVerdicts_RejectsAndConfirms(t *testing.T) {
 	}
 	audit := AuditResult{
 		AuditedFindings: []AuditedFinding{
-			{FilePath: "src/a.go", StartLine: 10, Verdict: "rejected", Confidence: 0.9},
+			// Rejection with a quoted blocking line — a substantiated
+			// rejection that should drop the finding.
+			{FilePath: "src/a.go", StartLine: 10, Verdict: "rejected", Confidence: 0.9,
+				BlockingCode: "src/a.go:42: if !cap_capable(...) return -EPERM;"},
 			{FilePath: "src/b.go", StartLine: 20, Verdict: "confirmed", Confidence: 0.95},
 		},
 	}
@@ -769,6 +772,75 @@ func TestApplyAuditVerdicts_RejectsAndConfirms(t *testing.T) {
 	}
 	if out.Runs[0].Tool.Driver.Rules[0].ID != "R2" {
 		t.Errorf("kept rule ID = %q, want %q", out.Runs[0].Tool.Driver.Rules[0].ID, "R2")
+	}
+}
+
+// Rejection without blocking_code is unsubstantiated and must be retained
+// as `unverified` instead of being silently dropped — guards against the
+// audit phase nuking real multi-file invariant findings just because it
+// couldn't re-prove the whole chain in one pass.
+func TestApplyAuditVerdicts_RejectedWithoutBlockingCode_CoercedToUnverified(t *testing.T) {
+	doc := sarif.SARIFDocument{
+		Runs: []sarif.SARIFRun{{
+			Tool: sarif.SARIFTool{Driver: sarif.SARIFDriver{
+				Rules: []sarif.SARIFRule{{ID: "R1", Properties: map[string]any{}}},
+			}},
+			Results: []sarif.SARIFResult{
+				mkSARIFResult("R1", "src/a.go", 10, "original finding"),
+			},
+		}},
+	}
+	audit := AuditResult{
+		AuditedFindings: []AuditedFinding{
+			// Verdict=rejected with no blocking_code — should be coerced
+			// to unverified and retained.
+			{FilePath: "src/a.go", StartLine: 10, Verdict: "rejected", Confidence: 0.1,
+				Justification: "I don't see how this is reachable"},
+		},
+	}
+
+	out := applyAuditVerdicts(doc, audit, ingest.FileMap{}, 0.3)
+
+	if len(out.Runs[0].Results) != 1 {
+		t.Fatalf("expected 1 retained (unverified) result, got %d", len(out.Runs[0].Results))
+	}
+	msg := out.Runs[0].Results[0].Message.Text
+	if !strings.Contains(msg, "UNVERIFIED") {
+		t.Errorf("retained message %q missing UNVERIFIED marker", msg)
+	}
+}
+
+// Explicit `unverified` verdicts are retained and confidence is floored
+// at the threshold so a low score doesn't immediately re-drop them.
+func TestApplyAuditVerdicts_UnverifiedRetainedAboveThreshold(t *testing.T) {
+	doc := sarif.SARIFDocument{
+		Runs: []sarif.SARIFRun{{
+			Tool: sarif.SARIFTool{Driver: sarif.SARIFDriver{
+				Rules: []sarif.SARIFRule{{ID: "R1", Properties: map[string]any{}}},
+			}},
+			Results: []sarif.SARIFResult{
+				mkSARIFResult("R1", "src/a.go", 10, "splice → sink chain"),
+			},
+		}},
+	}
+	audit := AuditResult{
+		AuditedFindings: []AuditedFinding{
+			{FilePath: "src/a.go", StartLine: 10, Verdict: "unverified", Confidence: 0.05,
+				Justification: "downstream sink not in this batch"},
+		},
+	}
+
+	out := applyAuditVerdicts(doc, audit, ingest.FileMap{}, 0.3)
+
+	if len(out.Runs[0].Results) != 1 {
+		t.Fatalf("expected 1 retained unverified result, got %d", len(out.Runs[0].Results))
+	}
+	msg := out.Runs[0].Results[0].Message.Text
+	if !strings.Contains(msg, "UNVERIFIED") {
+		t.Errorf("retained message %q missing UNVERIFIED marker", msg)
+	}
+	if !strings.Contains(msg, "30%") {
+		t.Errorf("retained message %q should show floored 30%% confidence, got: %s", msg, msg)
 	}
 }
 
