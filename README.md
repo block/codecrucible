@@ -175,6 +175,13 @@ Global Flags:
   --verbose         enable debug logging
 ```
 
+## Agent Skill
+
+An agent-facing skill for running and interpreting CodeCrucible scans lives at
+[`.agents/skills/codecrucible/SKILL.md`](.agents/skills/codecrucible/SKILL.md).
+It covers scan planning, model and prompt selection, cost checks, and SARIF
+interpretation.
+
 ## Prompt Sets
 
 The `prompts/` directory contains multiple prompt sets, each a complete set of YAML templates that control how the LLM analyzes code. The default set is `prompts/default/`.
@@ -203,7 +210,7 @@ Available sets:
 | `exploit-proof-web-python` | Python web apps (Django, Flask, FastAPI, Starlette, Tornado, aiohttp) |
 | `nano-analyzer` | Terse attacker-first voice adapted from weareaisle/nano-analyzer |
 
-See [SKILLS.md](SKILLS.md) for a fuller walkthrough of when to reach for each set.
+See [PROMPT_SETS.md](PROMPT_SETS.md) for a fuller walkthrough of when to reach for each set.
 
 Each prompt set directory must contain: `security_analysis_base.yaml`, `analysis_sections.yaml`, `feature_detection.yaml`, `audit.yaml`, `cwe_deep_analysis.yaml`, and optionally `context_compress.yaml`.
 
