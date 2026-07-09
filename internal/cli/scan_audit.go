@@ -201,27 +201,29 @@ func runAuditPhase(
 			"cwe_categories", len(cweIDs),
 			"files_in_context", len(filesNeeded),
 			"estimated_tokens", estTokens,
-			"estimated_input_cost", fmt.Sprintf("$%.4f", float64(estTokens)*modelCfg.InputPricePerM/1_000_000),
+			"estimated_input_cost", fmt.Sprintf("$%.4f", modelCfg.EstimateInputCost(estTokens)),
 		)
 
 		resp, err := client.ChatCompletion(ctx, llm.ChatRequest{
-			Label:          label,
-			Endpoint:       endpoint,
-			Model:          modelCfg.Name,
-			Messages:       messages,
-			Temperature:    modelCfg.Temperature,
-			MaxTokens:      modelCfg.MaxOutputTokens,
-			ResponseSchema: auditSchema,
-			OutputMode:     outputMode,
-			ModelParams:    modelParams,
+			Label:                  label,
+			Endpoint:               endpoint,
+			Model:                  modelCfg.Name,
+			Messages:               messages,
+			Temperature:            modelCfg.Temperature,
+			OmitTemperature:        modelCfg.OmitTemperature,
+			MaxTokens:              modelCfg.MaxOutputTokens,
+			UseMaxCompletionTokens: modelCfg.UseMaxCompletionTokens,
+			ResponseSchema:         auditSchema,
+			OutputMode:             outputMode,
+			NativeStructuredOutput: modelCfg.NativeStructuredOutput,
+			ModelParams:            modelParams,
 		})
 		if err != nil {
 			return AuditResult{}, llm.TokenUsage{}, 0, fmt.Errorf("LLM call: %w", err)
 		}
 
 		u := resp.Usage
-		c := float64(u.PromptTokens)*modelCfg.InputPricePerM/1_000_000 +
-			float64(u.CompletionTokens)*modelCfg.OutputPricePerM/1_000_000
+		c := modelCfg.EstimateCost(u.PromptTokens, u.CompletionTokens)
 		slog.Info("audit batch complete",
 			"label", label,
 			"prompt_tokens", u.PromptTokens,

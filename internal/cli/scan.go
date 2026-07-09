@@ -273,12 +273,12 @@ func runScan(cmd *cobra.Command, args []string) error {
 	}
 
 	// Estimate cost.
-	analysisCost := float64(totalTokens) * modelCfg.InputPricePerM / 1_000_000
+	analysisCost := modelCfg.EstimateInputCost(totalTokens)
 
 	// Estimate audit phase cost (assumes all repo tokens as context in the worst case).
 	var auditCostEstimate float64
 	if !cfg.SkipAudit {
-		auditCostEstimate = float64(totalTokens) * cfg.Phases.Audit.ModelCfg.InputPricePerM / 1_000_000
+		auditCostEstimate = cfg.Phases.Audit.ModelCfg.EstimateInputCost(totalTokens)
 	}
 
 	estimatedCost := analysisCost + auditCostEstimate

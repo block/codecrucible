@@ -21,6 +21,11 @@ func createTestRepo(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 
+	// Keep tests hermetic when the developer has a ~/.codecrucible.yaml.
+	if err := os.WriteFile(filepath.Join(dir, ".codecrucible.yaml"), []byte("# test config\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
 	// Create a source file.
 	srcDir := filepath.Join(dir, "src")
 	if err := os.MkdirAll(srcDir, 0755); err != nil {
@@ -179,7 +184,7 @@ func TestBuildLLMClient_AnthropicFallsBackToClaudeCLI(t *testing.T) {
 
 	client, endpoint, err := buildPhaseClient(config.PhaseConfig{
 		Provider: "anthropic",
-		ModelCfg: config.ModelConfig{Name: "claude-sonnet-4-6"},
+		ModelCfg: config.ModelConfig{Name: "claude-sonnet-5"},
 		// APIKey deliberately empty — exercises the CLI fallback path.
 	}, &config.Config{})
 	if err != nil {
@@ -222,18 +227,18 @@ func TestScanCommand_MaxCostAbort(t *testing.T) {
 
 func TestResolveModel_Default(t *testing.T) {
 	m := resolveModel("")
-	if m.Name != "claude-sonnet-4-6" {
-		t.Errorf("expected default model claude-sonnet-4-6, got %s", m.Name)
+	if m.Name != "claude-sonnet-5" {
+		t.Errorf("expected default model claude-sonnet-5, got %s", m.Name)
 	}
 }
 
 func TestResolveModel_Known(t *testing.T) {
-	m := resolveModel("gpt-5.2")
-	if m.Name != "gpt-5.2" {
-		t.Errorf("expected gpt-5.2, got %s", m.Name)
+	m := resolveModel("gpt-5.5")
+	if m.Name != "gpt-5.5" {
+		t.Errorf("expected gpt-5.5, got %s", m.Name)
 	}
-	if m.ContextLimit != 400000 {
-		t.Errorf("expected context limit 400000, got %d", m.ContextLimit)
+	if m.ContextLimit != 1050000 {
+		t.Errorf("expected context limit 1050000, got %d", m.ContextLimit)
 	}
 }
 

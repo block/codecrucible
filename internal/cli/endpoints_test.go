@@ -24,9 +24,9 @@ func TestRunListEndpoints_Success(t *testing.T) {
 		_, _ = w.Write([]byte(`{
                         "endpoints": [
                                 {
-                                        "name": "gpt-5.2",
+                                        "name": "gpt-5.5",
                                         "state": {"ready": "READY"},
-                                        "config": {"served_models": [{"model_name": "gpt-5.2"}]}
+                                        "config": {"served_models": [{"model_name": "gpt-5.5"}]}
                                 }
                         ]
                 }`))
@@ -53,7 +53,7 @@ func TestRunListEndpoints_Success(t *testing.T) {
 	}
 
 	output := out.String()
-	for _, want := range []string{"ENDPOINT", "gpt-5.2", "auto-detected"} {
+	for _, want := range []string{"ENDPOINT", "gpt-5.5", "auto-detected"} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("output missing %q:\n%s", want, output)
 		}
@@ -91,20 +91,20 @@ func TestDescribeModel_PrefersExternalModel(t *testing.T) {
 		Config: databricksEndpointCfg{
 			ServedEntities: []databricksServedEntity{
 				{
-					ExternalModel: &databricksExternalModel{Provider: "openai", Name: "gpt-5.2"},
+					ExternalModel: &databricksExternalModel{Provider: "openai", Name: "gpt-5.5"},
 				},
 			},
 		},
 	}
 
 	got := describeModel(endpoint)
-	if got != "openai/gpt-5.2" {
-		t.Fatalf("describeModel() = %q, want %q", got, "openai/gpt-5.2")
+	if got != "openai/gpt-5.5" {
+		t.Fatalf("describeModel() = %q, want %q", got, "openai/gpt-5.5")
 	}
 }
 
 func TestUsageHint(t *testing.T) {
-	if got := usageHint("gpt-5.2"); got != "auto-detected" {
+	if got := usageHint("gpt-5.5"); got != "auto-detected" {
 		t.Fatalf("usageHint() for known model = %q, want %q", got, "auto-detected")
 	}
 	if got := usageHint("custom-endpoint"); got != "DATABRICKS_ENDPOINT=custom-endpoint" {

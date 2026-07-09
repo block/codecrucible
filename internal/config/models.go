@@ -12,16 +12,22 @@ import (
 // defaultModels can also be populated by Viper from a user's config file
 // (Viper uses mapstructure for Unmarshal).
 type ModelConfig struct {
-	Name                     string  `yaml:"name"                       mapstructure:"name"`
-	Provider                 string  `yaml:"provider"                   mapstructure:"provider"` // "databricks", "anthropic", "openai", "google"
-	Endpoint                 string  `yaml:"endpoint"                   mapstructure:"endpoint"`
-	InputPricePerM           float64 `yaml:"input_price_per_million"    mapstructure:"input_price_per_million"`
-	OutputPricePerM          float64 `yaml:"output_price_per_million"   mapstructure:"output_price_per_million"`
-	ContextLimit             int     `yaml:"context_limit"              mapstructure:"context_limit"`
-	MaxOutputTokens          int     `yaml:"max_output_tokens"          mapstructure:"max_output_tokens"`
-	Temperature              float64 `yaml:"temperature"                mapstructure:"temperature"`
-	Encoding                 string  `yaml:"tokenizer_encoding"         mapstructure:"tokenizer_encoding"`
-	SupportsStructuredOutput bool    `yaml:"supports_structured_output" mapstructure:"supports_structured_output"`
+	Name                       string  `yaml:"name"                                  mapstructure:"name"`
+	Provider                   string  `yaml:"provider"                              mapstructure:"provider"` // "databricks", "anthropic", "openai", "google"
+	Endpoint                   string  `yaml:"endpoint"                              mapstructure:"endpoint"`
+	InputPricePerM             float64 `yaml:"input_price_per_million"               mapstructure:"input_price_per_million"`
+	OutputPricePerM            float64 `yaml:"output_price_per_million"              mapstructure:"output_price_per_million"`
+	LongContextThreshold       int     `yaml:"long_context_threshold"                mapstructure:"long_context_threshold"`
+	LongContextInputPricePerM  float64 `yaml:"long_context_input_price_per_million"  mapstructure:"long_context_input_price_per_million"`
+	LongContextOutputPricePerM float64 `yaml:"long_context_output_price_per_million" mapstructure:"long_context_output_price_per_million"`
+	ContextLimit               int     `yaml:"context_limit"                         mapstructure:"context_limit"`
+	MaxOutputTokens            int     `yaml:"max_output_tokens"                     mapstructure:"max_output_tokens"`
+	Temperature                float64 `yaml:"temperature"                           mapstructure:"temperature"`
+	OmitTemperature            bool    `yaml:"omit_temperature"                      mapstructure:"omit_temperature"`
+	UseMaxCompletionTokens     bool    `yaml:"use_max_completion_tokens"             mapstructure:"use_max_completion_tokens"`
+	Encoding                   string  `yaml:"tokenizer_encoding"                    mapstructure:"tokenizer_encoding"`
+	SupportsStructuredOutput   bool    `yaml:"supports_structured_output"            mapstructure:"supports_structured_output"`
+	NativeStructuredOutput     bool    `yaml:"native_structured_output"              mapstructure:"native_structured_output"`
 }
 
 // modelsMu protects defaultModels for concurrent access.
@@ -30,39 +36,25 @@ var modelsMu sync.RWMutex
 // defaultModels is the built-in model registry.
 var defaultModels = []ModelConfig{
 	{
-		Name:                     "claude-sonnet-4-6",
+		// Sonnet 5 enables adaptive thinking by default. Anthropic documents
+		// temperature changes as incompatible with thinking, so omit it.
+		Name:                     "claude-sonnet-5",
 		Provider:                 "anthropic",
-		Endpoint:                 "claude-sonnet-4-6/invocations",
-		InputPricePerM:           3.0,
-		OutputPricePerM:          15.0,
-		ContextLimit:             200000,
-		MaxOutputTokens:          16384,
+		Endpoint:                 "claude-sonnet-5/invocations",
+		InputPricePerM:           2.0,  // Introductory price through 2026-08-31.
+		OutputPricePerM:          10.0, // Introductory price through 2026-08-31.
+		ContextLimit:             1000000,
+		MaxOutputTokens:          128000,
 		Temperature:              0.0,
+		OmitTemperature:          true,
 		Encoding:                 "claude",
 		SupportsStructuredOutput: true,
+		NativeStructuredOutput:   true,
 	},
 	{
-		Name:                     "claude-opus-4-6",
+		Name:                     "claude-opus-4-8",
 		Provider:                 "anthropic",
-		Endpoint:                 "claude-opus-4-6/invocations",
-		InputPricePerM:           5.0,
-		OutputPricePerM:          25.0,
-		ContextLimit:             200000,
-		MaxOutputTokens:          32768,
-		Temperature:              0.0,
-		Encoding:                 "claude",
-		SupportsStructuredOutput: true,
-	},
-	{
-		// Claude Opus 4.7 (GA Apr 16 2026). Same pricing as Opus 4.6
-		// ($5/$25 per M in/out). 1M context, 128K max output.
-		// NOTE: Opus 4.7 ships an updated tokenizer — identical input
-		// can map to ~1.0–1.35× more tokens than 4.6 depending on
-		// content. The runtime tokenizer-calibration step corrects
-		// estimated chunk sizes after the first response.
-		Name:                     "claude-opus-4-7",
-		Provider:                 "anthropic",
-		Endpoint:                 "claude-opus-4-7/invocations",
+		Endpoint:                 "claude-opus-4-8/invocations",
 		InputPricePerM:           5.0,
 		OutputPricePerM:          25.0,
 		ContextLimit:             1000000,
@@ -70,12 +62,40 @@ var defaultModels = []ModelConfig{
 		Temperature:              0.0,
 		Encoding:                 "claude",
 		SupportsStructuredOutput: true,
+		NativeStructuredOutput:   true,
 	},
 	{
-		// Block-internal Databricks serving endpoint that fronts
-		// Claude Opus 4.6 (anthropic/claude-opus-4-6). Specs mirror
-		// claude-opus-4-6; provider is databricks so the URL builder
-		// targets the workspace's serving-endpoints path.
+		// Fable 5 always uses adaptive thinking and cannot disable it.
+		Name:                     "claude-fable-5",
+		Provider:                 "anthropic",
+		Endpoint:                 "claude-fable-5/invocations",
+		InputPricePerM:           10.0,
+		OutputPricePerM:          50.0,
+		ContextLimit:             1000000,
+		MaxOutputTokens:          128000,
+		Temperature:              0.0,
+		OmitTemperature:          true,
+		Encoding:                 "claude",
+		SupportsStructuredOutput: true,
+		NativeStructuredOutput:   true,
+	},
+	{
+		Name:                     "claude-haiku-4-5",
+		Provider:                 "anthropic",
+		Endpoint:                 "claude-haiku-4-5/invocations",
+		InputPricePerM:           1.0,
+		OutputPricePerM:          5.0,
+		ContextLimit:             200000,
+		MaxOutputTokens:          64000,
+		Temperature:              0.0,
+		Encoding:                 "claude",
+		SupportsStructuredOutput: true,
+		NativeStructuredOutput:   true,
+	},
+	{
+		// Block-internal Databricks serving endpoint. Keep workspace serving
+		// aliases explicit: public provider model IDs do not establish which
+		// internal deployment name a workspace exposes.
 		Name:                     "goose-claude-4-6-opus",
 		Provider:                 "databricks",
 		Endpoint:                 "goose-claude-4-6-opus/invocations",
@@ -88,10 +108,9 @@ var defaultModels = []ModelConfig{
 		SupportsStructuredOutput: true,
 	},
 	{
-		// Block-internal Databricks serving endpoint that fronts
-		// Claude Opus 4.7. Specs mirror claude-opus-4-7; provider is
-		// databricks so the URL builder targets the workspace's
-		// serving-endpoints path.
+		// Block-internal Databricks serving endpoint. Keep workspace serving
+		// aliases explicit: public provider model IDs do not establish which
+		// internal deployment name a workspace exposes.
 		Name:                     "goose-claude-4-7-opus",
 		Provider:                 "databricks",
 		Endpoint:                 "goose-claude-4-7-opus/invocations",
@@ -104,40 +123,36 @@ var defaultModels = []ModelConfig{
 		SupportsStructuredOutput: true,
 	},
 	{
-		Name:                     "gpt-5.2",
-		Provider:                 "openai",
-		Endpoint:                 "gpt-5.2/invocations",
-		InputPricePerM:           1.75,
-		OutputPricePerM:          14.0,
-		ContextLimit:             400000,
-		MaxOutputTokens:          16384,
-		Temperature:              0.0,
-		Encoding:                 "o200k_base",
-		SupportsStructuredOutput: true,
+		Name:                       "gpt-5.5",
+		Provider:                   "openai",
+		Endpoint:                   "gpt-5.5/invocations",
+		InputPricePerM:             5.00,
+		OutputPricePerM:            30.0,
+		LongContextThreshold:       272000,
+		LongContextInputPricePerM:  10.0,
+		LongContextOutputPricePerM: 45.0,
+		ContextLimit:               1050000,
+		MaxOutputTokens:            128000,
+		Temperature:                1.0,
+		UseMaxCompletionTokens:     true,
+		Encoding:                   "o200k_base",
+		SupportsStructuredOutput:   true,
 	},
 	{
-		Name:                     "gpt-5.4",
-		Provider:                 "openai",
-		Endpoint:                 "gpt-5.4/invocations",
-		InputPricePerM:           2.50,
-		OutputPricePerM:          15.0,
-		ContextLimit:             1000000,
-		MaxOutputTokens:          128000,
-		Temperature:              0.0,
-		Encoding:                 "o200k_base",
-		SupportsStructuredOutput: true,
-	},
-	{
-		Name:                     "gpt-5.5",
-		Provider:                 "openai",
-		Endpoint:                 "gpt-5.5/invocations",
-		InputPricePerM:           5.00,
-		OutputPricePerM:          30.0,
-		ContextLimit:             1000000,
-		MaxOutputTokens:          128000,
-		Temperature:              1.0,
-		Encoding:                 "o200k_base",
-		SupportsStructuredOutput: true,
+		Name:                       "gpt-5.4",
+		Provider:                   "openai",
+		Endpoint:                   "gpt-5.4/invocations",
+		InputPricePerM:             2.50,
+		OutputPricePerM:            15.0,
+		LongContextThreshold:       272000,
+		LongContextInputPricePerM:  5.0,
+		LongContextOutputPricePerM: 22.5,
+		ContextLimit:               1050000,
+		MaxOutputTokens:            128000,
+		Temperature:                0.0,
+		UseMaxCompletionTokens:     true,
+		Encoding:                   "o200k_base",
+		SupportsStructuredOutput:   true,
 	},
 	{
 		Name:                     "gpt-5.4-mini",
@@ -148,6 +163,7 @@ var defaultModels = []ModelConfig{
 		ContextLimit:             400000,
 		MaxOutputTokens:          128000,
 		Temperature:              0.0,
+		UseMaxCompletionTokens:   true,
 		Encoding:                 "o200k_base",
 		SupportsStructuredOutput: true,
 	},
@@ -160,34 +176,80 @@ var defaultModels = []ModelConfig{
 		ContextLimit:             400000,
 		MaxOutputTokens:          128000,
 		Temperature:              0.0,
+		UseMaxCompletionTokens:   true,
 		Encoding:                 "o200k_base",
 		SupportsStructuredOutput: true,
 	},
 	{
-		Name:            "gemini-3-pro",
-		Provider:        "google",
-		Endpoint:        "gemini-3-pro/invocations",
-		InputPricePerM:  2.0,
-		OutputPricePerM: 12.0,
-		ContextLimit:    1048576,
-		MaxOutputTokens: 65536,
-		Temperature:     0.0,
-		Encoding:        "cl100k_base",
+		Name:                       "gemini-3.1-pro-preview",
+		Provider:                   "google",
+		Endpoint:                   "gemini-3.1-pro-preview/invocations",
+		InputPricePerM:             2.0,
+		OutputPricePerM:            12.0,
+		LongContextThreshold:       200000,
+		LongContextInputPricePerM:  4.0,
+		LongContextOutputPricePerM: 18.0,
+		ContextLimit:               1048576,
+		MaxOutputTokens:            65536,
+		Temperature:                0.0,
+		Encoding:                   "cl100k_base",
 		// Google's OpenAI-compat endpoint accepts response_format json_schema.
 		SupportsStructuredOutput: true,
 	},
 	{
-		Name:                     "gemini-3-flash",
+		Name:                     "gemini-3.5-flash",
 		Provider:                 "google",
-		Endpoint:                 "gemini-3-flash/invocations",
-		InputPricePerM:           0.15,
-		OutputPricePerM:          0.60,
+		Endpoint:                 "gemini-3.5-flash/invocations",
+		InputPricePerM:           1.50,
+		OutputPricePerM:          9.00,
 		ContextLimit:             1048576,
 		MaxOutputTokens:          65536,
 		Temperature:              0.0,
 		Encoding:                 "cl100k_base",
 		SupportsStructuredOutput: true,
 	},
+	{
+		Name:                     "gemini-3.1-flash-lite",
+		Provider:                 "google",
+		Endpoint:                 "gemini-3.1-flash-lite/invocations",
+		InputPricePerM:           0.25,
+		OutputPricePerM:          1.50,
+		ContextLimit:             1048576,
+		MaxOutputTokens:          65536,
+		Temperature:              0.0,
+		Encoding:                 "cl100k_base",
+		SupportsStructuredOutput: true,
+	},
+}
+
+// EstimateInputCost returns the input-token charge for one request. Providers
+// with long-context tiers apply the higher rate to the whole request once the
+// prompt crosses the documented threshold.
+func (m ModelConfig) EstimateInputCost(inputTokens int) float64 {
+	inputPrice, _ := m.pricesForInputTokens(inputTokens)
+	return float64(inputTokens) * inputPrice / 1_000_000
+}
+
+// EstimateCost returns the input and output token charge for one request.
+func (m ModelConfig) EstimateCost(inputTokens, outputTokens int) float64 {
+	inputPrice, outputPrice := m.pricesForInputTokens(inputTokens)
+	return float64(inputTokens)*inputPrice/1_000_000 +
+		float64(outputTokens)*outputPrice/1_000_000
+}
+
+func (m ModelConfig) pricesForInputTokens(inputTokens int) (float64, float64) {
+	if m.LongContextThreshold > 0 && inputTokens > m.LongContextThreshold {
+		inputPrice := m.LongContextInputPricePerM
+		if inputPrice == 0 {
+			inputPrice = m.InputPricePerM
+		}
+		outputPrice := m.LongContextOutputPricePerM
+		if outputPrice == 0 {
+			outputPrice = m.OutputPricePerM
+		}
+		return inputPrice, outputPrice
+	}
+	return m.InputPricePerM, m.OutputPricePerM
 }
 
 // RegisterModel adds or replaces a model in the registry. If a model with the
@@ -278,7 +340,7 @@ func LookupModelByEndpoint(endpoint string) (ModelConfig, bool) {
 	return ModelConfig{}, false
 }
 
-// DefaultModel returns the default model (claude-sonnet-4).
+// DefaultModel returns the default model.
 func DefaultModel() ModelConfig {
 	modelsMu.RLock()
 	defer modelsMu.RUnlock()

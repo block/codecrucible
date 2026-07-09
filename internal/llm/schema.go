@@ -255,8 +255,10 @@ const auditSchemaJSON = `{
 }`
 
 // OutputModeForModel returns the appropriate OutputMode for a model name.
-// OpenAI/GPT models use JSON Schema response_format, Claude uses tool_use,
-// and other models fall back to unstructured output.
+// OpenAI/GPT and Gemini models use JSON Schema response_format. Claude keeps
+// the tool-use mode classification so Databricks and older endpoints still
+// work; current direct Anthropic models override the wire format with
+// ModelConfig.NativeStructuredOutput.
 func OutputModeForModel(modelName string) OutputMode {
 	lower := strings.ToLower(modelName)
 
@@ -265,7 +267,7 @@ func OutputModeForModel(modelName string) OutputMode {
 		return OutputModeJSONSchema
 	}
 
-	// Claude models use tool_use for structured output.
+	// Claude models default to tool_use for structured output.
 	if strings.Contains(lower, "claude") || strings.Contains(lower, "anthropic") {
 		return OutputModeToolUse
 	}

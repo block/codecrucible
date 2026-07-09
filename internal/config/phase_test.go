@@ -6,10 +6,10 @@ import (
 )
 
 func TestResolvePhases_InheritFromLegacy(t *testing.T) {
-	// Nothing per-phase set: all three phases should end up identical,
+	// Nothing per-phase set: all phases should end up identical,
 	// seeded from the legacy flat fields.
 	cfg := &Config{
-		Model:           "claude-opus-4-6",
+		Model:           "claude-opus-4-8",
 		Provider:        "anthropic",
 		AnthropicAPIKey: "sk-ant-legacy",
 		ModelParams:     map[string]any{"temperature": 0.0},
@@ -45,12 +45,12 @@ func TestResolvePhases_PerPhaseOverride(t *testing.T) {
 	// feature-detection stay on the legacy values. This is the headline
 	// use case: audit on a different provider entirely.
 	cfg := &Config{
-		Model:           "claude-opus-4-6",
+		Model:           "claude-opus-4-8",
 		AnthropicAPIKey: "sk-ant-analysis",
 		Phases: Phases{
 			Audit: PhaseConfig{
 				Provider: "google",
-				Model:    "gemini-3-pro",
+				Model:    "gemini-3.1-pro-preview",
 				APIKey:   "goog-audit",
 			},
 		},
@@ -72,8 +72,8 @@ func TestResolvePhases_PerPhaseOverride(t *testing.T) {
 	if cfg.Phases.Audit.APIKey != "goog-audit" {
 		t.Errorf("audit.APIKey = %q, want goog-audit (per-phase, not inherited)", cfg.Phases.Audit.APIKey)
 	}
-	if cfg.Phases.Audit.ModelCfg.Name != "gemini-3-pro" {
-		t.Errorf("audit.ModelCfg.Name = %q, want gemini-3-pro", cfg.Phases.Audit.ModelCfg.Name)
+	if cfg.Phases.Audit.ModelCfg.Name != "gemini-3.1-pro-preview" {
+		t.Errorf("audit.ModelCfg.Name = %q, want gemini-3.1-pro-preview", cfg.Phases.Audit.ModelCfg.Name)
 	}
 	// ContextLimit should come from the gemini registry entry, not
 	// inherited from claude.
@@ -91,16 +91,16 @@ func TestResolvePhases_LegacyAuditModelStillWorks(t *testing.T) {
 	// --audit-model (the legacy flag) should still override the model for
 	// the audit phase without touching provider/key.
 	cfg := &Config{
-		Model:           "claude-opus-4-6",
+		Model:           "claude-opus-4-8",
 		AnthropicAPIKey: "sk-ant",
-		AuditModel:      "claude-sonnet-4-6",
+		AuditModel:      "claude-sonnet-5",
 	}
 	if err := ResolvePhases(cfg); err != nil {
 		t.Fatalf("ResolvePhases: %v", err)
 	}
 
-	if cfg.Phases.Audit.ModelCfg.Name != "claude-sonnet-4-6" {
-		t.Errorf("audit model = %q, want claude-sonnet-4-6", cfg.Phases.Audit.ModelCfg.Name)
+	if cfg.Phases.Audit.ModelCfg.Name != "claude-sonnet-5" {
+		t.Errorf("audit model = %q, want claude-sonnet-5", cfg.Phases.Audit.ModelCfg.Name)
 	}
 	if cfg.Phases.Audit.Provider != "anthropic" {
 		t.Errorf("audit provider = %q, want anthropic (inherited)", cfg.Phases.Audit.Provider)
@@ -115,7 +115,7 @@ func TestResolvePhases_ModelParamsNotAliased(t *testing.T) {
 	// mutate the analysis phase's — the inheritance must have broken
 	// the map alias.
 	cfg := &Config{
-		Model:           "claude-opus-4-6",
+		Model:           "claude-opus-4-8",
 		AnthropicAPIKey: "k",
 		ModelParams:     map[string]any{"max_tokens": 1000},
 	}
@@ -136,12 +136,12 @@ func TestResolvePhases_ModelParamsNotAliased(t *testing.T) {
 func TestResolvePhases_PerPhaseModelParamsReplace(t *testing.T) {
 	// A phase that sets its own model-params gets exactly those params,
 	// not a merge with the inherited ones. The whole point of per-phase
-	// params is being able to DROP an inherited key (e.g. thinking-mode
-	// params that only analysis needs).
+	// params is being able to DROP an inherited key (e.g. analysis-only
+	// effort params).
 	cfg := &Config{
-		Model:           "claude-opus-4-6",
+		Model:           "claude-opus-4-8",
 		AnthropicAPIKey: "k",
-		ModelParams:     map[string]any{"thinking": map[string]any{"type": "enabled"}, "max_tokens": 32000},
+		ModelParams:     map[string]any{"thinking": map[string]any{"type": "adaptive"}, "max_tokens": 32000},
 		Phases: Phases{
 			Audit: PhaseConfig{
 				ModelParams: map[string]any{"max_tokens": 8000},
@@ -165,7 +165,7 @@ func TestResolvePhases_PerPhaseModelParamsReplace(t *testing.T) {
 
 func TestResolvePhases_ModelParamsJSON(t *testing.T) {
 	cfg := &Config{
-		Model:           "claude-opus-4-6",
+		Model:           "claude-opus-4-8",
 		AnthropicAPIKey: "k",
 		Phases: Phases{
 			Audit: PhaseConfig{
@@ -203,7 +203,7 @@ func TestResolvePhases_GoogleAmbientKey(t *testing.T) {
 	// the model is gemini → provider should auto-detect to google and
 	// the key should cascade.
 	cfg := &Config{
-		Model:        "gemini-3-flash",
+		Model:        "gemini-3.5-flash",
 		GoogleAPIKey: "goog-ambient",
 	}
 	if err := ResolvePhases(cfg); err != nil {
@@ -224,10 +224,10 @@ func TestResolvePhases_ContextLimitFix(t *testing.T) {
 	// override. Now the override inherits per-phase unless the phase
 	// sets its own.
 	cfg := &Config{
-		Model:           "claude-opus-4-6",
+		Model:           "claude-opus-4-8",
 		AnthropicAPIKey: "k",
 		ContextLimit:    777777,
-		AuditModel:      "claude-sonnet-4-6", // different model, same override
+		AuditModel:      "claude-sonnet-5", // different model, same override
 	}
 	if err := ResolvePhases(cfg); err != nil {
 		t.Fatalf("ResolvePhases: %v", err)
@@ -246,7 +246,7 @@ func TestResolvePhases_DatabricksProxiesAll(t *testing.T) {
 	// hint — Databricks proxies all models. This is the prior behaviour
 	// of resolveProvider and must be preserved.
 	cfg := &Config{
-		Model:           "claude-opus-4-6", // registry says anthropic
+		Model:           "claude-opus-4-8", // registry says anthropic
 		DatabricksHost:  "https://dbx.example.com",
 		DatabricksToken: "dbx-tok",
 	}
