@@ -923,7 +923,7 @@ func TestChatCompletion_AnthropicNativeStructuredOutput(t *testing.T) {
 		t.Fatalf("failed to parse request body: %v", err)
 	}
 	if _, ok := reqBody["temperature"]; ok {
-		t.Fatalf("request contains temperature despite OmitTemperature: %v", reqBody["temperature"])
+		t.Fatalf("request contains temperature despite Anthropic thinking mode: %v", reqBody["temperature"])
 	}
 	if _, ok := reqBody["tools"]; ok {
 		t.Fatalf("native structured output request should not include tools: %v", reqBody["tools"])
