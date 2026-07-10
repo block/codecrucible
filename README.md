@@ -444,6 +444,8 @@ settings).
 | goose-claude-4-6-opus | databricks | 200K | 32K | tool_use |
 | goose-claude-4-7-opus | databricks | 1M | 128K | tool_use |
 | gpt-5.5 | openai | 1.05M | 128K | response_format JSON Schema |
+| gpt-5.5-cyber-preview | openai | 272K | 128K | response_format JSON Schema |
+| gpt-5.5-cyber | openai | 272K | 128K | response_format JSON Schema |
 | gpt-5.4 | openai | 1.05M | 128K | response_format JSON Schema |
 | gpt-5.4-mini | openai | 400K | 128K | response_format JSON Schema |
 | gpt-5.4-nano | openai | 400K | 128K | response_format JSON Schema |
@@ -454,6 +456,16 @@ settings).
 The registry also carries the documented long-context pricing tiers for
 `gpt-5.5` and `gpt-5.4` prompts above 272K input tokens, and
 `gemini-3.1-pro-preview` prompts above 200K input tokens.
+
+`gpt-5.5-cyber-preview` and `gpt-5.5-cyber` are private/preview aliases with
+no public provider model page yet. Their built-in entries use the currently
+observed 272K context window plus GPT-5.5 request semantics and pricing, and
+emit a warning that those registry parameters and cost estimates are
+provisional. Override the entry under `models:` when your provider exposes
+different limits or billing.
+
+`claude-fable-5` also emits an execution warning because security-policy
+errors during a security scan can invalidate the resulting findings.
 
 The `goose-*` Databricks rows are workspace serving aliases, not public model
 IDs. They stay explicit because a public provider release does not establish
@@ -483,6 +495,7 @@ models:
   # Extend: a model the binary doesn't know about yet.
   - name: gpt-acme-frontier-v1
     provider: openai-compat
+    execution_warning: registry parameters are operator supplied
     input_price_per_million: 3.0
     output_price_per_million: 15.0
     context_limit: 1000000
@@ -518,6 +531,9 @@ replaces it wholesale (case-insensitive), a new name extends the registry.
 Empty `endpoint` defaults to `<name>/invocations` to match the built-in
 convention (Databricks serving path; other providers ignore it). `name` is
 required; other fields follow the same YAML schema as the built-in registry.
+Set `execution_warning` when a model has provisional limits, estimated
+pricing, or operational caveats that should be logged whenever a scan selects
+it.
 
 
 ## Architecture

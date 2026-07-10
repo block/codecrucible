@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -222,6 +223,60 @@ func TestScanCommand_MaxCostAbort(t *testing.T) {
 	err = cmd.Execute()
 	if err != nil {
 		t.Fatalf("Execute failed: %v", err)
+	}
+}
+
+func TestCollectModelExecutionWarnings_DeduplicatesActivePhases(t *testing.T) {
+	provisional := config.ModelConfig{
+		Name:             "gpt-5.5-cyber-preview",
+		ExecutionWarning: "pricing is provisional",
+	}
+	fable := config.ModelConfig{
+		Name:             "claude-fable-5",
+		ExecutionWarning: "security errors may invalidate results",
+	}
+	cfg := &config.Config{
+		SkipAudit: true,
+		ContextSources: []config.ContextSource{{
+			Compress: true,
+		}},
+		Phases: config.Phases{
+			Analysis:         config.PhaseConfig{ModelCfg: provisional},
+			FeatureDetection: config.PhaseConfig{ModelCfg: provisional},
+			Audit:            config.PhaseConfig{ModelCfg: fable},
+			ContextCompress:  config.PhaseConfig{ModelCfg: fable},
+		},
+	}
+
+	got := collectModelExecutionWarnings(cfg)
+	if len(got) != 2 {
+		t.Fatalf("warnings: got %d, want 2", len(got))
+	}
+	if got[0].Model != provisional.Name || !reflect.DeepEqual(got[0].Phases, []string{"analysis", "feature-detection"}) {
+		t.Errorf("first warning: got %+v, want provisional model on analysis and feature-detection", got[0])
+	}
+	if got[1].Model != fable.Name || !reflect.DeepEqual(got[1].Phases, []string{"context-compress"}) {
+		t.Errorf("second warning: got %+v, want fable only on context-compress", got[1])
+	}
+}
+
+func TestLogModelExecutionWarnings_EmitsWarning(t *testing.T) {
+	var buf bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	defer slog.SetDefault(previous)
+
+	logModelExecutionWarnings([]modelExecutionWarning{{
+		Model:   "gpt-5.5-cyber",
+		Phases:  []string{"analysis", "audit"},
+		Message: "pricing is provisional",
+	}})
+
+	output := buf.String()
+	for _, want := range []string{"model configuration warning", "gpt-5.5-cyber", "analysis,audit", "pricing is provisional"} {
+		if !strings.Contains(output, want) {
+			t.Errorf("log output %q does not contain %q", output, want)
+		}
 	}
 }
 

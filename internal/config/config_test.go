@@ -341,6 +341,7 @@ models:
   # Extend: a local Ollama model.
   - name: llama-4-405b
     provider: ollama
+    execution_warning: local model limits are operator supplied
     input_price_per_million: 0.0
     output_price_per_million: 0.0
     context_limit: 131072
@@ -388,6 +389,9 @@ models:
 	}
 	if llama.Provider != "ollama" {
 		t.Errorf("llama Provider: got %q, want ollama", llama.Provider)
+	}
+	if llama.ExecutionWarning != "local model limits are operator supplied" {
+		t.Errorf("llama ExecutionWarning: got %q, want config-file value", llama.ExecutionWarning)
 	}
 
 	// Override round-trip: built-in pricing was replaced.

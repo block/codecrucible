@@ -134,6 +134,7 @@ audit-confidence-threshold: 0.3   # reject findings below this (0.0-1.0)
 # models:
 #   - name: gpt-acme-frontier-v1  # a model the binary doesn't know yet
 #     provider: openai-compat
+#     execution_warning: registry parameters are operator supplied
 #     input_price_per_million: 3.0
 #     output_price_per_million: 15.0
 #     context_limit: 1000000

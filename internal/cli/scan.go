@@ -191,6 +191,65 @@ func bindScanFlags(cmd *cobra.Command) {
 // exitCodeFindings is the exit code when findings exceed --fail-on-severity.
 const exitCodeFindings = 2
 
+type modelExecutionWarning struct {
+	Model   string
+	Phases  []string
+	Message string
+}
+
+func collectModelExecutionWarnings(cfg *config.Config) []modelExecutionWarning {
+	contextCompressEnabled := false
+	for _, source := range cfg.ContextSources {
+		if source.Compress {
+			contextCompressEnabled = true
+			break
+		}
+	}
+
+	phases := []struct {
+		name    string
+		enabled bool
+		cfg     config.PhaseConfig
+	}{
+		{name: "analysis", enabled: true, cfg: cfg.Phases.Analysis},
+		{name: "feature-detection", enabled: !cfg.SkipFeatureDetection, cfg: cfg.Phases.FeatureDetection},
+		{name: "audit", enabled: !cfg.SkipAudit, cfg: cfg.Phases.Audit},
+		{name: "context-compress", enabled: contextCompressEnabled, cfg: cfg.Phases.ContextCompress},
+	}
+
+	var warnings []modelExecutionWarning
+	byKey := make(map[string]int)
+	for _, phase := range phases {
+		if !phase.enabled || strings.TrimSpace(phase.cfg.ModelCfg.ExecutionWarning) == "" {
+			continue
+		}
+
+		key := phase.cfg.ModelCfg.Name + "\x00" + phase.cfg.ModelCfg.ExecutionWarning
+		if idx, ok := byKey[key]; ok {
+			warnings[idx].Phases = append(warnings[idx].Phases, phase.name)
+			continue
+		}
+
+		byKey[key] = len(warnings)
+		warnings = append(warnings, modelExecutionWarning{
+			Model:   phase.cfg.ModelCfg.Name,
+			Phases:  []string{phase.name},
+			Message: phase.cfg.ModelCfg.ExecutionWarning,
+		})
+	}
+
+	return warnings
+}
+
+func logModelExecutionWarnings(warnings []modelExecutionWarning) {
+	for _, warning := range warnings {
+		slog.Warn("model configuration warning",
+			"model", warning.Model,
+			"phases", strings.Join(warning.Phases, ","),
+			"warning", warning.Message)
+	}
+}
+
 func runScan(cmd *cobra.Command, args []string) error {
 	cfg, err := config.Load(v)
 	if err != nil {
@@ -223,6 +282,8 @@ func runScan(cmd *cobra.Command, args []string) error {
 	// math and call sites reading the familiar name.
 	analysis := &cfg.Phases.Analysis
 	modelCfg := analysis.ModelCfg
+	modelWarnings := collectModelExecutionWarnings(cfg)
+	logModelExecutionWarnings(modelWarnings)
 
 	// --- Stage 1: Ingest ---
 	files, err := ingestFiles(repoRoot, cfg)
@@ -309,6 +370,10 @@ func runScan(cmd *cobra.Command, args []string) error {
 			fmt.Printf("  Estimated audit input cost:    $%.4f (model: %s)\n", auditCostEstimate, cfg.Phases.Audit.ModelCfg.Name)
 		}
 		fmt.Printf("  Estimated total input cost:    $%.4f\n", estimatedCost)
+		for _, warning := range modelWarnings {
+			fmt.Printf("  Warning: %s (model: %s; phases: %s)\n",
+				warning.Message, warning.Model, strings.Join(warning.Phases, ", "))
+		}
 		if totalTokens > modelCfg.ContextLimit {
 			chunks := (totalTokens / modelCfg.ContextLimit) + 1
 			fmt.Printf("  Will require ~%d chunks\n", chunks)

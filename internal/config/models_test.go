@@ -19,6 +19,8 @@ func TestDefaultModelRegistry_ContainsExpectedModels(t *testing.T) {
 		{"goose-claude-4-6-opus", 200000},
 		{"goose-claude-4-7-opus", 1000000},
 		{"gpt-5.5", 1050000},
+		{"gpt-5.5-cyber-preview", 272000},
+		{"gpt-5.5-cyber", 272000},
 		{"gpt-5.4", 1050000},
 		{"gpt-5.4-mini", 400000},
 		{"gpt-5.4-nano", 400000},
@@ -61,6 +63,8 @@ func TestLookupModel_ExactName(t *testing.T) {
 		{"claude-sonnet-5", "claude-sonnet-5", "claude-sonnet-5/invocations", true},
 		{"claude-opus-4-8", "claude-opus-4-8", "claude-opus-4-8/invocations", true},
 		{"gpt-5.5", "gpt-5.5", "gpt-5.5/invocations", true},
+		{"gpt-5.5-cyber-preview", "gpt-5.5-cyber-preview", "gpt-5.5-cyber-preview/invocations", true},
+		{"gpt-5.5-cyber", "gpt-5.5-cyber", "gpt-5.5-cyber/invocations", true},
 		{"gemini-3.1-pro-preview", "gemini-3.1-pro-preview", "gemini-3.1-pro-preview/invocations", true},
 		{"nonexistent-model", "", "", false},
 	}
@@ -92,6 +96,7 @@ func TestLookupModel_CaseInsensitive(t *testing.T) {
 		{"Claude-Sonnet-5", "claude-sonnet-5"},
 		{"CLAUDE-SONNET-5", "claude-sonnet-5"},
 		{"GPT-5.5", "gpt-5.5"},
+		{"GPT-5.5-CYBER-PREVIEW", "gpt-5.5-cyber-preview"},
 		{"Gemini-3.1-Pro-Preview", "gemini-3.1-pro-preview"},
 	}
 
@@ -117,10 +122,9 @@ func TestLookupModel_PartialMatch(t *testing.T) {
 		// Use a direct-Claude fragment so workspace-specific goose aliases do
 		// not win the generic longest-match rule.
 		{"claude-opus", "claude-opus-4-8"},
-		// Multiple gpt entries: longest-match picks gpt-5.4-mini (first of the
-		// 12-char entries in declaration order). Exact GPT queries still hit
-		// the exact-match fast path.
-		{"gpt", "gpt-5.4-mini"},
+		// Multiple gpt entries: longest-match picks the cyber preview alias.
+		// Exact GPT queries still hit the exact-match fast path.
+		{"gpt", "gpt-5.5-cyber-preview"},
 		// The preview Pro ID is the longest Gemini entry.
 		{"gemini", "gemini-3.1-pro-preview"},
 	}
@@ -147,6 +151,7 @@ func TestLookupModelByEndpoint(t *testing.T) {
 		{"claude-sonnet-5/invocations", "claude-sonnet-5", true},
 		{"claude-opus-4-8/invocations", "claude-opus-4-8", true},
 		{"gpt-5.5/invocations", "gpt-5.5", true},
+		{"gpt-5.5-cyber-preview/invocations", "gpt-5.5-cyber-preview", true},
 		{"gemini-3.1-pro-preview/invocations", "gemini-3.1-pro-preview", true},
 		{"nonexistent/invocations", "", false},
 	}
@@ -202,6 +207,52 @@ func TestLookupModel_GPT55Capabilities(t *testing.T) {
 	}
 	if m.LongContextThreshold != 272000 {
 		t.Errorf("LongContextThreshold: got %d, want 272000", m.LongContextThreshold)
+	}
+}
+
+func TestLookupModel_GPT55CyberAliasesUseProvisionalConfig(t *testing.T) {
+	base, found := LookupModel("gpt-5.5")
+	if !found {
+		t.Fatal("gpt-5.5 not found")
+	}
+
+	for _, name := range []string{"gpt-5.5-cyber-preview", "gpt-5.5-cyber"} {
+		t.Run(name, func(t *testing.T) {
+			m, found := LookupModel(name)
+			if !found {
+				t.Fatalf("%s not found", name)
+			}
+
+			if m.Provider != "openai" {
+				t.Errorf("Provider: got %q, want openai", m.Provider)
+			}
+			if m.ContextLimit != 272000 {
+				t.Errorf("ContextLimit: got %d, want 272000", m.ContextLimit)
+			}
+			if m.MaxOutputTokens != base.MaxOutputTokens {
+				t.Errorf("MaxOutputTokens: got %d, want GPT-5.5 value %d", m.MaxOutputTokens, base.MaxOutputTokens)
+			}
+			if m.InputPricePerM != base.InputPricePerM || m.OutputPricePerM != base.OutputPricePerM {
+				t.Errorf("pricing: got input=%f output=%f, want GPT-5.5 input=%f output=%f",
+					m.InputPricePerM, m.OutputPricePerM, base.InputPricePerM, base.OutputPricePerM)
+			}
+			if m.ExecutionWarning == "" {
+				t.Error("ExecutionWarning: got empty, want provisional-config warning")
+			}
+			if m.LongContextThreshold != 0 {
+				t.Errorf("LongContextThreshold: got %d, want 0 for a 272K context alias", m.LongContextThreshold)
+			}
+		})
+	}
+}
+
+func TestLookupModel_FableCarriesExecutionWarning(t *testing.T) {
+	m, found := LookupModel("claude-fable-5")
+	if !found {
+		t.Fatal("claude-fable-5 not found")
+	}
+	if m.ExecutionWarning == "" {
+		t.Error("ExecutionWarning: got empty, want security-policy warning")
 	}
 }
 
@@ -392,6 +443,8 @@ func TestDefaultModelRegistry_FieldValues(t *testing.T) {
 		{"claude-fable-5", 128000, "claude", true, 0.0},
 		{"claude-haiku-4-5", 64000, "claude", true, 0.0},
 		{"gpt-5.5", 128000, "o200k_base", true, 1.0},
+		{"gpt-5.5-cyber-preview", 128000, "o200k_base", true, 1.0},
+		{"gpt-5.5-cyber", 128000, "o200k_base", true, 1.0},
 		{"gemini-3.1-pro-preview", 65536, "cl100k_base", true, 0.0},
 		{"gemini-3.5-flash", 65536, "cl100k_base", true, 0.0},
 		{"gemini-3.1-flash-lite", 65536, "cl100k_base", true, 0.0},

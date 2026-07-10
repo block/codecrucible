@@ -15,6 +15,7 @@ type ModelConfig struct {
 	Name                       string  `yaml:"name"                                  mapstructure:"name"`
 	Provider                   string  `yaml:"provider"                              mapstructure:"provider"` // "databricks", "anthropic", "openai", "google"
 	Endpoint                   string  `yaml:"endpoint"                              mapstructure:"endpoint"`
+	ExecutionWarning           string  `yaml:"execution_warning"                     mapstructure:"execution_warning"`
 	InputPricePerM             float64 `yaml:"input_price_per_million"               mapstructure:"input_price_per_million"`
 	OutputPricePerM            float64 `yaml:"output_price_per_million"              mapstructure:"output_price_per_million"`
 	LongContextThreshold       int     `yaml:"long_context_threshold"                mapstructure:"long_context_threshold"`
@@ -69,6 +70,7 @@ var defaultModels = []ModelConfig{
 		Name:                     "claude-fable-5",
 		Provider:                 "anthropic",
 		Endpoint:                 "claude-fable-5/invocations",
+		ExecutionWarning:         "claude-fable-5 may trigger security-policy errors during security analysis and invalidate scan results",
 		InputPricePerM:           10.0,
 		OutputPricePerM:          50.0,
 		ContextLimit:             1000000,
@@ -137,6 +139,40 @@ var defaultModels = []ModelConfig{
 		UseMaxCompletionTokens:     true,
 		Encoding:                   "o200k_base",
 		SupportsStructuredOutput:   true,
+	},
+	{
+		// Private/preview cyber alias. Public provider docs do not publish
+		// limits or pricing for this slug yet, so keep GPT-5.5 request
+		// semantics and base prices while flagging the registry data as
+		// provisional. Its observed 272K window cannot reach GPT-5.5's
+		// long-context tier under the default registry limit.
+		Name:                     "gpt-5.5-cyber-preview",
+		Provider:                 "openai",
+		Endpoint:                 "gpt-5.5-cyber-preview/invocations",
+		ExecutionWarning:         "gpt-5.5-cyber-preview registry parameters and pricing are provisional; cost estimates currently use gpt-5.5 rates",
+		InputPricePerM:           5.00,
+		OutputPricePerM:          30.0,
+		ContextLimit:             272000,
+		MaxOutputTokens:          128000,
+		Temperature:              1.0,
+		UseMaxCompletionTokens:   true,
+		Encoding:                 "o200k_base",
+		SupportsStructuredOutput: true,
+	},
+	{
+		// Private cyber alias with the same provisional treatment as preview.
+		Name:                     "gpt-5.5-cyber",
+		Provider:                 "openai",
+		Endpoint:                 "gpt-5.5-cyber/invocations",
+		ExecutionWarning:         "gpt-5.5-cyber registry parameters and pricing are provisional; cost estimates currently use gpt-5.5 rates",
+		InputPricePerM:           5.00,
+		OutputPricePerM:          30.0,
+		ContextLimit:             272000,
+		MaxOutputTokens:          128000,
+		Temperature:              1.0,
+		UseMaxCompletionTokens:   true,
+		Encoding:                 "o200k_base",
+		SupportsStructuredOutput: true,
 	},
 	{
 		Name:                       "gpt-5.4",
