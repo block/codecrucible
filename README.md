@@ -46,7 +46,7 @@ claude auth status
 
 # Direct OpenAI API scan
 export OPENAI_API_KEY=your-openai-key
-./codecrucible scan /path/to/repo --provider openai --model gpt-5.5
+./codecrucible scan /path/to/repo --provider openai --model gpt-5.6
 
 # Direct Google Gemini scan (OpenAI-compat endpoint)
 export GOOGLE_API_KEY=your-google-key
@@ -443,6 +443,10 @@ settings).
 | claude-haiku-4-5 | anthropic | 200K | 64K | output_config.format JSON Schema |
 | goose-claude-4-6-opus | databricks | 200K | 32K | tool_use |
 | goose-claude-4-7-opus | databricks | 1M | 128K | tool_use |
+| gpt-5.6 | openai | 1.05M | 128K | response_format JSON Schema |
+| gpt-5.6-sol | openai | 1.05M | 128K | response_format JSON Schema |
+| gpt-5.6-terra | openai | 1.05M | 128K | response_format JSON Schema |
+| gpt-5.6-luna | openai | 1.05M | 128K | response_format JSON Schema |
 | gpt-5.5 | openai | 1.05M | 128K | response_format JSON Schema |
 | gpt-5.5-cyber-preview | openai | 272K | 128K | response_format JSON Schema |
 | gpt-5.5-cyber | openai | 272K | 128K | response_format JSON Schema |
@@ -453,9 +457,15 @@ settings).
 | gemini-3.5-flash | google | 1M | 64K | response_format JSON Schema |
 | gemini-3.1-flash-lite | google | 1M | 64K | response_format JSON Schema |
 
-The registry also carries the documented long-context pricing tiers for
-`gpt-5.5` and `gpt-5.4` prompts above 272K input tokens, and
-`gemini-3.1-pro-preview` prompts above 200K input tokens.
+The registry also carries the documented long-context pricing tiers for the
+`gpt-5.6` family, `gpt-5.5`, and `gpt-5.4` prompts above 272K input tokens,
+and `gemini-3.1-pro-preview` prompts above 200K input tokens.
+
+`gpt-5.6` is OpenAI's stable alias for `gpt-5.6-sol`; both entries use Sol
+pricing. The direct `gpt-5.6-terra` and `gpt-5.6-luna` entries expose the
+documented lower-cost tiers. All GPT-5.6 entries emit an execution warning
+because OpenAI documents real-time cyber safeguards that can block or pause
+generation during security work.
 
 `gpt-5.5-cyber-preview` and `gpt-5.5-cyber` are private/preview aliases with
 no public provider model page yet. Their built-in entries use the currently
