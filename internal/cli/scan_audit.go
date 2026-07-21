@@ -58,7 +58,8 @@ type NewFinding struct {
 // runAuditPhase performs a CWE-specific scrutiny pass on the initial findings.
 // It sends the findings + relevant code + CWE prompts to the LLM for validation.
 // Returns the audited SARIF document, token usage, and cost.
-// Returns nil doc (not error) if the audit fails, allowing fallback to unaudited results.
+// Returns nil doc plus an error if every audit batch fails, allowing the caller
+// to write unaudited SARIF while still failing the pipeline.
 func runAuditPhase(
 	ctx context.Context,
 	doc sarif.SARIFDocument,
@@ -75,7 +76,7 @@ func runAuditPhase(
 	batchSize int,
 	productionOnly bool,
 	counter *chunk.TokenCounter,
-) (*sarif.SARIFDocument, llm.TokenUsage, float64) {
+) (*sarif.SARIFDocument, llm.TokenUsage, float64, error) {
 	slog.Info("starting audit phase",
 		"findings_to_audit", len(doc.Runs[0].Results),
 		"batch_size", batchSize,
@@ -251,6 +252,8 @@ func runAuditPhase(
 	var auditResult AuditResult
 	var usage llm.TokenUsage
 	var cost float64
+	var firstBatchErr error
+	failedBatches := 0
 	for i := 0; i < len(findings); i += batchSize {
 		end := i + batchSize
 		if end > len(findings) {
@@ -265,6 +268,10 @@ func runAuditPhase(
 		usage.CompletionTokens += u.CompletionTokens
 		cost += c
 		if err != nil {
+			failedBatches++
+			if firstBatchErr == nil {
+				firstBatchErr = err
+			}
 			slog.Error("audit batch failed; findings in this batch will not be audited",
 				"label", label, "error", err, "findings", end-i)
 			continue
@@ -281,7 +288,13 @@ func runAuditPhase(
 
 	if len(auditResult.AuditedFindings) == 0 && len(auditResult.NewFindings) == 0 {
 		slog.Error("all audit batches failed")
-		return nil, usage, cost
+		return nil, usage, cost, fmt.Errorf("all audit batches failed: %w", firstBatchErr)
+	}
+	if failedBatches > 0 {
+		slog.Warn("some audit batches failed; surviving findings from those batches remain unaudited",
+			"failed_batches", failedBatches,
+			"total_batches", numBatches,
+		)
 	}
 
 	// Apply audit verdicts to produce the final SARIF document.
@@ -293,7 +306,7 @@ func runAuditPhase(
 		"summary", auditResult.AuditSummary,
 	)
 
-	return &auditedDoc, usage, cost
+	return &auditedDoc, usage, cost, nil
 }
 
 // applyAuditVerdicts takes the original SARIF document and the audit results,

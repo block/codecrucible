@@ -191,6 +191,56 @@ func bindScanFlags(cmd *cobra.Command) {
 // exitCodeFindings is the exit code when findings exceed --fail-on-severity.
 const exitCodeFindings = 2
 
+func markInvocationFailed(doc sarif.SARIFDocument, message string) sarif.SARIFDocument {
+	if len(doc.Runs) == 0 {
+		return doc
+	}
+	notification := sarif.SARIFNotification{
+		Level:   "error",
+		Message: sarif.SARIFMessage{Text: message},
+	}
+	run := &doc.Runs[0]
+	if len(run.Invocations) == 0 {
+		run.Invocations = []sarif.SARIFInvocation{{
+			ExecutionSuccessful:        false,
+			ToolExecutionNotifications: []sarif.SARIFNotification{notification},
+		}}
+		return doc
+	}
+	run.Invocations[0].ExecutionSuccessful = false
+	run.Invocations[0].ToolExecutionNotifications = append(run.Invocations[0].ToolExecutionNotifications, notification)
+	return doc
+}
+
+func scanExecutionError(doc sarif.SARIFDocument) error {
+	if len(doc.Runs) == 0 {
+		return nil
+	}
+	var failures []string
+	for _, inv := range doc.Runs[0].Invocations {
+		if inv.ExecutionSuccessful {
+			continue
+		}
+		for _, note := range inv.ToolExecutionNotifications {
+			text := strings.TrimSpace(note.Message.Text)
+			if text != "" {
+				failures = append(failures, text)
+			}
+		}
+		if len(inv.ToolExecutionNotifications) == 0 {
+			failures = append(failures, "scan invocation failed")
+		}
+	}
+	if len(failures) == 0 {
+		return nil
+	}
+	summary := failures[0]
+	if len(failures) > 1 {
+		summary = fmt.Sprintf("%s (+%d more)", summary, len(failures)-1)
+	}
+	return fmt.Errorf("scan completed with execution failures: %s", summary)
+}
+
 type modelExecutionWarning struct {
 	Model   string
 	Phases  []string
@@ -499,6 +549,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 			tokenCorrection = fdCorrection
 		}
 	} else if cfg.SkipFeatureDetection {
+		slog.Info("feature detection skipped (--skip-feature-detection)")
 		if wErr := artifacts.WriteFeatureDetection(featureDetectionArtifact{
 			Phase:  "feature-detection",
 			Status: "skipped",
@@ -507,8 +558,8 @@ func runScan(cmd *cobra.Command, args []string) error {
 		}); wErr != nil {
 			return fmt.Errorf("writing feature-detection artifact: %w", wErr)
 		}
-		slog.Info("feature detection skipped (--skip-feature-detection)")
 	} else {
+		slog.Info("feature detection skipped (repo fits in single chunk)")
 		if wErr := artifacts.WriteFeatureDetection(featureDetectionArtifact{
 			Phase:  "feature-detection",
 			Status: "skipped",
@@ -517,7 +568,6 @@ func runScan(cmd *cobra.Command, args []string) error {
 		}); wErr != nil {
 			return fmt.Errorf("writing feature-detection artifact: %w", wErr)
 		}
-		slog.Info("feature detection skipped (repo fits in single chunk)")
 	}
 
 	// Release SourceFile slice — FileMap retains the content strings via
@@ -762,12 +812,18 @@ func runScan(cmd *cobra.Command, args []string) error {
 		}
 		auditOutputMode := llm.OutputModeForModel(audit.ModelCfg.Name)
 
-		auditedDoc, auditUsage, auditCost := runAuditPhase(
+		auditedDoc, auditUsage, auditCost, auditErr := runAuditPhase(
 			cmd.Context(), merged, repoName,
 			auditClient, auditEndpoint, audit.ModelCfg, promptLoader,
 			auditOutputMode, flatResult.FileMap, cfg.AuditConfidenceThreshold, audit.ModelParams, auditCtx.Rendered,
 			cfg.AuditBatchSize, !cfg.IncludeTests, counter,
 		)
+		if auditErr != nil {
+			merged = markInvocationFailed(merged, "audit phase failed: "+auditErr.Error())
+			if err := artifacts.WriteSARIF("audit", merged); err != nil {
+				return fmt.Errorf("writing audit artifact: %w", err)
+			}
+		}
 		if auditedDoc != nil {
 			merged = *auditedDoc
 			totalUsage.PromptTokens += auditUsage.PromptTokens
@@ -804,6 +860,10 @@ func runScan(cmd *cobra.Command, args []string) error {
 		slog.Info("SARIF written", "path", cfg.Output)
 	} else {
 		fmt.Println(string(output))
+	}
+
+	if err := scanExecutionError(merged); err != nil {
+		return err
 	}
 
 	// Check --fail-on-severity threshold.

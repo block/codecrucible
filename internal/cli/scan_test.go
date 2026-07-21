@@ -280,6 +280,48 @@ func TestLogModelExecutionWarnings_EmitsWarning(t *testing.T) {
 	}
 }
 
+func TestMarkInvocationFailed_AppendsNotification(t *testing.T) {
+	doc := sarif.Build(sarif.AnalysisResult{}, nil, sarif.BuilderConfig{})
+
+	got := markInvocationFailed(doc, "audit phase failed: provider rejected model")
+
+	inv := got.Runs[0].Invocations[0]
+	if inv.ExecutionSuccessful {
+		t.Fatal("expected invocation to be marked unsuccessful")
+	}
+	if len(inv.ToolExecutionNotifications) != 1 {
+		t.Fatalf("notifications: got %d, want 1", len(inv.ToolExecutionNotifications))
+	}
+	if inv.ToolExecutionNotifications[0].Message.Text != "audit phase failed: provider rejected model" {
+		t.Fatalf("notification text = %q", inv.ToolExecutionNotifications[0].Message.Text)
+	}
+}
+
+func TestScanExecutionError_ReturnsFailureSummary(t *testing.T) {
+	doc := sarif.Build(sarif.AnalysisResult{}, nil, sarif.BuilderConfig{})
+	doc.Runs[0].Invocations[0].ExecutionSuccessful = false
+	doc.Runs[0].Invocations[0].ToolExecutionNotifications = []sarif.SARIFNotification{{
+		Level:   "error",
+		Message: sarif.SARIFMessage{Text: "chunk 1/1 failed: model unavailable"},
+	}}
+
+	err := scanExecutionError(doc)
+	if err == nil {
+		t.Fatal("expected execution failure error")
+	}
+	if !strings.Contains(err.Error(), "chunk 1/1 failed: model unavailable") {
+		t.Fatalf("error %q missing notification text", err.Error())
+	}
+}
+
+func TestScanExecutionError_SuccessfulInvocationIsNil(t *testing.T) {
+	doc := sarif.Build(sarif.AnalysisResult{}, nil, sarif.BuilderConfig{})
+
+	if err := scanExecutionError(doc); err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+}
+
 func TestResolveModel_Default(t *testing.T) {
 	m := resolveModel("")
 	if m.Name != "claude-sonnet-5" {

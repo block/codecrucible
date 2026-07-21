@@ -2,6 +2,7 @@ package config
 
 import (
 	"math"
+	"strings"
 	"testing"
 )
 
@@ -324,6 +325,11 @@ func TestLookupModel_FableCarriesExecutionWarning(t *testing.T) {
 	if m.ExecutionWarning == "" {
 		t.Error("ExecutionWarning: got empty, want security-policy warning")
 	}
+	for _, want := range []string{"security-policy", "data retention", "provider rejection"} {
+		if !strings.Contains(m.ExecutionWarning, want) {
+			t.Errorf("ExecutionWarning %q missing %q", m.ExecutionWarning, want)
+		}
+	}
 }
 
 func TestDefaultModel_IsClaudeSonnet5(t *testing.T) {
@@ -507,21 +513,22 @@ func TestDefaultModelRegistry_FieldValues(t *testing.T) {
 		encoding    string
 		structured  bool
 		temperature float64
+		omitTemp    bool
 	}{
-		{"claude-sonnet-5", 128000, "claude", true, 0.0},
-		{"claude-opus-4-8", 128000, "claude", true, 0.0},
-		{"claude-fable-5", 128000, "claude", true, 0.0},
-		{"claude-haiku-4-5", 64000, "claude", true, 0.0},
-		{"gpt-5.6", 128000, "o200k_base", true, 0.0},
-		{"gpt-5.6-sol", 128000, "o200k_base", true, 0.0},
-		{"gpt-5.6-terra", 128000, "o200k_base", true, 0.0},
-		{"gpt-5.6-luna", 128000, "o200k_base", true, 0.0},
-		{"gpt-5.5", 128000, "o200k_base", true, 1.0},
-		{"gpt-5.5-cyber-preview", 128000, "o200k_base", true, 1.0},
-		{"gpt-5.5-cyber", 128000, "o200k_base", true, 1.0},
-		{"gemini-3.1-pro-preview", 65536, "cl100k_base", true, 0.0},
-		{"gemini-3.5-flash", 65536, "cl100k_base", true, 0.0},
-		{"gemini-3.1-flash-lite", 65536, "cl100k_base", true, 0.0},
+		{"claude-sonnet-5", 128000, "claude", true, 0.0, true},
+		{"claude-opus-4-8", 128000, "claude", true, 0.0, true},
+		{"claude-fable-5", 128000, "claude", true, 0.0, true},
+		{"claude-haiku-4-5", 64000, "claude", true, 0.0, false},
+		{"gpt-5.6", 128000, "o200k_base", true, 0.0, true},
+		{"gpt-5.6-sol", 128000, "o200k_base", true, 0.0, true},
+		{"gpt-5.6-terra", 128000, "o200k_base", true, 0.0, true},
+		{"gpt-5.6-luna", 128000, "o200k_base", true, 0.0, true},
+		{"gpt-5.5", 128000, "o200k_base", true, 1.0, false},
+		{"gpt-5.5-cyber-preview", 128000, "o200k_base", true, 1.0, false},
+		{"gpt-5.5-cyber", 128000, "o200k_base", true, 1.0, false},
+		{"gemini-3.1-pro-preview", 65536, "cl100k_base", true, 0.0, false},
+		{"gemini-3.5-flash", 65536, "cl100k_base", true, 0.0, false},
+		{"gemini-3.1-flash-lite", 65536, "cl100k_base", true, 0.0, false},
 	}
 
 	for _, tt := range tests {
@@ -541,6 +548,9 @@ func TestDefaultModelRegistry_FieldValues(t *testing.T) {
 			}
 			if m.Temperature != tt.temperature {
 				t.Errorf("Temperature: got %f, want %f", m.Temperature, tt.temperature)
+			}
+			if m.OmitTemperature != tt.omitTemp {
+				t.Errorf("OmitTemperature: got %v, want %v", m.OmitTemperature, tt.omitTemp)
 			}
 		})
 	}

@@ -73,6 +73,10 @@ phase artifacts beside it: `results.feature-detection.json`,
 `--phase-output-dir DIR` to choose an explicit artifact directory, including
 for stdout workflows.
 
+Dry runs estimate input-token cost only. Real scans also bill completion tokens
+from analysis, repair, and audit phases, so final cost can be higher than the
+dry-run estimate.
+
 ## Installation
 
 ### From Source
@@ -475,7 +479,10 @@ provisional. Override the entry under `models:` when your provider exposes
 different limits or billing.
 
 `claude-fable-5` also emits an execution warning because security-policy
-errors during a security scan can invalidate the resulting findings.
+errors during a security scan can invalidate the resulting findings. Some
+Anthropic workspaces also require data retention to be enabled before this
+model is accessible; when the provider rejects access, CodeCrucible writes a
+failed SARIF invocation and exits non-zero.
 
 The `goose-*` Databricks rows are workspace serving aliases, not public model
 IDs. They stay explicit because a public provider release does not establish
@@ -649,8 +656,13 @@ testdata/fixtures/      LLM response fixtures for contract tests
 | Code | Meaning |
 |------|---------|
 | 0 | Success (no findings above threshold) |
-| 1 | Error (pipeline failure) |
+| 1 | Error (pipeline failure, provider rejection, or SARIF invocation failure) |
 | 2 | Findings exceed `--fail-on-severity` threshold |
+
+When an LLM phase fails after analysis has started, CodeCrucible still writes
+SARIF when possible. Check `runs[0].invocations[0].executionSuccessful` and
+`toolExecutionNotifications` for the embedded failure details; the CLI also
+returns exit code 1 so CI does not mistake a failed scan for a clean result.
 
 ## CI Integration
 

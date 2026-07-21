@@ -140,6 +140,8 @@ const securityAnalysisToolDescription = "Submit the security analysis results. "
 	"security_issues and public_api_routes MUST be arrays: use [] when empty, never a string. " +
 	"Every issue requires file_path, numeric start_line/end_line, and a severity between 0 and 10."
 
+const requestProgressInterval = 30 * time.Second
+
 // Client abstracts LLM interaction for testability.
 type Client interface {
 	// ChatCompletion sends a structured chat request and returns typed output.
@@ -497,7 +499,27 @@ func (c *httpClient) doRequest(ctx context.Context, url, label string, body []by
 	}
 
 	start := time.Now()
+	done := make(chan struct{})
+	timer := time.NewTimer(requestProgressInterval)
+	go func() {
+		defer timer.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ctx.Done():
+				return
+			case <-timer.C:
+				c.logger.Info("LLM request still waiting for response headers",
+					"label", label,
+					"elapsed", time.Since(start).Round(time.Second),
+				)
+				timer.Reset(requestProgressInterval)
+			}
+		}
+	}()
 	resp, err := c.client.Do(httpReq)
+	close(done)
 	elapsed := time.Since(start)
 	if err != nil {
 		c.logger.Debug("HTTP request failed", "label", label, "url", url, "elapsed", elapsed, "error", err)
