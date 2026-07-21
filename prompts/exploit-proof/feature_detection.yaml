@@ -1,0 +1,74 @@
+# Feature Detection Prompt for Multi-Shot Analysis
+# This prompt is used in the first phase to detect which features are present in the codebase
+
+system_message: >
+  You are a code analysis expert. Your job is to quickly scan a codebase and identify
+  which security-relevant features and technologies are present. Return your findings
+  in strict JSON format.
+
+user_prompt_template: >
+  Analyze the following repository structure and code to identify which security-relevant
+  features and technologies are present.
+
+
+  Your goal is to detect what types of functionality exist in this codebase, so that we
+  can perform a targeted security analysis.
+
+
+  Repository: {repo_name}
+
+
+  Repomix XML Content:
+  ---
+  {xml_content}
+  ---
+
+
+  Please identify which of the following features are present in this codebase:
+
+
+  FEATURE CATEGORIES:
+  1. **public_api** - HTTP/REST endpoints, API routes, web handlers, or any publicly accessible interfaces
+  2. **authentication** - Login systems, password handling, token generation, session creation, auth middleware
+  3. **authorization** - Access control, permission checks, role-based access, authorization middleware
+  4. **database_operations** - SQL queries, database connections, ORM usage, data persistence
+  5. **user_input_handling** - Form processing, query parameters, request body parsing, user-provided data
+  6. **file_operations** - File uploads, downloads, file system access, path operations
+  7. **cryptography** - Encryption, decryption, hashing, signing, key management, crypto operations
+  8. **session_management** - Session handling, cookies, session stores, session tokens
+  9. **external_api_calls** - HTTP clients, API requests to external services, webhook calls
+  10. **third_party_dependencies** - External libraries, packages, dependencies (check imports and package files)
+  11. **infrastructure_as_code** - Terraform files (.tf), CloudFormation, Kubernetes configs, deployment configs
+  12. **blockchain_crypto_finance** - Blockchain contracts, cryptocurrency handling, wallet operations, financial transactions
+  13. **websockets** - WebSocket connections, real-time communication, socket handlers
+  14. **graphql** - GraphQL schemas, resolvers, mutations, queries
+  15. **grpc** - gRPC service definitions, protobuf files, RPC handlers
+  16. **xml_processing** - XML parsing, SOAP services, XML document handling
+  17. **deserialization** - JSON/XML/pickle deserialization, object unmarshaling
+  18. **template_rendering** - Template engines (Jinja2, EJS, etc.), server-side rendering, HTML generation
+  19. **shell_command_execution** - System command execution, shell operations, subprocess calls
+  20. **sensitive_data_handling** - PII, passwords, tokens, API keys, secrets, credit card data
+
+
+  INSTRUCTIONS:
+  - Only include features that are ACTUALLY PRESENT in the code (not just imported but unused)
+  - Look for concrete evidence: function definitions, route handlers, database queries, API calls, etc.
+  - If you see imports but no actual usage, don't include that feature
+  - Be conservative: only report features with clear evidence
+  - Look at file names, imports, function definitions, and actual code implementation
+
+
+  Return ONLY a valid JSON object according to the following schema:
+
+
+  JSON Schema:
+  ---
+  {schema}
+  ---
+
+
+  IMPORTANT:
+  - Return ONLY the raw JSON object
+  - Do NOT wrap in markdown code blocks
+  - Do NOT include explanatory text
+  - The entire response must be valid, parseable JSON

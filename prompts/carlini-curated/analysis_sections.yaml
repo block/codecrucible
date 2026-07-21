@@ -1,0 +1,15 @@
+# Slim Carlini-style analysis sections
+# Single always-on section. No feature gating — the model decides what matters.
+
+sections:
+  offensive_audit:
+    title: "ATTACK METHODOLOGY"
+    features: []  # Always included
+    content: >
+      For every file in this chunk:
+        1. Map entry points: HTTP params, headers, cookies, file content, URL paths, WebSocket messages, GraphQL variables.
+        2. Trace each input to sinks: SQL queries, shell commands, file paths, HTML output, crypto operations, auth decisions. Flag unvalidated flows.
+        3. Check authorization on EVERY endpoint that takes a resource ID: does it verify the authenticated user owns that resource? Missing ownership checks = IDOR.
+        4. Look for logic flaws: race conditions, mass assignment, type confusion, algorithm confusion (JWT alg=none), prototype pollution.
+        5. Check client-side JS for DOM XSS: innerHTML/outerHTML/document.write with user-controlled data.
+        6. Check state-changing endpoints (POST/PUT/DELETE) for CSRF protection.

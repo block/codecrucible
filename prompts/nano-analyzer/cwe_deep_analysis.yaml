@@ -1,0 +1,128 @@
+# nano-analyzer-style CWE guidance. Terse — nano focuses on a small set of
+# bug classes and relies on skepticism discipline rather than exhaustive
+# per-CWE prose. Each entry emphasizes: verify defenses with real numbers,
+# don't invent upstream assumptions, deprioritize theoretical UB.
+
+cwe_prompts:
+  CWE-120:
+    title: "Classic Buffer Overflow"
+    analysis_prompt: >
+      Any copy into a fixed-size buffer where the source length is attacker-
+      influenced. Check the destination's declared size (resolve named
+      constants — `PATH_MAX`, `EVP_MAX_MD_SIZE`, macro definitions) against
+      the maximum source length the code enforces at the copy site, NOT at
+      some claimed "upstream" validation.
+    validation_checks:
+      - "Name the destination buffer and its resolved numeric size."
+      - "Name the source length and the bound enforced at the copy site."
+      - "If a bound is cited via a caller / wrapper, point at the specific function and verify its arithmetic."
+    false_positive_indicators:
+      - "Copy length is bounded at the call site by a constant ≤ destination size, verified numerically."
+      - "Destination is heap-allocated to exactly the required size after validating the length."
+
+  CWE-787:
+    title: "Out-of-Bounds Write"
+    analysis_prompt: >
+      Writes at offsets or lengths derived from tainted input without a
+      bound that is actually sufficient. Includes memcpy / ptr::write /
+      indexed writes / struct casts to a type larger than the allocation.
+    validation_checks:
+      - "Verify every bounded write has a check whose constant resolves to a value ≤ destination size."
+      - "For indexed writes, verify the index is range-checked against the allocation, not just non-negative."
+    false_positive_indicators:
+      - "Destination is allocated after length validation to exactly the required size."
+      - "Index is structurally constrained by a typed enum with a bounded range."
+
+  CWE-125:
+    title: "Out-of-Bounds Read"
+    analysis_prompt: >
+      Reads past the end of buffers derived from tainted length / offset
+      fields. Also copy-to-user / write-to-socket of partially-initialized
+      structs (info leak — check whether source was zeroed before partial
+      fill).
+    validation_checks:
+      - "Verify every read offset / length is bounded by the source buffer's allocated size."
+      - "For struct-to-socket writes, confirm the struct is fully initialized or explicitly zeroed."
+    false_positive_indicators:
+      - "Reads are bounded by prior length validation in the same function."
+      - "Struct uses kzalloc / memset / explicit field init before write."
+
+  CWE-190:
+    title: "Integer Overflow / Underflow"
+    analysis_prompt: >
+      Arithmetic on tainted values (`len + hdr`, `count * elem_size`,
+      `remaining - consumed`) computed before the result is validated or
+      passed to malloc / memcpy / array indexing. Signed → unsigned
+      promotion flipping a negative value to huge size_t. Casts that
+      silently truncate (`x as u16`, `(uint32_t)len`).
+    validation_checks:
+      - "Identify every arithmetic site whose inputs are tainted."
+      - "Verify overflow-safe wrappers (checked_add, __builtin_*_overflow, reallocarray) are used OR the inputs are bounded to values that provably cannot overflow."
+      - "For underflows: verify `remaining = total - consumed` is guarded by `total >= consumed`."
+    false_positive_indicators:
+      - "Overflow-safe helpers are used with checked error handling."
+      - "Input is bounded to a small constant that structurally cannot overflow."
+
+  CWE-476:
+    title: "NULL Pointer Dereference"
+    analysis_prompt: >
+      Fallible operations (allocator, lookup, parse) whose return value is
+      dereferenced without a NULL check. In languages that distinguish,
+      check for ERR_PTR / Option::None handling too.
+    validation_checks:
+      - "Identify every allocator / lookup / parse / alloc-like call that can return NULL or ERR_PTR."
+      - "Verify each is checked before the next field access or call through it."
+    false_positive_indicators:
+      - "Function is documented / enforced to not return NULL on the reached path."
+      - "Caller sets a NULL-tolerant wrapper or uses an infallible allocator (__GFP_NOFAIL / abort-on-null helper)."
+
+  CWE-843:
+    title: "Type Confusion / Tagged Union Misuse"
+    analysis_prompt: >
+      Union or variant types accessed without checking the discriminator.
+      Classic pattern: `av->value.str_val->length` where `av->type` could
+      be NUMBER / BOOL / STR and the code always reads `str_val`.
+    validation_checks:
+      - "For every union member access, verify the discriminator field is checked first."
+      - "If the discriminator is set by tainted input, verify the access path is guarded per-tag."
+    false_positive_indicators:
+      - "Discriminator is immediately checked via switch/if before the member access."
+      - "Type is statically guaranteed by the call context (internal helper called with a known type)."
+
+  CWE-252:
+    title: "Unchecked Return Value"
+    analysis_prompt: >
+      Fallible function whose failure is ignored, leading to downstream use
+      of invalid state. Most commonly paired with CWE-476 (deref the NULL
+      that came from an ignored failure) but also applies to partially-
+      successful operations.
+    validation_checks:
+      - "Identify fallible return-value sites not checked by the caller."
+      - "Trace the effect: does the ignored failure lead to a concrete bug (NULL deref, uninitialized use, resource leak with attacker-reachable trigger)?"
+    false_positive_indicators:
+      - "The return is intentionally ignored and the next use is NULL/failure-safe."
+
+  CWE-416:
+    title: "Use After Free"
+    analysis_prompt: >
+      Pointer dereferenced after the owning object was freed. Common
+      patterns: error paths that free then continue using, callbacks /
+      timers / RCU readers holding pointers that other paths free, C++
+      iterator invalidation, moved-from object use in Rust FFI.
+    validation_checks:
+      - "For every free/drop, identify any remaining pointer copies in scope and verify they are not used after the free."
+      - "For async callbacks holding a pointer, verify the callback is synchronized with the free (cancel_work_sync / del_timer_sync / synchronize_rcu)."
+    false_positive_indicators:
+      - "Pointer is NULL'd after free and subsequent paths are NULL-safe."
+      - "Free happens in a destructor reached only when refcount = 0."
+
+  CWE-20:
+    title: "Improper Input Validation"
+    analysis_prompt: >
+      Catch-all for tainted values reaching sensitive operations without
+      validation when no more-specific CWE fits. Use sparingly — prefer the
+      specific CWEs above when they apply.
+    validation_checks:
+      - "Verify user-supplied values are range-checked / type-checked / structurally constrained before use."
+    false_positive_indicators:
+      - "Value is constrained by a prior typed parse (enum, int with range check)."

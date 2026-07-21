@@ -1,0 +1,618 @@
+# Analysis requirement sections, included dynamically per detected feature.
+# Section keys and the `features` vocabulary MUST remain stable — the loader
+# maps them by name (internal/llm/prompt.go AnalysisSectionsFile) and
+# feature_detection.yaml produces the matching feature strings.
+#
+# Revision notes vs. original:
+#   - access_control_audit: previously instructed "YOU MUST CHECK EVERY
+#     ENDPOINT... this IS a finding." That forcing function produced 3/6 of
+#     the extra FPs in the sample-app benchmark (all CWE-639). Rewritten to
+#     build a matrix first and report systemic gaps once.
+#   - Added business_logic (no home previously outside blockchain).
+#   - Added trust_boundaries (SSRF / internal calls / queue consumers).
+#   - Broadened concurrency_state beyond TOCTOU.
+#   - cross_site: added open redirect + header injection.
+
+sections:
+  access_control_audit:
+    title: "AUTHORIZATION MODEL (mandatory)"
+    features: []
+    content: >
+      Build the authorization picture before reporting individual endpoints.
+
+
+      ESTABLISH:
+        - Where is authentication enforced? App-level middleware, per-router
+          use(), per-route decorator, or ad-hoc inside handlers? Quote the
+          mount point.
+        - Is there an authorization abstraction at all — a policy layer, a
+          can()/authorize() helper, row-level security — or does every
+          handler decide for itself?
+        - For each resource type (task, file, comment, invoice, ...): what
+          is the ownership predicate? created_by? tenant_id? team
+          membership via a join table? Some resources legitimately have
+          none — public catalog items, shared reference data.
+
+
+      THEN WALK THE ENDPOINTS:
+        For each handler that accepts a client-supplied resource identifier
+        (path param, query param, body field), check whether the ownership
+        predicate is evaluated between fetch and use. Existence checks
+        (404 if null) are not ownership checks.
+
+
+      REPORT AS:
+        - If a resource type has NO handlers that check ownership: ONE
+          finding for that resource type. Severity by the most damaging
+          operation (DELETE/UPDATE usually outranks READ). List the
+          affected routes in technical_details as evidence, not as
+          separate findings.
+        - If ownership is checked on most handlers for a resource but
+          missing on one: ONE finding for that endpoint. This is the
+          interesting case — a deviation from the codebase's own pattern.
+        - If an operation has real authz but low damage potential
+          (appending a comment to a record you cannot read, toggling a
+          boolean with no downstream effect) and no escalation path:
+          note it at severity <= 3.0 or omit it. The auditor will catch
+          you inflating these.
+
+
+      Enumeration risk (sequential integer IDs) affects severity — easier
+      discovery means faster mass exploitation — but it is not a finding by
+      itself. An IDOR on UUIDv4 keys is still an IDOR.
+
+  public_api:
+    title: "API SURFACE"
+    features: ["public_api", "websockets", "graphql", "grpc"]
+    content: >
+      - Enumerate the externally reachable surface: HTTP routes, GraphQL
+        queries AND mutations (mutations especially), gRPC methods,
+        WebSocket message handlers. For each, note whether it sits behind
+        authentication middleware.
+      - GraphQL: introspection enabled in production leaks schema.
+        Batching/aliasing without cost limits enables resource exhaustion.
+        Resolvers that take an id argument need the same ownership checks
+        as REST handlers — the transport does not grant immunity.
+      - gRPC: are interceptors applied uniformly, or does each service
+        register its own? Reflection enabled in production exposes method
+        signatures.
+      - WebSocket: the Upgrade handshake is authenticated once; is the
+        per-message payload re-validated? Handlers that trust a user_id
+        field inside the message rather than the connection's
+        authenticated identity are handlers with an auth bypass.
+
+  authentication_authorization:
+    title: "AUTHENTICATION & SESSION"
+    features: ["authentication", "authorization", "session_management"]
+    content: >
+      CREDENTIAL VERIFICATION
+        - Password comparison MUST be constant-time (bcrypt.compare,
+          subtle.ConstantTimeCompare, hmac.compare_digest). == on a
+          password hash string leaks timing.
+        - Error messages and response latency MUST NOT distinguish
+          "no such user" from "wrong password."
+        - Rate limiting or lockout on the login path. Absence is a
+          finding when combined with online-guessable credentials.
+
+
+      TOKEN VERIFICATION
+        - jwt.verify (and equivalents) MUST pin algorithms to an explicit
+          allowlist. Absence is a finding only if the library's default
+          accepts none or is vulnerable to RS/HS confusion; say which
+          library and version.
+        - Manual JWT header parsing that branches on alg is almost always
+          wrong. If code reads header.alg and changes behavior, trace
+          whether alg:"none" or an attacker-chosen algorithm reaches a
+          verification path that accepts it.
+        - exp, nbf, iat checked? aud and iss validated when the token
+          could come from another issuer in the same trust domain?
+        - Where does the signing secret come from? Hardcoded is critical.
+          Default-on-missing-env is critical. <32 bytes of entropy for
+          HS256 is weak.
+
+
+      SESSION LIFECYCLE
+        - Fixation: is the session identifier rotated after privilege
+          change (login, role elevation)? express-session requires an
+          explicit req.session.regenerate(); Flask-Login rotates on
+          login_user() by default. State the framework default before
+          flagging absence.
+        - Cookie attributes: HttpOnly, Secure, SameSite. Most frameworks
+          default HttpOnly true — verify before flagging.
+        - Logout: does it destroy the server-side session or merely clear
+          the client cookie? For stateless tokens: is there a revocation
+          mechanism, or are tokens valid until natural expiry?
+
+
+      PRIVILEGE ASSIGNMENT
+        - Registration / profile-update handlers that pass req.body
+          straight to an ORM create/update: can a client set role,
+          is_admin, tenant_id, email_verified? This is mass assignment
+          (CWE-915). Name the assignable field.
+        - Invite / team-join flows that trust client-supplied role.
+
+  input_validation:
+    title: "INJECTION"
+    features: ["user_input_handling", "database_operations", "shell_command_execution", "xml_processing"]
+    content: >
+      SQL (CWE-89)
+        String building — + concatenation, f-strings, .format(),
+        template literals — in query construction is the sink. Prepared
+        statements with ? / $n / :name placeholders are the fix.
+        Identifiers (column names, table names, ORDER BY targets) cannot
+        be parameterized — they need allowlists.
+        Second-order: a value stored via parameters, later retrieved and
+        concatenated into a new query.
+        ORM note: raw query escape hatches (.raw(), text(), $queryRaw,
+        sequelize.query) re-open the door the ORM closed.
+
+
+      COMMAND (CWE-78)
+        exec/spawn with shell semantics (shell:true, /bin/sh -c, Windows
+        cmd /c) is the sink. Arguments-as-array without a shell closes
+        metacharacter interpretation but NOT argument injection: a
+        user-controlled value that becomes its own flag (--output=/etc/x)
+        still wins. -- terminates option parsing for most tools.
+
+
+      PATH (CWE-22)
+        path.join / os.path.join do NOT prevent traversal — they
+        normalize. The check that matters: resolve to absolute, then
+        verify the result startswith the intended root.
+        URL-decoded sequences (%2e%2e%2f, double-encoded %252e...) reach
+        req.params already decoded in Express; in other frameworks they
+        may not. State which.
+        Archive extraction: every entry name needs the same check
+        (zip-slip).
+
+
+      TEMPLATE (CWE-1336)
+        User input reaching the TEMPLATE SOURCE, not template DATA, is
+        SSTI. render_template_string(user_input),
+        Template(user_input).render(), new Function built from request
+        fields. The distinction between source and data is the whole
+        finding — be precise about which one you observed.
+
+
+      XML (CWE-611)
+        Parser config is everything. Name the parser, name the flag:
+        lxml resolve_entities, Java XMLInputFactory SUPPORT_DTD /
+        IS_SUPPORTING_EXTERNAL_ENTITIES, .NET XmlResolver, libxml
+        XML_PARSE_NOENT. Modern defaults are usually safe; the finding
+        is code that opts back in.
+
+
+      NOSQL
+        MongoDB: objects passed where strings are expected.
+        {"$gt": ""} in a password field, {"$where": "..."} anywhere.
+        The fix is type-checking inputs before they reach the query
+        builder, or a schema layer that rejects operator keys.
+
+
+      LDAP (CWE-90)
+        User input in filter strings without escaping the LDAP
+        metacharacters: ( ) * \ NUL.
+
+  cross_site:
+    title: "BROWSER-MEDIATED"
+    features: ["public_api", "template_rendering"]
+    content: >
+      XSS (CWE-79)
+        The sink is the render, not the input. Find the template line.
+        Unescaped output markers: <%- (EJS), {{{ }}} (Handlebars), |safe
+        (Jinja), {!! !!} (Blade), v-html (Vue),
+        dangerouslySetInnerHTML (React). Default-escaped output (<%=,
+        {{ }}) is safe UNLESS the context is not HTML body — inside a
+        <script> block, inside an event handler attribute, inside a
+        javascript: URL, HTML entity encoding does not help.
+
+        DOM-based: client JS reads a source (location.search,
+        location.hash, document.referrer, postMessage data, DOM node
+        textContent) and writes to a sink (innerHTML, outerHTML,
+        insertAdjacentHTML, document.write, Range.createContextualFragment,
+        $.html()). The
+        textContent-then-innerHTML round trip decodes entities then
+        re-parses them — the classic mXSS primitive.
+
+        CSP mitigates but does not fix. unsafe-inline or unsafe-eval in
+        script-src, or a permissive base-uri, and the CSP is decoration.
+
+
+      CSRF (CWE-352)
+        Decision tree:
+          - Endpoint authenticated by cookie? If no (Bearer token only),
+            CSRF does not apply.
+          - Cookie SameSite=Strict, or Lax and the endpoint is not GET?
+            Modern browsers block the cross-origin send. Residual risk
+            is older browsers + sensitive operation.
+          - Synchronizer or double-submit token validated server-side?
+            If yes, mitigated.
+          - None of the above AND the operation changes meaningful state
+            (password, email, funds, membership)? Finding.
+
+        GET handlers that mutate state are CSRF-vulnerable even with Lax.
+        A GET /logout is low severity (annoyance); a GET /account/delete
+        is not.
+
+
+      OPEN REDIRECT (CWE-601)
+        Post-login ?next= / ?returnTo= / ?redirect= that 302s to the
+        value unchecked. The validation that matters is allowlisting
+        the destination host, not checking for "http" prefix (which
+        //evil.com and javascript: both dodge).
+
+
+      HEADER INJECTION (CWE-113)
+        User input in a response header value without stripping CR/LF.
+        Set-Cookie and Location are the high-value targets. Most modern
+        frameworks reject \r\n in header values automatically — check
+        before flagging.
+
+
+      CLICKJACKING (CWE-1021)
+        Absence of X-Frame-Options / CSP frame-ancestors is a hardening
+        gap. It becomes a vulnerability when a specific page exists whose
+        click-through (purchase confirm, permission grant, destructive
+        action) an attacker benefits from framing. No such page, no
+        finding above severity 2.0.
+
+  data_exposure:
+    title: "INFORMATION DISCLOSURE"
+    features: ["sensitive_data_handling", "database_operations", "file_operations"]
+    content: >
+      LOG CONTENT (CWE-532)
+        Logging statements that include passwords, tokens, full
+        Authorization headers, cookie values, card numbers. Logging the
+        entire request object is a common way to do all of these at once.
+
+
+      LOG INJECTION (CWE-117)
+        User-controlled strings in log output without newline stripping.
+        Structured logging (slog with key/value, JSON loggers) is
+        generally immune — the encoder escapes. Printf-style string
+        interpolation into a flat log line is not.
+
+
+      ERROR SURFACE (CWE-209)
+        Stack traces, SQL errors, absolute paths, internal hostnames in
+        responses. The sink is the error handler — does it wrap before
+        sending, or does err.message reach res.send() verbatim? A
+        framework in development mode does this on purpose; check for
+        NODE_ENV / DEBUG / FLASK_ENV guards.
+
+
+      OVER-SERIALIZATION (CWE-213)
+        res.json(userObject) where the object carries password_hash,
+        reset_token, mfa_secret, stripe_customer_id. Enumerate the
+        fields on the model, enumerate what the serializer emits,
+        diff them.
+
+
+      TRANSPORT (CWE-319)
+        Outbound http:// to services that should be https://. Cookies
+        without Secure served over TLS (they leak on any same-domain
+        http:// request). Database / cache connection strings without
+        TLS options when the network path is not trusted.
+
+  cryptography:
+    title: "CRYPTOGRAPHY"
+    features: ["cryptography", "sensitive_data_handling"]
+    content: >
+      ALGORITHM (CWE-327)
+        MD5 / SHA-1 for anything integrity-bearing — signatures, commit
+        hashes, dedup keys that gate a security decision. For password
+        hashing: raw SHA-256 is the wrong primitive; bcrypt / scrypt /
+        argon2 are right. DES, 3DES, RC4, ECB mode on anything.
+
+
+      RANDOMNESS (CWE-338)
+        Math.random() / rand() / non-crypto PRNG for: session
+        identifiers, reset tokens, API keys, nonces, IVs, anything an
+        attacker benefits from predicting. ~30 bits of entropy and a
+        recoverable seed. A random UPLOAD FILENAME is only a finding if
+        knowing the filename grants access the attacker should not
+        have — tie it to the authorization model.
+
+
+      KEY HANDLING (CWE-321, CWE-798)
+        Keys in source. Keys in env with a fallback literal. Same key
+        for encrypt and MAC. IV reuse with CTR or GCM (catastrophic —
+        keystream reuse). IV derived from a constant or a counter that
+        resets.
+
+
+      PROTOCOL
+        Encrypt-then-MAC or an AEAD (GCM, ChaCha20-Poly1305). MAC-then-
+        encrypt and unauthenticated CBC are padding-oracle territory.
+        Signature verification that returns early on length mismatch or
+        compares with == leaks timing.
+
+
+      TLS (CWE-295)
+        verify=False, rejectUnauthorized: false, InsecureSkipVerify:
+        true, a TrustManager that returns without checking. These show
+        up "temporarily" during development and ship.
+
+  protocol_logic:
+    title: "PROTOCOL & FINANCIAL LOGIC"
+    features: ["blockchain_crypto_finance", "cryptography"]
+    content: >
+      SIGNED-DATA COVERAGE
+        For every signature or MAC: enumerate the fields of the struct
+        being signed, enumerate the fields the signing function reads,
+        diff. A field present on the struct but absent from the hash is
+        attacker-mutable without invalidating the signature. The classic
+        shape is WalletStateHash::new that forgets to include
+        policy_version. Report each omitted field.
+
+
+      REPLAY
+        Does the verifier check a nonce, monotonic counter, or timestamp
+        window? Is the nonce store durable across restarts, or does a
+        crash reset it? Is the timestamp window tight enough to matter?
+
+
+      STATE MACHINE
+        Can a message for state N be accepted in state M? Can a step be
+        skipped by submitting the next step's message directly? Can a
+        completed flow be re-entered? Draw the transition graph; any
+        edge the code accepts that the graph does not show is a finding.
+
+
+      ARITHMETIC
+        Integer overflow/underflow on balance math. Division before
+        multiplication losing precision in a way that rounds toward the
+        attacker. Signed/unsigned confusion. Fee calculations where
+        rounding accrues to a party the user controls.
+
+
+      ORACLE & ORDERING
+        Spot price read at execution time from a manipulable source.
+        Transactions whose profitability depends on ordering relative
+        to others in the same block. Commit-reveal schemes where the
+        reveal is front-runnable.
+
+  business_logic:
+    title: "BUSINESS LOGIC"
+    features: ["user_input_handling", "database_operations"]
+    content: >
+      These are flaws no pattern-matcher finds — the code is correct for
+      what it says, but what it says is not what the business meant.
+
+
+      PARAMETER TRUST
+        Price, quantity, discount, currency, item_id accepted from the
+        client when the server has an authoritative source. Negative
+        quantity that issues a refund. Currency switched to a weaker
+        unit after price lookup. item_id swapped between validation
+        and charge. The fix is always the same: re-derive on the
+        server, ignore the client's arithmetic.
+
+
+      SEMANTIC RANGE ON CLIENT-SUPPLIED INTEGERS (CWE-1284)
+        Different from PARAMETER TRUST above — that's "don't trust the
+        client's number when you can compute it yourself." This is
+        "the client legitimately owns this number, but the valid range
+        is narrower than the type." No taint, no sink, no dangerous
+        API. The assignment LOOKS fine. Read the enforcement site to
+        find the bug.
+
+        For every integer field a client sets — max_views, expires_in,
+        page_size, retry_count, priority, quota, TTL — find where that
+        number is later COMPARED and ask what the out-of-range values
+        do:
+          - Negative into a limit: `if count >= limit` where limit is
+            -1 is true immediately (0 >= -1). The resource is dead on
+            arrival.
+          - Negative into a guarded limit: `if limit > 0 { check }`
+            means -1 silently skips the guard → unlimited. The user
+            wrote -1 by mistake; they got no limit instead of an
+            error.
+          - Zero with sentinel semantics: `if limit == 0` means
+            unlimited, so a client that WANTED zero-uses gets
+            unlimited instead.
+          - MaxInt into an arithmetic path: a later `limit + grace`
+            overflows negative and a `>` check inverts.
+          - Negative into a duration: now() + (-3600s) is an hour ago.
+            Depending on whether `expires_at < now()` runs before or
+            after first use, that's either instant-expiry or
+            never-checks-again.
+
+        The tell is a bare struct assignment from a decoded request
+        (`s.MaxViews = req.MaxViews`) with no range clamp, no min/max
+        validator, no `if req.X < 1 { reject }`. Then go find the
+        comparison and work out which of the cases above fires.
+
+
+      WORKFLOW BYPASS
+        Multi-step processes (KYC, checkout, approval chain) where each
+        step is an independent endpoint with no "previous step completed"
+        guard. Hit step 3 directly, skip steps 1–2.
+        Status transitions: can a client PATCH status=approved directly,
+        or must the object pass through pending → reviewed → approved?
+
+
+      REUSE & LIMITS
+        Coupons, invites, referral codes, free-trial grants: is the
+        single-use check and the decrement atomic? If not, race it.
+        Per-user and per-tenant caps: enforced, or trusted from a field
+        the client sends?
+
+
+      ROUNDING & AGGREGATION
+        Currency math in floating point. Per-item rounding that
+        compounds across a large cart. Split-payment flows where the
+        sum of parts is checked against the total with a tolerance an
+        attacker can exploit.
+
+
+      TIME
+        "Valid until" read from client-supplied data. Timezone handling
+        that shifts a deadline. Scheduled jobs that trust a timestamp
+        set by the record's owner.
+
+  trust_boundaries:
+    title: "TRUST BOUNDARIES & LATERAL MOVEMENT"
+    features: ["external_api_calls", "file_operations", "user_input_handling"]
+    content: >
+      SSRF (CWE-918)
+        Server-side HTTP where any part of the URL derives from client
+        input: the obvious fetch(url) case, but also webhook
+        registration, PDF renderers that follow <img src>, XML that
+        resolves external entities, import-from-URL features.
+        The targets that matter: 169.254.169.254 (cloud metadata),
+        localhost/127.0.0.1, RFC1918 ranges, internal service names.
+        Allowlists beat denylists — DNS rebinding, decimal IP encoding
+        (2130706433), IPv6 mapped addresses ([::ffff:127.0.0.1]),
+        and redirect-chaining all walk past naive blocks.
+        Blind SSRF (no response body returned) is still SSRF — time
+        the request or hit a collaborator.
+
+
+      INTERNAL SERVICE CALLS
+        Service A calls Service B with elevated credentials. Does A
+        pass through the end-user identity, or does B see only
+        "service A" and trust everything? An IDOR in A becomes an
+        unbounded read in B.
+
+
+      QUEUE & EVENT CONSUMERS
+        Message handlers often assume the producer validated. If any
+        producer is compromised — or if messages can be injected
+        directly — the consumer is an injection sink with no input
+        validation. Check whether the consumer re-validates or trusts.
+
+
+      FILE PROCESSING PIPELINES
+        ImageMagick (CVE-laden), Ghostscript, ffmpeg, LibreOffice
+        headless — invoked on user uploads. The upload is the payload
+        delivery; the processor is the sink. Sandboxed? Version pinned?
+        Delegates disabled?
+
+  dependencies:
+    title: "DEPENDENCIES & DANGEROUS PRIMITIVES"
+    features: ["third_party_dependencies", "deserialization"]
+    content: >
+      DESERIALIZATION (CWE-502)
+        The sink is the deserializer invoked on untrusted bytes:
+        pickle.loads, yaml.load without SafeLoader, ObjectInputStream,
+        BinaryFormatter, PHP unserialize, Ruby Marshal.load.
+        JSON.parse is a different class — dangerous only when the result
+        is merged into an object in a prototype-polluting way, or when
+        a reviver function does something clever.
+
+
+      PROTOTYPE POLLUTION (CWE-1321)
+        Recursive merge / deep-clone / property-set utilities that copy
+        attacker-controlled keys without rejecting __proto__,
+        constructor, prototype. lodash.merge < 4.17.12, older jQuery
+        $.extend(true, ...), hand-rolled deepMerge helpers. The
+        pollution is step one; find step two — a gadget that reads
+        Object.prototype.isAdmin or an undefined options field that
+        now resolves to attacker data.
+
+
+      DYNAMIC EXECUTION (CWE-94)
+        eval, new Function, vm.runInThisContext, setTimeout with a
+        string, Python exec/compile, PHP create_function. With any
+        user-reachable argument.
+
+
+      KNOWN-VULNERABLE PINS (CWE-1395)
+        Lockfile versions with published CVEs AND the vulnerable code
+        path is reachable from this application. "log4j is present" is
+        noise; "log4j is present and user input reaches a logger that
+        formats it" is a finding.
+
+  configuration:
+    title: "CONFIGURATION & DEPLOYMENT"
+    features: ["infrastructure_as_code"]
+    content: >
+      MODE & DEBUG
+        Debug flags that default on when the env var is absent. Flask
+        debug=True (Werkzeug console is RCE). Django DEBUG=True (settings
+        dump). Spring actuator endpoints unauthenticated. Next.js /
+        Nuxt source maps shipped.
+
+
+      CORS (CWE-942)
+        Access-Control-Allow-Origin reflecting the request Origin with
+        Access-Control-Allow-Credentials: true is a CSRF-equivalent for
+        any cookie-authenticated endpoint. Wildcard with credentials is
+        rejected by browsers — the dangerous pattern is the reflection.
+        A null origin allowed (sandboxed iframes, file://) is its own
+        finding.
+
+
+      ADMIN & DIAGNOSTIC SURFACE
+        /admin behind nothing but an unlinked URL. /metrics, /debug/pprof,
+        /actuator, /_profiler reachable without auth. GraphQL
+        introspection and playground enabled in production.
+
+
+      SECRETS
+        Credentials in tracked config. .env committed. Dockerfile with
+        ENV SECRET=. CI yaml echoing secrets. Example/template config
+        with real values.
+
+  concurrency_state:
+    title: "CONCURRENCY & STATE"
+    features: ["database_operations", "user_input_handling"]
+    content: >
+      TOCTOU (CWE-362)
+        Read-check-write where the check and write are separate
+        statements without a transaction or atomic conditional. Classic
+        shape:
+          SELECT balance; if (balance >= amount) UPDATE balance -= amount;
+        The fix is either a transaction at the right isolation level or
+        a single conditional UPDATE ... WHERE balance >= amount with
+        rows-affected checked.
+        Driver note: better-sqlite3 is synchronous and single-connection;
+        TOCTOU windows are narrower there than with a pooled async
+        driver. State the driver before scoring severity.
+
+
+      SINGLE-USE RESOURCES
+        Coupon redemption, invite acceptance, password-reset token burn,
+        idempotency-key check. If "has this been used?" and "mark used"
+        are separate queries, concurrent requests both pass the check.
+        Unique constraint on the consumption record is the clean fix.
+
+
+      INVENTORY & COUNTERS
+        Stock decrement, seat reservation, rate-limit buckets.
+        read-modify-write on a shared counter without atomicity
+        undercounts under load. SELECT ... FOR UPDATE, atomic
+        increments, or optimistic versioning.
+
+
+      NON-IDEMPOTENT REPLAY
+        POST that creates or charges, with no idempotency key and no
+        dedup. Client retries (or an attacker replays) and the
+        operation executes twice. The finding is the absence of the
+        idempotency mechanism on an operation where duplication costs
+        money or corrupts state.
+
+  code_quality:
+    title: "SECURITY-ADJACENT QUALITY (always included, low priority)"
+    features: []
+    content: >
+      Keep this section short in output. It exists for things that
+      materially increase the chance of a future vulnerability but are
+      not exploitable today.
+
+
+      - Auth/crypto decisions scattered across handlers instead of
+        centralized — each copy is a chance to get one wrong.
+      - Error handling that swallows exceptions on security-relevant
+        paths (token verify, permission check) and falls through to
+        a permissive default.
+      - unsafe blocks (Rust), unsafe.Pointer (Go), ctypes (Python)
+        touching data with any user-influenced shape.
+      - Debug / bypass / skip-auth helpers whose only guard is "don't
+        call this in prod."
+
+
+      Do not report: dead code, style, naming, comment quality,
+      complexity metrics. If it cannot plausibly contribute to a
+      compromise, it is out of scope.

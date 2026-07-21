@@ -1,0 +1,18 @@
+{
+  "repo_name": "example/webapp",
+  "description": "A Go web application with SQL database backend",
+  "public_api_routes": [],
+  "security_issues": [
+    {
+      "issue": "SQL Injection",
+      "file_path": "internal/db/queries.go",
+      "start_line": 42,
+      "end_line": 48,
+      "technical_details": "User input is concatenated directly into SQL query string without parameterization, allowing arbitrary SQL execution.",
+      "severity": 8.5,
+      "cwe_id": "CWE-89: Improper Neutralization of Special Elements used in an SQL Command"
+    }
+  ],
+  "security_risk": 8.5,
+  "risk_justification": "Critical SQL injection vulnerability allows data exfiltration and potential remote code execution via database."
+}

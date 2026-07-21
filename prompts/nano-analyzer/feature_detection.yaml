@@ -1,0 +1,83 @@
+# nano-analyzer's CONTEXT_GEN_PROMPT adapted to codecrucible's feature-
+# detection slot. Instead of categorical feature buckets, it asks the model
+# to identify the ATTACK SURFACE — entry points, tainted variables, fixed-
+# size buffers, tagged unions, public vs static APIs — that the scanner
+# should prioritize.
+
+system_message: >
+  You are preparing a security briefing for a vulnerability researcher.
+  Identify which attack-surface categories exist in this code so the
+  scanner can focus its analysis. Return findings in strict JSON format.
+
+user_prompt_template: >
+  Analyze the following code to identify the security-relevant attack
+  surface. Name actual variables and constants. Do not find vulnerabilities
+  — provide surface.
+
+
+  Repository: {repo_name}
+
+
+  Repomix XML Content:
+  ---
+  {xml_content}
+  ---
+
+
+  ATTACK-SURFACE CATEGORIES (nano-analyzer style — bug-class oriented, not
+  framework oriented):
+
+  1. **untrusted_input_entry** - Functions that receive data from outside
+     the trust boundary: network parsers, file readers, IPC handlers, CLI
+     arg parsers, syscall arguments, ioctl handlers. Name the entry
+     functions and the parameters that carry tainted data.
+  2. **fixed_size_buffers** - Stack arrays and structs with fixed-size
+     char/byte buffers. Name them with their declared sizes resolved to
+     numeric values where named constants are involved
+     (e.g. `header[EVP_MAX_MD_SIZE=64]`).
+  3. **size_arithmetic** - Code computing sizes / offsets / counts from
+     attacker-influenced inputs before passing them to memcpy / malloc /
+     array indexing. Locate the arithmetic sites.
+  4. **tagged_unions_or_variants** - Union types or variant structs where a
+     type discriminator field selects which member is valid. Note whether
+     members are accessed with or without checking the tag.
+  5. **fallible_returns** - Functions returning NULL / -1 / ERR_PTR on
+     failure whose callers may not check the return. Allocators, lookups,
+     parse helpers, syscalls.
+  6. **public_vs_static_api** - Which functions are externally reachable
+     (public API, syscall handlers, router-exposed) vs internal helpers.
+     For static helpers, are all call sites safe?
+  7. **refcounted_or_lifecycle** - Objects with explicit acquire/release,
+     init/cleanup pairs, or asynchronous callbacks holding pointers across
+     free boundaries. Note lifecycle-sensitive fields.
+  8. **concurrency_state** - Fields shared across threads / interrupt
+     contexts / event handlers without obvious synchronization.
+  9. **dangerous_sinks** - memcpy / strcpy / sprintf / exec* / eval /
+     system / raw SQL / template rendering / deserialization / dlopen
+     that take tainted or potentially-tainted data.
+  10. **external_dependencies** - Third-party library calls whose failure
+      modes or input validation semantics affect the surface.
+
+
+  INSTRUCTIONS:
+    - Only include categories with CONCRETE evidence in the code.
+    - Name actual variables / structs / constants from the source.
+    - When a size is defined by a named constant, resolve it to the
+      numeric value if visible (use provided code, don't invent).
+    - Do not find vulnerabilities — just surface.
+
+
+  Return ONLY a valid JSON object according to the following schema:
+
+
+  JSON Schema:
+  ---
+  {schema}
+  ---
+
+
+  IMPORTANT:
+    - Return ONLY the raw JSON object
+    - Do NOT wrap in markdown code blocks
+    - Do NOT include explanatory text
+    - The entire response must be valid, parseable JSON

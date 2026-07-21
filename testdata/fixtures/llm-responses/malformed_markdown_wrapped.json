@@ -1,0 +1,20 @@
+```json
+{
+  "repo_name": "example/markdown-wrapped",
+  "description": "Response wrapped in markdown code fences",
+  "public_api_routes": [],
+  "security_issues": [
+    {
+      "issue": "Server-Side Request Forgery",
+      "file_path": "internal/proxy/handler.go",
+      "start_line": 55,
+      "end_line": 62,
+      "technical_details": "User-controlled URL is fetched without validation, enabling SSRF attacks.",
+      "severity": 8.0,
+      "cwe_id": "CWE-918"
+    }
+  ],
+  "security_risk": 8.0,
+  "risk_justification": "SSRF vulnerability allows access to internal services."
+}
+```

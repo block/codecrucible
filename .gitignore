@@ -1,0 +1,46 @@
+# Binary (anchor to repo root so cmd/codecrucible/ is not ignored)
+/codecrucible
+/bin/
+
+# Go
+coverage.out
+coverage.html
+
+# Environment
+.env
+.env.bak
+.env.*
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Python (legacy)
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Build artifacts
+dist/
+
+# GEPA / experiment artifacts
+scripts/
+output/
+.desloppify/
+
+# Misc
+~/
+
+# agent
+.claude/
+.amp/
+.perles*
+.beads*

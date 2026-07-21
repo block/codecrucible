@@ -1,0 +1,748 @@
+# CWE-Specific Deep Analysis
+#
+# One entry per CWE, read by the audit phase. For each finding, the entry
+# matching its CWE is spliced into the audit prompt.
+#
+# Orientation: these prompts run DURING VALIDATION, not discovery.
+# analysis_prompt should ask "is THIS finding real?" not "find more of this."
+# false_positive_indicators must be concrete enough to match real code —
+# benchmark evidence showed the previous indicators were too exotic to fire
+# (row-level security, HMAC'd tokens) while the actual FPs were mundane
+# (framework defaults, duplicate manifestations, hardening-vs-vuln).
+#
+# Original 20 entries retained with same keys. Added: CWE-384, CWE-1021,
+# CWE-601, CWE-1321, CWE-915, CWE-1336, CWE-113, CWE-338, CWE-209, CWE-640.
+
+cwe_prompts:
+  CWE-89:
+    title: "SQL Injection"
+    analysis_prompt: >
+      You are validating one flagged query. Quote the line. Is the user value
+      concatenated into the SQL string, or bound through a placeholder? String
+      building via +, f-string, .format(), or template literal is the
+      vulnerable mechanism; ?, $n, :name with a separate values array is not.
+      Then check the value's origin — if it comes from req.params but is
+      parseInt()'d first, the string-injection vector is closed (though a
+      numeric IDOR may remain; that is a different CWE). For ORM calls,
+      identify whether this is the query-builder path (safe) or a raw escape
+      hatch (.raw(), text(), $queryRaw, sequelize.query with replacements
+      missing). If the flagged concatenation builds an identifier (table or
+      column name), parameterization cannot apply — check for an allowlist
+      instead.
+    validation_checks:
+      - "Quote the exact query-construction line. Identify whether the user value enters via string building or via a placeholder binding."
+      - "If placeholder syntax is present, confirm the value is actually passed through the binding array and not also interpolated into the string."
+      - "For identifiers (column/table/ORDER BY): is there an allowlist? Parameterization does not apply."
+      - "Trace the value to its source. Type coercion (parseInt, Number, UUID parse) before the query closes the string-injection vector."
+      - "Second-order: is the flagged query reading a value that was stored from user input, then building a new query from it without re-binding?"
+    false_positive_indicators:
+      - "The value reaches the query through a placeholder binding (?, $n, :name) with a separate parameters argument."
+      - "The value is coerced to a non-string type (integer, UUID, enum) before query construction and the coercion rejects malformed input."
+      - "The concatenated fragment is a constant or server-chosen literal (static alias, hardcoded schema prefix) with no user-controlled bytes."
+      - "The query is built by an ORM query-builder method chain with no raw-string escape hatch on this path."
+
+  CWE-78:
+    title: "OS Command Injection"
+    analysis_prompt: >
+      Quote the exec/spawn call. Does it invoke a shell (shell:true, /bin/sh
+      -c, child_process.exec rather than execFile, Windows cmd /c)? A shell
+      interprets metacharacters; its absence does not. If no shell is
+      involved, metacharacter injection is closed — check for argument
+      injection instead: can the user value become its own flag
+      (--output=/etc/shadow, -o/tmp/x)? A leading -- before user-positional
+      arguments ends option parsing for most tools. If the command itself is
+      user-influenced (not just arguments), that is the worst case. Trace the
+      value back to its entry point and note any sanitization; then evaluate
+      whether that sanitization handles the shell in use (shlex.quote for
+      POSIX, nothing portable for cmd.exe).
+    validation_checks:
+      - "Does the call invoke a shell? child_process.exec vs execFile, subprocess with shell=True vs a list, Runtime.exec with a string vs array."
+      - "If shell is invoked: is any byte of the user value reachable in the command string without quoting appropriate to that shell?"
+      - "If no shell: can the user value begin with - or -- and be interpreted as a flag by the target binary?"
+      - "Is the command name itself fixed, or does user input choose the binary?"
+      - "Is any environment variable consumed by the child (PATH, LD_PRELOAD, PYTHONPATH) settable by the request?"
+    false_positive_indicators:
+      - "No shell is invoked AND arguments are passed as an array AND user values are preceded by -- (or the target binary takes no flags)."
+      - "The command string is fully static — every byte is a literal in source. The user value flows elsewhere."
+      - "The user value is validated against a closed allowlist of known-safe literals before reaching the exec."
+      - "The process runs in a sandbox (seccomp, container with no shell, nsjail) that makes the command execution uninteresting even if reached."
+
+  CWE-79:
+    title: "Cross-Site Scripting"
+    analysis_prompt: >
+      Find the render site, not the input site. Server-side: which template
+      tag emits the value? <%= escapes, <%- does not (EJS); {{ }} escapes,
+      {{{ }}} does not (Handlebars); {{ }} escapes, {{ |safe }} does not
+      (Jinja). If the escaped form is used, XSS is possible only if the
+      output context is not HTML body text — inside a <script> string,
+      inside an on*= attribute, inside a URL. Name the context. Client-side:
+      find the DOM sink (innerHTML, outerHTML, insertAdjacentHTML,
+      document.write, jQuery.html, dangerouslySetInnerHTML,
+      Range.createContextualFragment) and the source feeding it. A value
+      read from textContent and written to innerHTML round-trips entity
+      decoding into HTML parsing. If DOMPurify or an equivalent sanitizer
+      sits between source and sink, check its config — FORBID_TAGS /
+      FORBID_ATTR present? ALLOW_UNKNOWN_PROTOCOLS?
+    validation_checks:
+      - "Quote the template line or DOM-write call. Name the escape/bypass marker in use (<%- vs <%=, {{{ vs {{, |safe, v-html, dangerouslySetInnerHTML)."
+      - "If the escaped form is used: is the output context HTML body text, or is it script/attribute/URL where HTML encoding is insufficient?"
+      - "Trace the value from the render site back to a user-controlled source. Server constants and DB values that only admins can set do not count."
+      - "Is a sanitizer (DOMPurify, bleach, sanitize-html) applied between source and sink? If so, what does its config allow?"
+      - "Does a Content-Security-Policy exist, and does it include unsafe-inline or unsafe-eval in script-src?"
+    false_positive_indicators:
+      - "The template uses the auto-escaped form (<%=, {{ }}) and the output context is HTML body text."
+      - "The value is not attacker-influenced — it is a server literal, an admin-only field, or an integer/enum with no string bytes."
+      - "A sanitizer with a restrictive allowlist (no script, no event handlers, no javascript: URLs) processes the value before the sink."
+      - "The sink is textContent / innerText / setAttribute on a non-event non-URL attribute — these do not parse HTML."
+      - "The response is application/json or text/plain and is not embedded in an HTML page."
+
+  CWE-22:
+    title: "Path Traversal"
+    analysis_prompt: >
+      Quote the file-operation call and the path expression feeding it.
+      path.join / os.path.join NORMALIZE — they do not contain. The control
+      that matters is: resolve to a canonical absolute path, then check that
+      the result starts with the intended root (with a trailing separator to
+      avoid /safe matching /safe-but-not). Is that check present? If
+      filtering is done on the input instead (reject "..") — can a decoded
+      or encoded variant slip through? %2e%2e%2f arrives in Express
+      req.params already decoded. For archive extraction, is each entry's
+      name checked, or only the archive path? If the filename comes from a
+      server-generated identifier with no user-controlled bytes, there is no
+      traversal regardless of what the file-op looks like.
+    validation_checks:
+      - "Is the resolved absolute path compared against the intended root, with the comparison happening AFTER canonicalization and symlink resolution?"
+      - "If input filtering is used instead: does it handle URL-decoded, double-encoded, and mixed-separator (..\\ on POSIX) sequences?"
+      - "Does the framework decode path params before they reach the handler? (Express: yes. Others: varies.)"
+      - "For archive extraction: is the check applied per-entry?"
+      - "Trace the filename to its source. Is any byte of it user-controlled?"
+    false_positive_indicators:
+      - "The filename is a server-generated identifier (DB primary key, UUID, content hash) with zero user-controlled bytes in the path expression."
+      - "Canonical path is computed (realpath / resolve) and verified to start with the intended root before the file operation."
+      - "A framework static-file handler (express.static, Django static, whitenoise) owns the path and contains it by design."
+      - "The file operation reads from a read-only embedded filesystem or resource bundle — nothing outside the bundle exists to traverse to."
+
+  CWE-287:
+    title: "Improper Authentication"
+    analysis_prompt: >
+      This is a broad CWE; pin down the specific failure mode the finding
+      alleges. Missing auth on a route: quote the route registration and the
+      middleware chain — is auth mounted app-wide and this route is under
+      it, or per-route and this route skips it? Weak credential check: is
+      the comparison constant-time? Does "user not found" return faster than
+      "wrong password"? JWT alg issues: does jwt.verify pin algorithms, and
+      if not, does THIS library's default accept none or HS-as-RS? Quote the
+      library and version. Fallback-on-error: does an exception in the auth
+      middleware leave req.user unset but allow the handler to run?
+    validation_checks:
+      - "For 'missing auth': quote the middleware mount. Is this route actually outside the authenticated subtree, or did the first pass miss a router-level use()?"
+      - "For credential comparison: is a constant-time primitive used (bcrypt.compare, crypto.timingSafeEqual, hmac.compare_digest)?"
+      - "For JWT: is the algorithms option passed to verify? If not, what does this library version default to?"
+      - "For auth-middleware exceptions: does the error path call next(err), or does it call next() and proceed unauthenticated?"
+      - "Does any code path set req.user / session.user from client-supplied data without verification?"
+    false_positive_indicators:
+      - "Auth middleware is mounted at the router or app level and the flagged route is registered beneath that mount."
+      - "The endpoint is intentionally public (login, register, health, static assets, public catalog) and the response contains no user-scoped data."
+      - "The credential comparison is a constant-time library function; the flagged == is on a non-secret (username, email)."
+      - "jwt.verify is called with an explicit algorithms allowlist that excludes none and mixes no asymmetric/symmetric families."
+
+  CWE-862:
+    title: "Missing Authorization"
+    analysis_prompt: >
+      Distinct from CWE-639: 862 is "there is no check at all"; 639 is
+      "there is a check, but on a key the attacker chooses." For this
+      finding: quote the handler. Is authentication confirmed (the user is
+      who they say) but authorization absent (no verification they may
+      perform THIS action on THIS resource)? Then ask whether authorization
+      is enforced at a layer the first pass did not see — a router-level
+      middleware, a decorator on the controller class, a database policy.
+      If the resource genuinely has no ownership model (public reference
+      data, shared content), absence of an ownership check is correct, not
+      a finding.
+    validation_checks:
+      - "Quote the handler. Is there any comparison between the authenticated principal and the target resource's owner/tenant/scope?"
+      - "Is authorization enforced at a surrounding layer — router middleware, class decorator, database row-level policy — that the first pass may have missed?"
+      - "Does the resource have an ownership model at all? A public catalog item correctly has no ownership check."
+      - "Is this a privileged role endpoint where the check is role-based rather than ownership-based? A missing role check is still CWE-862."
+    false_positive_indicators:
+      - "Authorization is enforced by middleware on the parent router and the flagged handler is mounted beneath it."
+      - "The resource is designed to be readable/writable by any authenticated user — shared workspace data, global settings the app intends any user to set."
+      - "A database-level policy (RLS, tenant_id filter injected by the ORM) scopes every query regardless of handler code."
+      - "This finding is a secondary manifestation — another finding already reports 'resource X has no authorization layer' and this is one more endpoint exhibiting that."
+
+  CWE-639:
+    title: "Authorization Bypass Through User-Controlled Key (IDOR)"
+    analysis_prompt: >
+      Validate THIS finding, not the IDOR pattern in general. Quote the
+      handler: where does the resource ID enter (path, query, body)? Where
+      is the resource fetched? Between fetch and use, is there a comparison
+      of the resource's owner field against the authenticated principal?
+      An existence check (404 if null) is not an ownership check. Then
+      assess what this operation grants: reading a private record and
+      deleting it sit at different severities; appending a comment to a
+      record the attacker cannot read sits lower still. Finally — is this
+      the same systemic gap as another finding in the set, differing only
+      by HTTP verb or endpoint? If so, this is a duplicate manifestation,
+      not an independent vulnerability.
+    validation_checks:
+      - "Quote the fetch (SELECT/findById/get) and quote the use (return/update/delete). Between them, is there a principal-vs-owner comparison?"
+      - "What is the owner field on this resource (created_by, user_id, tenant_id, team membership)? Does the resource HAVE one, or is it intentionally shared?"
+      - "What does the attacker gain? READ of private data, WRITE to another user's record, DELETE, or a low-impact secondary operation (comment, tag, view-count)?"
+      - "Enumeration: are IDs sequential integers or opaque? Affects severity (mass exploitation speed), not validity."
+      - "Is another finding in this audit set reporting the same authorization gap on the same resource type? If yes, this is a duplicate."
+    false_positive_indicators:
+      - "An ownership comparison (resource.owner_id === req.user.id or equivalent) sits between fetch and use — the first pass missed it."
+      - "The resource is intentionally shared — any authenticated user may perform this operation by design, and the data exposed is not user-private."
+      - "This is a secondary manifestation: another finding already reports the systemic gap on this resource type, and this endpoint adds no new attacker capability beyond what that finding grants."
+      - "The operation is additive, low-impact (append-only comment, increment a counter, add a tag), grants no read of private data, and has no escalation path (output is escaped, no injection sink downstream)."
+      - "Database-level tenant isolation or row-level security scopes the fetch regardless of handler code — cross-user access fails at the query."
+
+  CWE-352:
+    title: "Cross-Site Request Forgery"
+    analysis_prompt: >
+      Walk the decision tree before confirming. Is the endpoint
+      authenticated by a cookie the browser auto-attaches? Bearer-token-only
+      endpoints are not CSRF-able — the attacker's page cannot set the
+      Authorization header cross-origin. If cookie-authed: what is the
+      cookie's SameSite attribute? Strict blocks all cross-site sends; Lax
+      blocks cross-site sends except top-level GET navigation. If Lax and
+      the flagged endpoint is POST/PUT/PATCH/DELETE, modern browsers already
+      refuse the cross-origin cookie send — residual risk is legacy
+      browsers. If no SameSite or None: is a synchronizer token validated?
+      Is a custom header required? Only when all of those are absent is the
+      finding confirmed. Then weight by what the operation does: password
+      change is critical; logout is annoyance.
+    validation_checks:
+      - "Is the endpoint authenticated by cookie, or by a header the attacker's origin cannot set (Authorization: Bearer)?"
+      - "What is the auth cookie's SameSite attribute? (Check the cookie-set call, not assumptions. Express-session default changed across versions.)"
+      - "If SameSite=Lax: is the flagged endpoint GET? Lax allows GET top-level navigation; non-GET is blocked."
+      - "Is a CSRF token required and validated server-side? Is a custom header (X-Requested-With) required and CORS locked down?"
+      - "What state changes? Password/email/funds/role vs. logout/preference/cosmetic."
+    false_positive_indicators:
+      - "The endpoint is authenticated exclusively by Authorization header (Bearer/API key) — no cookie, no CSRF."
+      - "The auth cookie is SameSite=Strict, or SameSite=Lax and the flagged endpoint is not GET."
+      - "A synchronizer or double-submit CSRF token is validated server-side on this route."
+      - "CORS is locked (no credential-bearing cross-origin allowed) AND a custom header is required that simple requests cannot carry."
+      - "The operation is GET logout or a similarly low-impact state change — true but below the reporting floor unless chained."
+
+  CWE-502:
+    title: "Deserialization of Untrusted Data"
+    analysis_prompt: >
+      Name the deserializer and trace its input. pickle.loads, yaml.load
+      without SafeLoader, java.io.ObjectInputStream, BinaryFormatter, PHP
+      unserialize, Ruby Marshal.load on bytes that a client can influence
+      are the sinks. JSON.parse is a different class — dangerous only via
+      prototype pollution (see CWE-1321) or a reviver that does something
+      clever. For Java, look-ahead deserialization filters
+      (ObjectInputFilter) or allowlisting change the picture — are they
+      present? For YAML, is it yaml.load (unsafe) or yaml.safe_load? For
+      the input: does it come from a request body, a cookie, a queue
+      message that upstream validated, or a file only admins can place?
+    validation_checks:
+      - "Name the exact deserializer call. Is it one of the code-execution-capable ones (pickle, unsafe yaml, Java serialization, BinaryFormatter, PHP unserialize, Marshal)?"
+      - "Trace the bytes. Request body? Cookie? Header? Or a server-side store only trusted code writes to?"
+      - "For Java: is an ObjectInputFilter or look-ahead class allowlist applied?"
+      - "For YAML: yaml.load vs yaml.safe_load vs a restricted Loader class?"
+      - "Is the payload integrity-protected (HMAC/signature verified before deserialize) so an attacker cannot supply arbitrary bytes?"
+    false_positive_indicators:
+      - "The deserializer is a data-only format — JSON.parse without reviver, yaml.safe_load, protobuf, msgpack — with no code-execution semantics."
+      - "The input is read from a store only server code writes to (server-generated cache, trusted internal queue) and no client path reaches it."
+      - "The payload is HMAC'd or signed and the MAC is verified BEFORE deserialization — attacker cannot supply chosen bytes."
+      - "A strict class allowlist / ObjectInputFilter is enforced and the allowed classes have no gadget chain."
+
+  CWE-327:
+    title: "Broken or Risky Cryptographic Algorithm"
+    analysis_prompt: >
+      Identify the algorithm and WHAT IT IS USED FOR. MD5 as a cache key is
+      fine; MD5 protecting a signature is not. SHA-1 in a git object ID is
+      context; SHA-1 in a certificate is a finding. For password hashing:
+      any raw hash (SHA-256 included) is wrong — bcrypt/scrypt/argon2 are
+      right because they are slow and salted. For symmetric encryption: ECB
+      mode leaks structure regardless of cipher; CBC without a MAC is a
+      padding-oracle candidate; prefer an AEAD (GCM, ChaCha20-Poly1305).
+      For DES/3DES/RC4: always a finding if protecting anything. State the
+      USE before scoring — the same primitive is a 2.0 or a 9.0 depending
+      on what it guards.
+    validation_checks:
+      - "Name the algorithm and the exact purpose in this code path. What does breaking it give the attacker?"
+      - "For hashing: integrity/signature use (collision matters) vs. key derivation (preimage matters) vs. non-security dedup (neither matters)?"
+      - "For password storage: raw hash vs. adaptive KDF? Salt present and per-user?"
+      - "For symmetric: which mode? Is authentication (MAC or AEAD tag) applied, and is it encrypt-then-MAC?"
+      - "Is there a downgrade path — a config or negotiation that lets an attacker select the weak option?"
+    false_positive_indicators:
+      - "The weak primitive is used for a non-security purpose — content-addressed caching, ETag generation, dedup where collision grants nothing."
+      - "The flagged algorithm is present in a compatibility branch but the live path uses a strong algorithm and the weak branch is unreachable by current config."
+      - "The hash is an HMAC with a strong key — HMAC-SHA1's security rests on the key, and length-extension does not apply."
+
+  CWE-798:
+    title: "Hard-coded Credentials"
+    analysis_prompt: >
+      Quote the literal. Is it a real credential or a placeholder
+      (your-key-here, changeme, an obvious example)? Check whether an
+      environment variable or secrets manager is consulted first and the
+      literal is a fallback — and if so, whether the fallback is reachable
+      in production (is the env var actually set in the deploy config?).
+      Check git history: was this committed and later "removed"? Removed
+      secrets are still in history. For test files: does the test
+      credential grant access to anything beyond an in-memory fixture?
+    validation_checks:
+      - "Is the literal a real credential (high entropy, matches a known key format) or a placeholder/example?"
+      - "Is it behind an env-var-or-fallback pattern? If so, does the production deploy set the env var, or does the fallback execute?"
+      - "Is the file shipped to production, or is it test/example/doc excluded by the build?"
+      - "Scope: what does this credential unlock? Local test DB vs. production third-party API."
+      - "History: visible in git log even if removed from HEAD?"
+    false_positive_indicators:
+      - "The string is a documented placeholder (your-api-key-here, sk-xxxx, <insert key>) with no real entropy and no production path."
+      - "The file is test-only, excluded from the production artifact, and the credential scopes to an ephemeral fixture."
+      - "An environment variable is read with NO fallback literal — the flagged string is a variable name or log label, not a value."
+      - "The value is a well-known public constant (OAuth client_id for a public client, public key, published test-mode key)."
+
+  CWE-434:
+    title: "Unrestricted Upload of Dangerous File Type"
+    analysis_prompt: >
+      Upload is the delivery; the sink is what happens next. Three
+      questions. Storage: inside the webroot and served by the static
+      handler? Under an executable extension mapping (.php in a PHP app,
+      .jsp on a servlet container)? Processing: handed to ImageMagick,
+      Ghostscript, LibreOffice — processors with their own CVE history?
+      Serving: returned with Content-Type derived from the file, or forced
+      to something safe? Content-Disposition: attachment set, or does an
+      HTML file render inline? Validation on the upload path matters less
+      than these downstream facts — a .txt containing HTML that gets
+      sniffed to text/html on download is the finding, regardless of what
+      the upload check allowed.
+    validation_checks:
+      - "Where is the file written? Inside a statically-served directory? Under a path the app server maps to a script handler?"
+      - "How is the file served on download? Content-Type fixed (application/octet-stream) or derived from the file? Content-Disposition: attachment set? X-Content-Type-Options: nosniff?"
+      - "Is the file fed to a processor (ImageMagick convert, gs, ffmpeg, headless office)? Version? Sandbox? Policy file?"
+      - "What validation exists on upload, and what does it trust — client-sent MIME type (spoofable), extension (renameable), or magic bytes?"
+      - "Is the stored filename attacker-controlled (path traversal on write) or server-generated?"
+    false_positive_indicators:
+      - "Files are stored outside the webroot AND served through a handler that forces Content-Type: application/octet-stream and Content-Disposition: attachment."
+      - "Storage is an object store (S3/GCS) with no script execution semantics, served from a domain that shares no cookies with the app."
+      - "Upload is restricted to an admin role whose compromise is already game-over — the upload grants nothing additional."
+      - "The processor runs in a sandbox (nsjail, gVisor, firejail) with a pinned, patched version and a restrictive delegate policy."
+
+  CWE-918:
+    title: "Server-Side Request Forgery"
+    analysis_prompt: >
+      Quote the outbound request call. Which part of the URL does user
+      input control — full URL, host, path, query, scheme? Full URL control
+      is the worst case. Then the target question: can the request reach
+      169.254.169.254 (cloud metadata), 127.0.0.1/localhost, RFC1918
+      ranges, or internal service DNS names? If a denylist exists, probe it:
+      decimal IP (2130706433 == 127.0.0.1), IPv6 mapped
+      ([::ffff:127.0.0.1]), DNS that resolves internal, 30x redirect from
+      an allowed host to a denied one. Does the HTTP client follow
+      redirects? Is the response returned to the caller (full read) or
+      discarded (blind — still exploitable via timing or side effects)?
+    validation_checks:
+      - "Which URL component is user-controlled? Full URL, or just a path under a fixed host?"
+      - "Allowlist or denylist? Allowlists of known-good hosts resist bypass; denylists of bad IPs rarely do."
+      - "Does the client follow redirects? A 302 from allowed.com to 169.254.169.254 defeats pre-request validation."
+      - "Is DNS resolved before the check or after? Resolve-then-check defeats DNS rebinding only if the resolved IP is what gets connected to."
+      - "Is the response body returned to the attacker, or is this blind?"
+    false_positive_indicators:
+      - "The host is a fixed literal; user input controls only path or query under that host — this may be a different finding (path traversal on an internal API) but is not SSRF."
+      - "A strict allowlist of destination hosts is enforced, the HTTP client does not follow redirects, and DNS resolution is checked against the allowlist before connect."
+      - "The outbound call is made by a client-side component (browser fetch), not the server — that is a CORS/open-redirect concern, not SSRF."
+      - "The egress network is firewalled — metadata endpoint blocked at the infrastructure layer, no route to RFC1918 — and this is verified in the provided IaC."
+
+  CWE-117:
+    title: "Log Injection / Forging"
+    analysis_prompt: >
+      Quote the log call and the user value inside it. Structured loggers
+      (slog with key-value, JSON loggers, logfmt) encode values — a newline
+      in the value becomes \n in the output and does not start a new log
+      record. Printf-style interpolation into a flat text log does not
+      encode. Which is this? Then the downstream: what consumes these logs?
+      A SIEM that parses on newlines, a terminal that interprets ANSI, a
+      web viewer that renders HTML? The severity lives downstream — log
+      forging into a grep is low; log forging that injects into a
+      non-escaping web dashboard is XSS by another name.
+    validation_checks:
+      - "Structured logger (key/value, JSON) or flat string interpolation? Structured loggers generally encode the value safely."
+      - "Is the user value sanitized for CR/LF before logging?"
+      - "What reads these logs? Line-based parser, terminal emulator, web UI? Does that consumer escape?"
+      - "Is ANSI escape injection possible (terminal consumer) or HTML injection (web log viewer without escaping)?"
+    false_positive_indicators:
+      - "The logger is structured (slog, zap, logrus with JSON formatter, Python structlog) and the user value is passed as a field, not interpolated into the message string."
+      - "The user value is sanitized — CR/LF stripped or replaced — before the log call."
+      - "The value is not user-controlled — it is a server-generated ID or an enum, and the first pass misread the source."
+      - "Logs are consumed only by a system that does not parse on newlines (e.g., length-prefixed records, JSONL parsed as JSON)."
+
+  CWE-362:
+    title: "Race Condition / TOCTOU"
+    analysis_prompt: >
+      Quote the check and quote the use. How many statements apart are
+      they, and what executes between them? For a database: are the check
+      and the write in the same transaction at an isolation level that
+      prevents the anomaly, or is the write a conditional UPDATE whose
+      WHERE repeats the check atomically? Driver matters: better-sqlite3 is
+      synchronous on one connection — two requests cannot interleave at the
+      statement level in the same process. A pooled async driver (pg,
+      mysql2) can. Say which. For non-DB resources (files, in-memory maps):
+      is there a mutex, and is it held across both check and use?
+    validation_checks:
+      - "Quote the check (SELECT/exists/read) and the use (UPDATE/INSERT/write). Are they one atomic operation or two?"
+      - "If two: same transaction? At what isolation level? Does the isolation level actually prevent this anomaly (write skew survives REPEATABLE READ in Postgres)?"
+      - "Is the write a conditional UPDATE ... WHERE <check condition> with rows-affected verified? That is atomic."
+      - "Driver/runtime concurrency model: single synchronous connection, or pooled async? Event loop or threads?"
+      - "Is there a unique constraint that makes the second write fail regardless of the race?"
+    false_positive_indicators:
+      - "The check and write are one atomic statement (UPDATE ... WHERE, INSERT ... ON CONFLICT, INSERT ... WHERE NOT EXISTS) and rows-affected is checked."
+      - "Both statements sit inside a transaction at an isolation level that precludes the anomaly, AND the transaction is actually committed (not just opened)."
+      - "The driver is single-connection synchronous (better-sqlite3, SQLite in WAL with one writer) and the process is single-instance — no interleaving window exists."
+      - "A database unique constraint makes the losing writer fail — the race resolves correctly even though the code does not explicitly handle it."
+      - "The operation is idempotent — executing it twice is indistinguishable from once."
+
+  CWE-611:
+    title: "XML External Entity (XXE)"
+    analysis_prompt: >
+      Name the parser and its configuration. Modern defaults are generally
+      safe; the finding is code that opts back into entity resolution. For
+      Python lxml: resolve_entities in the parser constructor? For Java:
+      DocumentBuilderFactory.setFeature on disallow-doctype-decl and the
+      external-*-entities features? XMLInputFactory SUPPORT_DTD? For .NET:
+      is XmlResolver null? For libxml via bindings: XML_PARSE_NOENT,
+      XML_PARSE_DTDLOAD? Quote the config lines. Then trace the XML — does
+      it come from a request body, an uploaded file, or a fixed server-side
+      document?
+    validation_checks:
+      - "Name the parser library and version. What is its default for external entity resolution?"
+      - "Quote the parser construction/config. Are external entities explicitly disabled, explicitly enabled, or left at default?"
+      - "Is DTD processing disabled entirely (strongest), or only external entities?"
+      - "Trace the XML source. Request body, file upload, inter-service message, or static server resource?"
+      - "If entities resolve: what can they reach? file://, http:// to internal hosts (SSRF-via-XXE), expect:// if PHP?"
+    false_positive_indicators:
+      - "The parser is configured with external entities and DTDs explicitly disabled — quote the config lines."
+      - "The library version's default disables external entity resolution and no code re-enables it."
+      - "The XML is a static server-side file or generated from trusted data with no attacker-controlled bytes."
+      - "The parser is a streaming/pull parser that does not resolve entities at all (some StAX configs, expat without handlers)."
+
+  CWE-94:
+    title: "Code Injection"
+    analysis_prompt: >
+      Quote the dynamic-execution sink: eval, new Function,
+      vm.runInThisContext, setTimeout/setInterval with a string argument,
+      Python exec/eval/compile, PHP eval/assert/create_function, Ruby
+      eval/instance_eval. Trace the argument — does any byte of it derive
+      from user input? If the user controls a value that is embedded inside
+      a larger static code string, can they break out of the quoting
+      context? Template engines that compile templates from user input are
+      this CWE wearing a hat (see CWE-1336). Node vm is not a sandbox —
+      vm.runInNewContext is escapable.
+    validation_checks:
+      - "Name the exact sink. Is it a true code-exec primitive or a lookalike (JSON.parse is not eval)?"
+      - "Trace the argument bytes. Wholly user-controlled, partly (embedded in a template), or entirely static?"
+      - "If embedded: can the user value escape its quoting context (break out of a string literal, close a bracket)?"
+      - "Is there a sandbox claim (Node vm, PyPy sandbox)? These are historically escapable — note it, do not credit it."
+    false_positive_indicators:
+      - "The argument to the exec primitive is entirely a server-side literal; the user value flows to a different call nearby."
+      - "The user value is embedded via a mechanism that cannot break context — e.g., JSON.stringify'd into a string literal, so all metacharacters are escaped."
+      - "The 'eval' is a safe lookalike — ast.literal_eval (Python), JSON.parse — with no code semantics."
+      - "The sink is reachable only from a build-time/CLI path that never executes on request handling."
+
+  CWE-200:
+    title: "Exposure of Sensitive Information"
+    analysis_prompt: >
+      CWE-200 is an abstraction; narrow it. What information, via what
+      channel, to what audience? A stack trace in an error response to any
+      caller is CWE-209. A password_hash in a JSON serialization is
+      CWE-213. Directory listing on a static path is CWE-548. Reclassify to
+      the specific child if one fits. If CWE-200 genuinely is the best
+      match, state precisely what is exposed, to whom, and what an attacker
+      does with it — "information disclosure" alone is not a finding, it
+      is a category.
+    validation_checks:
+      - "What exactly is exposed? Name the field, the file, the message. 'Sensitive information' is not specific enough."
+      - "Who can observe it? Unauthenticated network attacker, any authed user, same-tenant user, admin only?"
+      - "What does the attacker do with it? Enables another attack (reconnaissance), or is directly damaging (PII, credentials)?"
+      - "Is there a narrower CWE (209, 213, 532, 548) that fits better? Reclassify if so."
+    false_positive_indicators:
+      - "The information is intentionally public — product catalog, published content, public profile fields the user chose to expose."
+      - "The audience is already privileged — an admin-only diagnostic endpoint shows internal state to admins. That is its job."
+      - "The 'exposure' is a version string, a framework name, a build ID — fingerprinting data that grants no capability beyond what Shodan already knows."
+      - "The data appears in a code path (verbose logging, debug endpoint) that is guarded by an environment check and the production config disables it."
+
+  CWE-306:
+    title: "Missing Authentication for Critical Function"
+    analysis_prompt: >
+      Quote the route registration and locate the authentication
+      middleware. Is this route mounted outside the authed subtree, or is
+      auth applied app-wide and the first pass missed the mount? Then
+      define "critical" — what does this function do? A public healthcheck
+      correctly lacks auth; an unauth'd admin action is a 9.0+. Internal
+      endpoints sometimes rely on network position (private subnet, service
+      mesh mTLS) rather than application auth — is that the design here,
+      and is the network assumption enforced in the provided IaC?
+    validation_checks:
+      - "Quote the route. Quote the auth middleware mount. Is the route inside or outside the protected subtree?"
+      - "What does the handler do? State change, data read, administrative action, or informational (health/version)?"
+      - "Is this an internal-only endpoint where the auth boundary is the network (private subnet, service mesh)? Is that boundary verified in config?"
+      - "Is there a second auth mechanism — an API key in a header, a shared secret in the body — that the first pass did not recognize as auth?"
+    false_positive_indicators:
+      - "Auth middleware is mounted at the app or router level and the flagged route is registered beneath it — the first pass misread the mount order."
+      - "The endpoint is designed to be public — login, register, password-reset-request, healthcheck, metrics for an internal scraper, static assets."
+      - "Network-level auth applies — service mesh mTLS, VPC-private with no ingress — and the IaC confirms it. (Downgrade severity; note the assumption.)"
+      - "An alternative auth mechanism is present — header-based API key validated in the handler body — that the first pass did not count as auth."
+
+  CWE-522:
+    title: "Insufficiently Protected Credentials"
+    analysis_prompt: >
+      Distinct from CWE-798 (hard-coded) — this is credentials stored or
+      transmitted without adequate protection. Storage: password in
+      plaintext or reversible encryption instead of an adaptive hash.
+      Session token in localStorage (XSS-readable) when an HttpOnly cookie
+      was an option. API key in a world-readable file. Transmission:
+      credentials in a GET query string (logged everywhere), over http://,
+      in a referrer-leaking URL. Quote the store or the send; name the
+      protection that should be there.
+    validation_checks:
+      - "Storage: how is the credential persisted? Plaintext, reversibly encrypted (why?), or one-way hashed with an adaptive KDF?"
+      - "Client-side: localStorage/sessionStorage (XSS-readable) or HttpOnly cookie? Is the XSS-readable choice necessary for the architecture?"
+      - "Transmission: credentials in URL (query string, path)? Over TLS? In a header that proxies forward?"
+      - "File permissions: world-readable config containing secrets?"
+    false_positive_indicators:
+      - "The 'credential' is a public identifier — username, client_id, public key — that requires no protection."
+      - "Passwords are hashed with bcrypt/scrypt/argon2; the flagged plaintext sighting is the in-memory value during the login request, which is unavoidable."
+      - "The token in localStorage is the only option for the architecture (cross-domain SPA with no shared cookie domain) AND a CSP meaningfully limits XSS."
+      - "The credential transits a TLS connection and is in a header/body, not a URL — the first pass misidentified the channel."
+
+  # ── Added entries ── benchmark FPs and coverage gaps ────────────────
+
+  CWE-384:
+    title: "Session Fixation"
+    analysis_prompt: >
+      The vulnerability is: the session identifier does NOT change across
+      the privilege boundary (anonymous → authenticated). An attacker who
+      can set the victim's pre-auth session ID — via a fixation vector like
+      an URL-borne SID, a subdomain cookie, or a prior XSS — rides the
+      session after the victim logs in. Two things to verify: is there a
+      fixation vector at all (can an attacker set the victim's SID)? And
+      is the SID rotated on login? Framework defaults vary widely:
+      express-session requires an explicit req.session.regenerate() call;
+      Flask-Login rotates inside login_user(); Django's login() calls
+      cycle_key(); Spring Security rotates by default post-3.1. Name the
+      framework. Check the default. Only then evaluate the handler.
+    validation_checks:
+      - "Name the session framework. What is its documented default for SID rotation on login? (express-session: no. Flask-Login: yes. Django auth.login: yes. Spring Security: yes post-3.1.)"
+      - "If the framework does not rotate by default: is there an explicit regenerate/rotate call in the login handler? Quote it or quote its absence."
+      - "Fixation vector: can an attacker SET the victim's pre-auth SID? SID accepted from URL? Cookie settable from a sibling subdomain? No vector, no fixation regardless of rotation."
+      - "Cookie flags: HttpOnly limits the XSS-to-fixation path but does not affect the URL/subdomain vectors."
+    false_positive_indicators:
+      - "The session framework rotates the SID by default on authentication (Flask-Login login_user, Django auth.login, Spring Security) — absence of an explicit regenerate call is correct."
+      - "An explicit regenerate/rotate call is present in the login handler (req.session.regenerate, session_regenerate_id(true)) — the first pass missed it."
+      - "There is no fixation vector: SID is never read from a URL, cookies are host-locked with __Host- prefix, and no subdomain is attacker-controlled."
+      - "The session is stateless (JWT in Authorization header) — there is no server-side SID to fixate."
+
+  CWE-1021:
+    title: "Improper Restriction of Rendered UI Layers (Clickjacking)"
+    analysis_prompt: >
+      Absence of X-Frame-Options / CSP frame-ancestors is a true
+      observation. It is a VULNERABILITY only if there exists a page worth
+      framing — one where a single click, with the user already
+      authenticated, performs an action the attacker benefits from:
+      purchase, permission grant, destructive confirm, settings change.
+      Name that page. If no such page exists (the app is a read-only
+      dashboard, or every sensitive action requires typed input a
+      clickjack cannot supply), this is a hardening recommendation at
+      severity ≤ 2.0, not a vulnerability. Check whether the cookie is
+      SameSite=Strict — if the framed request does not carry the cookie,
+      the click is on an unauthenticated page.
+    validation_checks:
+      - "Is X-Frame-Options or CSP frame-ancestors set anywhere — helmet(), a reverse-proxy header, a framework default? Check middleware and deploy config."
+      - "Name a page where ONE CLICK by an authenticated user performs an attacker-beneficial action. No such page, no vulnerability."
+      - "Does the sensitive action require typed input (password confirm, CAPTCHA, amount entry)? Typed input defeats clickjacking."
+      - "Auth cookie SameSite attribute? Strict means the framed page loads unauthenticated — nothing to jack."
+    false_positive_indicators:
+      - "X-Frame-Options: DENY/SAMEORIGIN or CSP frame-ancestors is set — by helmet(), by a reverse proxy config, or by a framework default. The first pass only checked the app code."
+      - "No one-click sensitive action exists — every state change requires typed input, re-auth, or a multi-step flow that a transparent overlay cannot complete."
+      - "Auth cookie is SameSite=Strict — the framed request is unauthenticated and the page renders as for an anonymous user."
+      - "The application is an API with no browser-rendered pages — there is nothing to frame."
+
+  CWE-601:
+    title: "Open Redirect"
+    analysis_prompt: >
+      Quote the redirect call (res.redirect, HttpResponseRedirect, header
+      Location set) and the value feeding it. Does user input control the
+      full target, or only a path under a fixed origin? Full control is
+      the finding. Check the validation: a host allowlist is robust;
+      "startswith /" fails to //evil.com (protocol-relative) and
+      /\evil.com (backslash parsed as path separator by some browsers);
+      "startswith http" fails to javascript:. Where in the flow does the
+      redirect sit — post-login ?next= is the classic; OAuth redirect_uri
+      is higher stakes because it can leak the authorization code.
+    validation_checks:
+      - "Does user input control the full redirect target or only a path under a fixed host?"
+      - "What validation is applied? Host allowlist, path-only, startswith check, none?"
+      - "If startswith '/': does it reject //host (protocol-relative) and /\\host?"
+      - "Where does the redirect sit? Post-login, post-logout, OAuth callback? OAuth redirect_uri leaks the code."
+      - "Is javascript: or data: rejected? An open redirect to javascript: is XSS."
+    false_positive_indicators:
+      - "The redirect target host is a server-side literal; user input controls only the path under that host."
+      - "A strict allowlist of full origins is enforced and //, \\, javascript:, data: are rejected."
+      - "The user value is path-only by construction — URL-parsed and only .pathname is used, with a fixed origin prepended."
+      - "The redirect is to a relative path resolved against the current origin by the framework (no host component can be injected)."
+
+  CWE-1321:
+    title: "Prototype Pollution"
+    analysis_prompt: >
+      Find the merge and find the gadget — pollution without a gadget is a
+      latent bug, not an exploit. The merge: a recursive copy / deep-merge /
+      set-by-path that processes attacker-controlled keys without rejecting
+      __proto__, constructor, prototype. lodash.merge < 4.17.12, jQuery
+      $.extend(true, ...) in older versions, hand-rolled deepMerge. JSON.parse
+      alone is safe — {"__proto__":{}} parses as an own-property named
+      __proto__, not a prototype mutation — the danger is the MERGE that
+      then copies it onto a real object. The gadget: code that reads a
+      property expecting undefined and now gets an attacker value —
+      options.isAdmin, config.template, an if(obj.x) that was meant to be
+      falsy.
+    validation_checks:
+      - "Quote the merge/extend/set-by-path. Does it recurse into objects? Does it reject __proto__/constructor/prototype keys?"
+      - "Library and version — lodash, jQuery, hoek, minimist? Is this version patched?"
+      - "Trace the source: can an attacker supply the keys being merged? Request body, query string (qs parses a[b]=c into nested objects), config file?"
+      - "Find a gadget: a property read that expects undefined and changes control flow or data if it resolves to an attacker value."
+      - "Object.create(null) on the target? No prototype, no pollution."
+    false_positive_indicators:
+      - "The merge utility explicitly rejects __proto__, constructor, and prototype keys (quote the guard)."
+      - "The library version is patched (lodash >= 4.17.12, etc.) and the merge is the library call, not a hand-rolled copy."
+      - "The keys being merged are not attacker-controlled — they come from a server-side constant or a schema-validated allowlist of keys."
+      - "The target is Object.create(null) or a Map — no prototype chain to pollute."
+      - "No gadget is reachable — prototype is briefly polluted but nothing reads the polluted property before the object is discarded. (Downgrade; do not dismiss — gadgets appear later.)"
+
+  CWE-915:
+    title: "Mass Assignment / Autobinding"
+    analysis_prompt: >
+      Quote the create/update call. Does it pass the entire request body
+      (or a spread of it) to the ORM/model without an explicit field
+      allowlist? User.create(req.body), user.update(...req.body),
+      @ModelAttribute onto an entity with no @JsonIgnore on sensitive
+      fields, Rails without strong_parameters. Then enumerate the model's
+      fields: which ones would an attacker want to set? role, is_admin,
+      email_verified, tenant_id, owner_id, balance, price. If none of the
+      model's fields are sensitive, assignment is unrestricted but
+      uninteresting. Name the field that matters.
+    validation_checks:
+      - "Quote the create/update call. Is the request body passed wholesale, or is there an explicit allowlist (pick/permit/select/dto)?"
+      - "Enumerate the model's fields. Which are privilege-bearing (role, is_admin), trust-bearing (email_verified, kyc_passed), scope-bearing (tenant_id, owner_id), or value-bearing (balance, price)?"
+      - "Is there framework-level protection? Rails strong_parameters, Django ModelForm with Meta.fields, a DTO layer, JSON schema validation with additionalProperties:false?"
+      - "Which endpoint — registration, profile update, admin create? Registration setting role=admin is worse than profile update setting display_name."
+    false_positive_indicators:
+      - "An explicit field allowlist is applied — .pick(['name','email']), params.permit(:name,:email), a DTO with only safe fields, schema with additionalProperties:false."
+      - "The model has no sensitive fields — every column is user-owned data the user is meant to set."
+      - "The ORM/framework enforces an allowlist by default and no code opts out (Rails with strong_parameters, Django ModelForm with explicit fields)."
+      - "A validation schema upstream rejects unknown keys before the data reaches the model."
+
+  CWE-1336:
+    title: "Server-Side Template Injection"
+    analysis_prompt: >
+      The entire finding is the distinction between template SOURCE and
+      template DATA. User input as DATA rendered by an escaping template is
+      fine (or XSS if unescaped — CWE-79). User input as SOURCE — the
+      template string itself — is SSTI. Quote the call:
+      render_template_string(user_input), Template(user_input).render(),
+      engine.compile(req.body.x), eval-in-template ({{ request.args.x }}
+      inside a {% ... %} block that executes it). Name the engine — Jinja2
+      and Twig sandboxes are escapable; Mustache/Handlebars without helpers
+      are logic-less and generally contain.
+    validation_checks:
+      - "Quote the render/compile call. Is user input the template STRING, or a VALUE passed to a fixed template?"
+      - "Name the engine. Jinja2, Twig, Freemarker, Velocity — code-exec capable. Mustache, strict Handlebars — logic-less."
+      - "Is a sandbox mode enabled (Jinja2 SandboxedEnvironment)? These have historical escapes — note, do not fully credit."
+      - "If partial: user input is concatenated into a larger template string. Can it break out of its context ({{ }} injection)?"
+    false_positive_indicators:
+      - "User input is template DATA — passed as a context variable to a fixed template file. This may be XSS (CWE-79) if unescaped but is not SSTI."
+      - "The engine is logic-less (Mustache, Handlebars without custom helpers) — no code-execution primitive exists in the template language."
+      - "The template string is a server-side literal; the user value the first pass saw is the render CONTEXT, not the SOURCE."
+
+  CWE-113:
+    title: "HTTP Response Splitting / Header Injection"
+    analysis_prompt: >
+      Quote the header-set call and the user value inside it. Most modern
+      frameworks reject CR/LF in header values at the framework layer —
+      Node's http module throws, Go's net/http strips, modern Java servlet
+      containers reject. Check the runtime version before confirming. The
+      high-value headers are Location (inject a second response, or turn a
+      redirect into a different redirect) and Set-Cookie (set an arbitrary
+      cookie). If the framework is permissive and the user value is
+      unsanitized, this is real.
+    validation_checks:
+      - "Which header is being set with user input? Location, Set-Cookie, or a custom header?"
+      - "Framework and version. Does this runtime reject CR/LF in header values automatically? (Node http: yes since 4.x. Go net/http: strips. Check others.)"
+      - "Is the user value sanitized for \\r\\n before the header set?"
+      - "If Location: is this also an open redirect (CWE-601)? If Set-Cookie: what cookie can be set?"
+    false_positive_indicators:
+      - "The runtime rejects CR/LF in header values (Node >= 4, Go net/http, modern servlet containers) — the injection cannot reach the wire."
+      - "The user value is sanitized — \\r and \\n stripped or rejected — before the header set."
+      - "The header value is URL-encoded or otherwise encoded such that CR/LF become %0D%0A and do not terminate the header."
+
+  CWE-338:
+    title: "Weak PRNG for Security Purpose"
+    analysis_prompt: >
+      Name the generator and name the purpose. Math.random(), rand(),
+      java.util.Random, Python random — ~30-50 bits of state, seedable,
+      predictable given outputs. The QUESTION is whether predicting the
+      output grants the attacker anything: a session token, a reset token,
+      an API key, a CSRF nonce — yes. A cache-busting query param, a
+      shuffled display order, a non-auth-bearing filename — no. For
+      filenames specifically: predictable only matters if knowing the
+      filename grants access that the authorization layer should have
+      denied. Tie it to the authz model.
+    validation_checks:
+      - "Name the generator. Math.random / rand / java.util.Random (weak) vs. crypto.randomBytes / secrets / SecureRandom (strong)."
+      - "What is the output USED FOR? Token that gates access, or a non-security identifier?"
+      - "If the output is predictable, what does the attacker gain? Walk the attack: predict the value, then what?"
+      - "Entropy: how many bytes, and how is it encoded? Math.random()*1e9 is ~30 bits; a base64'd 32-byte crypto.randomBytes is 256."
+    false_positive_indicators:
+      - "The value is not security-bearing — display shuffle, jitter, cache key, retry backoff. Predicting it grants nothing."
+      - "A cryptographic generator is used (crypto.randomBytes, secrets.token_*, SecureRandom, /dev/urandom) — the first pass misidentified the call."
+      - "The weakly-random value is combined with a strong secret (HMAC'd with a server key) before use — the output is unpredictable regardless."
+      - "For filenames: the filename is predictable BUT access to the file is independently authorized — knowing the name does not grant read."
+
+  CWE-209:
+    title: "Information Exposure Through Error Message"
+    analysis_prompt: >
+      Quote the error handler. Does err.message / err.stack / the exception
+      object reach the response body? Is there an environment guard
+      (NODE_ENV !== 'production', DEBUG=False) and does the production
+      config actually set it? Frameworks in dev mode do this on purpose —
+      the finding is dev-mode behavior reaching production. Then assess
+      what leaks: a stack trace with absolute paths, a SQL error echoing
+      the query, an internal hostname — these aid reconnaissance but are
+      not themselves access.
+    validation_checks:
+      - "Quote the error handler or the throw site. Does the raw error reach the response, or is it wrapped/replaced?"
+      - "Is there an environment check? If so, does the production deploy config set the variable correctly?"
+      - "What leaks? Stack trace (paths, modules), SQL error (query structure), internal service names, or just a generic 500?"
+      - "Does the framework's default error handler do this when no custom handler is registered? (Express in dev: yes. Flask with debug: yes.)"
+    false_positive_indicators:
+      - "A global error handler wraps all exceptions and responds with a generic message; err details go to logs only."
+      - "The verbose path is guarded by an environment check AND the production config demonstrably sets the guard (quote the deploy config)."
+      - "The error message is intentional, user-facing, and contains no internal details — 'Invalid email format' is not information exposure."
+      - "The leak is a framework name or version banner — fingerprinting, not actionable exposure."
+
+  CWE-640:
+    title: "Weak Password Recovery"
+    analysis_prompt: >
+      Walk the reset flow: request, deliver, verify, consume. Token
+      generation — crypto PRNG or Math.random? Length? Token storage —
+      hashed in the DB, or plaintext (DB read = account takeover)?
+      Expiry — enforced, and how long? Single-use — is the token
+      invalidated on successful reset, or reusable until expiry?
+      Binding — is the token tied to a specific user, or does a valid
+      token reset whoever's email is in the form? Response behavior —
+      does "request reset" distinguish existent from nonexistent accounts?
+      Side effect — does completing a reset invalidate other sessions?
+    validation_checks:
+      - "Token generation: crypto.randomBytes/secrets (good) vs Math.random/timestamp (bad). How many bytes?"
+      - "Token storage: hashed (so DB compromise does not yield usable tokens) or plaintext?"
+      - "Expiry: is there a TTL, is it checked, and is it short (< 1 hour)?"
+      - "Single-use: is the token deleted/invalidated on successful reset?"
+      - "Binding: is the token associated with a user_id server-side, or does the reset form trust a client-supplied identifier?"
+      - "Enumeration: does the request-reset response differ for existent vs nonexistent accounts?"
+    false_positive_indicators:
+      - "The token is >= 128 bits from a crypto PRNG, stored hashed, expires in under an hour, and is invalidated on use — the flow is textbook."
+      - "The flagged weakness is response-time enumeration but the handler is constant-time (always 'if that account exists, we sent an email') — the first pass misread."
+      - "Reset is delegated to an identity provider (OAuth/OIDC, enterprise SSO) — there is no local reset flow to be weak."

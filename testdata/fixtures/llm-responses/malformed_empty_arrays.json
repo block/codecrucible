@@ -1,0 +1,8 @@
+{
+  "repo_name": "example/nulls",
+  "description": "Response with null arrays",
+  "public_api_routes": null,
+  "security_issues": null,
+  "security_risk": 0.0,
+  "risk_justification": "No issues found."
+}

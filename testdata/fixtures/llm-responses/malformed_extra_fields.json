@@ -1,0 +1,23 @@
+{
+  "repo_name": "example/extra-fields",
+  "description": "Response with extra unknown fields",
+  "public_api_routes": [],
+  "security_issues": [
+    {
+      "issue": "Path Traversal",
+      "file_path": "internal/fileserver/serve.go",
+      "start_line": 20,
+      "end_line": 28,
+      "technical_details": "User-supplied filename is used in os.Open without sanitization.",
+      "severity": 7.0,
+      "cwe_id": "CWE-22",
+      "confidence": "high",
+      "model_name": "gpt-4o"
+    }
+  ],
+  "security_risk": 7.0,
+  "risk_justification": "Path traversal allows reading arbitrary files from the server.",
+  "confidence": 0.95,
+  "model_name": "gpt-4o",
+  "analysis_duration_ms": 1234
+}
