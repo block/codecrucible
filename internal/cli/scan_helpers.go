@@ -316,10 +316,12 @@ func loadSupplementaryContext(
 				slog.Warn("failed to load context compress prompt; skipping compression", "error", cpErr)
 			} else {
 				compressor := supctx.Compressor{
-					Client:  ccClient,
-					Prompt:  *cp,
-					Counter: counter,
-					Model:   cc.ModelCfg.Name,
+					Client:                 ccClient,
+					Prompt:                 *cp,
+					Counter:                counter,
+					Model:                  cc.ModelCfg.Name,
+					OmitTemperature:        cc.ModelCfg.OmitTemperature,
+					UseMaxCompletionTokens: cc.ModelCfg.UseMaxCompletionTokens,
 				}
 				loaded = compressor.Compress(ctx, loaded, budget)
 			}

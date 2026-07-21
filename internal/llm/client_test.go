@@ -103,7 +103,7 @@ func TestChatCompletion_AnthropicCustomHeaders(t *testing.T) {
 		fmt.Fprint(w, `{
 			"id":"msg_1",
 			"content":[{"type":"text","text":"ok"}],
-			"model":"claude-opus-4-6",
+			"model":"claude-opus-4-8",
 			"stop_reason":"end_turn",
 			"usage":{"input_tokens":10,"output_tokens":5}
 		}`)
@@ -123,7 +123,7 @@ func TestChatCompletion_AnthropicCustomHeaders(t *testing.T) {
 	})
 
 	resp, err := c.ChatCompletion(context.Background(), ChatRequest{
-		Model:       "claude-opus-4-6",
+		Model:       "claude-opus-4-8",
 		Messages:    []Message{{Role: "user", Content: "hi"}},
 		Temperature: 0,
 		MaxTokens:   64,
@@ -165,7 +165,7 @@ func TestChatCompletion_AnthropicStream(t *testing.T) {
 		w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
 
-		sse(w, "message_start", `{"type":"message_start","message":{"id":"msg_1","model":"claude-opus-4-6","stop_reason":null,"usage":{"input_tokens":42,"output_tokens":0}}}`)
+		sse(w, "message_start", `{"type":"message_start","message":{"id":"msg_1","model":"claude-opus-4-8","stop_reason":null,"usage":{"input_tokens":42,"output_tokens":0}}}`)
 		sse(w, "ping", `{"type":"ping"}`)
 		// Thinking block: must be skipped, not treated as content.
 		sse(w, "content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}`)
@@ -190,7 +190,7 @@ func TestChatCompletion_AnthropicStream(t *testing.T) {
 	})
 
 	resp, err := c.ChatCompletion(context.Background(), ChatRequest{
-		Model:     "claude-opus-4-6",
+		Model:     "claude-opus-4-8",
 		Messages:  []Message{{Role: "user", Content: "hi"}},
 		MaxTokens: 64,
 	})
@@ -641,7 +641,7 @@ func TestChatCompletion_ModelParamsMergedIntoRequest(t *testing.T) {
 	_, err := c.ChatCompletion(context.Background(), ChatRequest{
 		Messages: []Message{{Role: "user", Content: "hi"}},
 		ModelParams: map[string]any{
-			"thinking": map[string]any{"type": "enabled", "budget_tokens": 2048},
+			"output_config": map[string]any{"effort": "high"},
 		},
 	})
 	if err != nil {
@@ -652,16 +652,54 @@ func TestChatCompletion_ModelParamsMergedIntoRequest(t *testing.T) {
 	if err := json.Unmarshal(receivedBody, &reqBody); err != nil {
 		t.Fatalf("failed to parse request body: %v", err)
 	}
-	thinkingRaw, ok := reqBody["thinking"]
+	outputConfigRaw, ok := reqBody["output_config"]
 	if !ok {
-		t.Fatalf("request missing thinking model param: %v", reqBody)
+		t.Fatalf("request missing output_config model param: %v", reqBody)
 	}
-	thinking, ok := thinkingRaw.(map[string]any)
+	outputConfig, ok := outputConfigRaw.(map[string]any)
 	if !ok {
-		t.Fatalf("thinking param is %T, want object", thinkingRaw)
+		t.Fatalf("output_config param is %T, want object", outputConfigRaw)
 	}
-	if thinking["type"] != "enabled" {
-		t.Errorf("thinking.type = %v, want enabled", thinking["type"])
+	if outputConfig["effort"] != "high" {
+		t.Errorf("output_config.effort = %v, want high", outputConfig["effort"])
+	}
+}
+
+func TestChatCompletion_ModelRequestDefaults(t *testing.T) {
+	var receivedBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, successResponse("ok", "gpt-5.5", "stop", 1, 1))
+	}))
+	defer srv.Close()
+
+	c := NewClient(ClientConfig{BaseURL: srv.URL, Provider: "openai", Token: "t", Timeout: 5 * time.Second})
+
+	_, err := c.ChatCompletion(context.Background(), ChatRequest{
+		Model:                  "gpt-5.5",
+		Messages:               []Message{{Role: "user", Content: "hi"}},
+		Temperature:            0,
+		OmitTemperature:        true,
+		MaxTokens:              100,
+		UseMaxCompletionTokens: true,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var reqBody map[string]any
+	if err := json.Unmarshal(receivedBody, &reqBody); err != nil {
+		t.Fatalf("failed to parse request body: %v", err)
+	}
+	if _, ok := reqBody["temperature"]; ok {
+		t.Fatalf("request contains temperature despite OmitTemperature: %v", reqBody["temperature"])
+	}
+	if _, ok := reqBody["max_tokens"]; ok {
+		t.Fatalf("request contains max_tokens despite UseMaxCompletionTokens: %v", reqBody["max_tokens"])
+	}
+	if reqBody["max_completion_tokens"] != float64(100) {
+		t.Errorf("max_completion_tokens = %v, want 100", reqBody["max_completion_tokens"])
 	}
 }
 
@@ -842,6 +880,88 @@ func TestChatCompletion_ToolUseForClaude(t *testing.T) {
 	}
 }
 
+func TestChatCompletion_AnthropicNativeStructuredOutput(t *testing.T) {
+	var receivedBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{
+			"id":"msg_1",
+			"content":[{"type":"text","text":"{\"result\":\"ok\"}"}],
+			"model":"claude-opus-4-8",
+			"stop_reason":"end_turn",
+			"usage":{"input_tokens":1,"output_tokens":1}
+		}`)
+	}))
+	defer srv.Close()
+
+	schema := json.RawMessage(`{"name":"security_analysis","strict":true,"schema":{"type":"object","properties":{"result":{"type":"string"}}}}`)
+	c := NewClient(ClientConfig{BaseURL: srv.URL, Provider: "anthropic", Token: "t", Timeout: 5 * time.Second})
+
+	resp, err := c.ChatCompletion(context.Background(), ChatRequest{
+		Model:                  "claude-opus-4-8",
+		Messages:               []Message{{Role: "user", Content: "hi"}},
+		Temperature:            0,
+		MaxTokens:              100,
+		OutputMode:             OutputModeToolUse,
+		NativeStructuredOutput: true,
+		ResponseSchema:         &schema,
+		ModelParams: map[string]any{
+			"output_config": map[string]any{"effort": "high"},
+			"thinking":      map[string]any{"type": "adaptive"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Content != `{"result":"ok"}` {
+		t.Errorf("Content = %q, want %q", resp.Content, `{"result":"ok"}`)
+	}
+
+	var reqBody map[string]any
+	if err := json.Unmarshal(receivedBody, &reqBody); err != nil {
+		t.Fatalf("failed to parse request body: %v", err)
+	}
+	if _, ok := reqBody["temperature"]; ok {
+		t.Fatalf("request contains temperature despite Anthropic thinking mode: %v", reqBody["temperature"])
+	}
+	if _, ok := reqBody["tools"]; ok {
+		t.Fatalf("native structured output request should not include tools: %v", reqBody["tools"])
+	}
+	if _, ok := reqBody["tool_choice"]; ok {
+		t.Fatalf("native structured output request should not include tool_choice: %v", reqBody["tool_choice"])
+	}
+
+	outputConfig, ok := reqBody["output_config"].(map[string]any)
+	if !ok {
+		t.Fatalf("output_config is %T, want object", reqBody["output_config"])
+	}
+	if outputConfig["effort"] != "high" {
+		t.Errorf("output_config.effort = %v, want high", outputConfig["effort"])
+	}
+	thinking, ok := reqBody["thinking"].(map[string]any)
+	if !ok {
+		t.Fatalf("thinking is %T, want object", reqBody["thinking"])
+	}
+	if thinking["type"] != "adaptive" {
+		t.Errorf("thinking.type = %v, want adaptive", thinking["type"])
+	}
+	format, ok := outputConfig["format"].(map[string]any)
+	if !ok {
+		t.Fatalf("output_config.format is %T, want object", outputConfig["format"])
+	}
+	if format["type"] != "json_schema" {
+		t.Errorf("output_config.format.type = %v, want json_schema", format["type"])
+	}
+	schemaBody, ok := format["schema"].(map[string]any)
+	if !ok {
+		t.Fatalf("output_config.format.schema is %T, want object", format["schema"])
+	}
+	if schemaBody["type"] != "object" {
+		t.Errorf("output_config.format.schema.type = %v, want object", schemaBody["type"])
+	}
+}
+
 func TestChatCompletion_ToolUseFallbackWhenToolChoiceRejected(t *testing.T) {
 	var attempts int32
 	var requestBodies [][]byte
@@ -861,7 +981,7 @@ func TestChatCompletion_ToolUseFallbackWhenToolChoiceRejected(t *testing.T) {
 		fmt.Fprint(w, `{
                         "choices": [{"message": {"content": "", "tool_calls": [{"function": {"arguments": "{\"result\":\"ok\"}"}}]}, "finish_reason": "stop"}],
                         "usage": {"prompt_tokens": 1, "completion_tokens": 1},
-                        "model": "claude-sonnet-4-6"
+                        "model": "claude-sonnet-5"
                 }`)
 	}))
 	defer srv.Close()
@@ -1131,7 +1251,7 @@ func TestFlexString_PlainString(t *testing.T) {
 
 func TestFlexString_ArrayOfParts(t *testing.T) {
 	// Gemini-style: content is an array of parts.
-	body := `{"choices":[{"message":{"content":[{"type":"text","text":"hello from gemini"}]},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1},"model":"gemini-3-pro"}`
+	body := `{"choices":[{"message":{"content":[{"type":"text","text":"hello from gemini"}]},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1},"model":"gemini-3.1-pro-preview"}`
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, body)

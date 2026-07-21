@@ -43,7 +43,7 @@ type PhaseConfig struct {
 
 	// ModelParams is merged into the top level of the request body (see
 	// llm.marshalWithModelParams). Per-phase so e.g. the audit phase can
-	// drop thinking-mode params that only the analysis phase needs.
+	// drop model params that only the analysis phase needs.
 	ModelParams map[string]any `mapstructure:"model-params"`
 
 	// ModelParamsJSON is the CLI/env string form — parsed and merged into
@@ -75,15 +75,15 @@ type PhaseConfig struct {
 	ModelCfg ModelConfig `mapstructure:"-"`
 }
 
-// Phases groups the three pipeline phase configs. Lives on Config under
+// Phases groups the pipeline phase configs. Lives on Config under
 // mapstructure:"phases" so config-file users write:
 //
 //	phases:
 //	  analysis:
-//	    model: claude-opus-4-6
+//	    model: claude-opus-4-8
 //	  audit:
 //	    provider: google
-//	    model: gemini-3-pro
+//	    model: gemini-3.1-pro-preview
 //	    api-key: ${GOOGLE_API_KEY}
 //
 // Env var form (see BindEnvVars replacer): PHASES_AUDIT_PROVIDER,

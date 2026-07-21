@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -20,6 +21,11 @@ import (
 func createTestRepo(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
+
+	// Keep tests hermetic when the developer has a ~/.codecrucible.yaml.
+	if err := os.WriteFile(filepath.Join(dir, ".codecrucible.yaml"), []byte("# test config\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	// Create a source file.
 	srcDir := filepath.Join(dir, "src")
@@ -179,7 +185,7 @@ func TestBuildLLMClient_AnthropicFallsBackToClaudeCLI(t *testing.T) {
 
 	client, endpoint, err := buildPhaseClient(config.PhaseConfig{
 		Provider: "anthropic",
-		ModelCfg: config.ModelConfig{Name: "claude-sonnet-4-6"},
+		ModelCfg: config.ModelConfig{Name: "claude-sonnet-5"},
 		// APIKey deliberately empty — exercises the CLI fallback path.
 	}, &config.Config{})
 	if err != nil {
@@ -220,20 +226,74 @@ func TestScanCommand_MaxCostAbort(t *testing.T) {
 	}
 }
 
+func TestCollectModelExecutionWarnings_DeduplicatesActivePhases(t *testing.T) {
+	provisional := config.ModelConfig{
+		Name:             "gpt-5.5-cyber-preview",
+		ExecutionWarning: "pricing is provisional",
+	}
+	fable := config.ModelConfig{
+		Name:             "claude-fable-5",
+		ExecutionWarning: "security errors may invalidate results",
+	}
+	cfg := &config.Config{
+		SkipAudit: true,
+		ContextSources: []config.ContextSource{{
+			Compress: true,
+		}},
+		Phases: config.Phases{
+			Analysis:         config.PhaseConfig{ModelCfg: provisional},
+			FeatureDetection: config.PhaseConfig{ModelCfg: provisional},
+			Audit:            config.PhaseConfig{ModelCfg: fable},
+			ContextCompress:  config.PhaseConfig{ModelCfg: fable},
+		},
+	}
+
+	got := collectModelExecutionWarnings(cfg)
+	if len(got) != 2 {
+		t.Fatalf("warnings: got %d, want 2", len(got))
+	}
+	if got[0].Model != provisional.Name || !reflect.DeepEqual(got[0].Phases, []string{"analysis", "feature-detection"}) {
+		t.Errorf("first warning: got %+v, want provisional model on analysis and feature-detection", got[0])
+	}
+	if got[1].Model != fable.Name || !reflect.DeepEqual(got[1].Phases, []string{"context-compress"}) {
+		t.Errorf("second warning: got %+v, want fable only on context-compress", got[1])
+	}
+}
+
+func TestLogModelExecutionWarnings_EmitsWarning(t *testing.T) {
+	var buf bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	defer slog.SetDefault(previous)
+
+	logModelExecutionWarnings([]modelExecutionWarning{{
+		Model:   "gpt-5.5-cyber",
+		Phases:  []string{"analysis", "audit"},
+		Message: "pricing is provisional",
+	}})
+
+	output := buf.String()
+	for _, want := range []string{"model configuration warning", "gpt-5.5-cyber", "analysis,audit", "pricing is provisional"} {
+		if !strings.Contains(output, want) {
+			t.Errorf("log output %q does not contain %q", output, want)
+		}
+	}
+}
+
 func TestResolveModel_Default(t *testing.T) {
 	m := resolveModel("")
-	if m.Name != "claude-sonnet-4-6" {
-		t.Errorf("expected default model claude-sonnet-4-6, got %s", m.Name)
+	if m.Name != "claude-sonnet-5" {
+		t.Errorf("expected default model claude-sonnet-5, got %s", m.Name)
 	}
 }
 
 func TestResolveModel_Known(t *testing.T) {
-	m := resolveModel("gpt-5.2")
-	if m.Name != "gpt-5.2" {
-		t.Errorf("expected gpt-5.2, got %s", m.Name)
+	m := resolveModel("gpt-5.5")
+	if m.Name != "gpt-5.5" {
+		t.Errorf("expected gpt-5.5, got %s", m.Name)
 	}
-	if m.ContextLimit != 400000 {
-		t.Errorf("expected context limit 400000, got %d", m.ContextLimit)
+	if m.ContextLimit != 1050000 {
+		t.Errorf("expected context limit 1050000, got %d", m.ContextLimit)
 	}
 }
 
@@ -750,7 +810,10 @@ func TestApplyAuditVerdicts_RejectsAndConfirms(t *testing.T) {
 	}
 	audit := AuditResult{
 		AuditedFindings: []AuditedFinding{
-			{FilePath: "src/a.go", StartLine: 10, Verdict: "rejected", Confidence: 0.9},
+			// Rejection with a quoted blocking line — a substantiated
+			// rejection that should drop the finding.
+			{FilePath: "src/a.go", StartLine: 10, Verdict: "rejected", Confidence: 0.9,
+				BlockingCode: "src/a.go:42: if !cap_capable(...) return -EPERM;"},
 			{FilePath: "src/b.go", StartLine: 20, Verdict: "confirmed", Confidence: 0.95},
 		},
 	}
@@ -769,6 +832,75 @@ func TestApplyAuditVerdicts_RejectsAndConfirms(t *testing.T) {
 	}
 	if out.Runs[0].Tool.Driver.Rules[0].ID != "R2" {
 		t.Errorf("kept rule ID = %q, want %q", out.Runs[0].Tool.Driver.Rules[0].ID, "R2")
+	}
+}
+
+// Rejection without blocking_code is unsubstantiated and must be retained
+// as `unverified` instead of being silently dropped — guards against the
+// audit phase nuking real multi-file invariant findings just because it
+// couldn't re-prove the whole chain in one pass.
+func TestApplyAuditVerdicts_RejectedWithoutBlockingCode_CoercedToUnverified(t *testing.T) {
+	doc := sarif.SARIFDocument{
+		Runs: []sarif.SARIFRun{{
+			Tool: sarif.SARIFTool{Driver: sarif.SARIFDriver{
+				Rules: []sarif.SARIFRule{{ID: "R1", Properties: map[string]any{}}},
+			}},
+			Results: []sarif.SARIFResult{
+				mkSARIFResult("R1", "src/a.go", 10, "original finding"),
+			},
+		}},
+	}
+	audit := AuditResult{
+		AuditedFindings: []AuditedFinding{
+			// Verdict=rejected with no blocking_code — should be coerced
+			// to unverified and retained.
+			{FilePath: "src/a.go", StartLine: 10, Verdict: "rejected", Confidence: 0.1,
+				Justification: "I don't see how this is reachable"},
+		},
+	}
+
+	out := applyAuditVerdicts(doc, audit, ingest.FileMap{}, 0.3)
+
+	if len(out.Runs[0].Results) != 1 {
+		t.Fatalf("expected 1 retained (unverified) result, got %d", len(out.Runs[0].Results))
+	}
+	msg := out.Runs[0].Results[0].Message.Text
+	if !strings.Contains(msg, "UNVERIFIED") {
+		t.Errorf("retained message %q missing UNVERIFIED marker", msg)
+	}
+}
+
+// Explicit `unverified` verdicts are retained and confidence is floored
+// at the threshold so a low score doesn't immediately re-drop them.
+func TestApplyAuditVerdicts_UnverifiedRetainedAboveThreshold(t *testing.T) {
+	doc := sarif.SARIFDocument{
+		Runs: []sarif.SARIFRun{{
+			Tool: sarif.SARIFTool{Driver: sarif.SARIFDriver{
+				Rules: []sarif.SARIFRule{{ID: "R1", Properties: map[string]any{}}},
+			}},
+			Results: []sarif.SARIFResult{
+				mkSARIFResult("R1", "src/a.go", 10, "splice → sink chain"),
+			},
+		}},
+	}
+	audit := AuditResult{
+		AuditedFindings: []AuditedFinding{
+			{FilePath: "src/a.go", StartLine: 10, Verdict: "unverified", Confidence: 0.05,
+				Justification: "downstream sink not in this batch"},
+		},
+	}
+
+	out := applyAuditVerdicts(doc, audit, ingest.FileMap{}, 0.3)
+
+	if len(out.Runs[0].Results) != 1 {
+		t.Fatalf("expected 1 retained unverified result, got %d", len(out.Runs[0].Results))
+	}
+	msg := out.Runs[0].Results[0].Message.Text
+	if !strings.Contains(msg, "UNVERIFIED") {
+		t.Errorf("retained message %q missing UNVERIFIED marker", msg)
+	}
+	if !strings.Contains(msg, "30%") {
+		t.Errorf("retained message %q should show floored 30%% confidence, got: %s", msg, msg)
 	}
 }
 

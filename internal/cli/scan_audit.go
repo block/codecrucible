@@ -22,6 +22,13 @@ type AuditResult struct {
 }
 
 // AuditedFinding is the audit verdict for a single initial finding.
+//
+// BlockingCode is the audit phase's quoted source-line citation that
+// justifies a "rejected" verdict. applyAuditVerdicts coerces any
+// "rejected" verdict with an empty BlockingCode to "unverified" — this
+// prevents the audit phase from silently dropping multi-file invariant
+// findings it couldn't fully re-prove in one pass. See the audit prompt's
+// "AUDIT REJECTION DISCIPLINE" section.
 type AuditedFinding struct {
 	OriginalIssue           string  `json:"original_issue"`
 	FilePath                string  `json:"file_path"`
@@ -33,6 +40,7 @@ type AuditedFinding struct {
 	RefinedTechnicalDetails string  `json:"refined_technical_details"`
 	RefinedCWEID            string  `json:"refined_cwe_id"`
 	Justification           string  `json:"justification"`
+	BlockingCode            string  `json:"blocking_code"`
 }
 
 // NewFinding is an additional finding discovered during the audit phase.
@@ -193,27 +201,29 @@ func runAuditPhase(
 			"cwe_categories", len(cweIDs),
 			"files_in_context", len(filesNeeded),
 			"estimated_tokens", estTokens,
-			"estimated_input_cost", fmt.Sprintf("$%.4f", float64(estTokens)*modelCfg.InputPricePerM/1_000_000),
+			"estimated_input_cost", fmt.Sprintf("$%.4f", modelCfg.EstimateInputCost(estTokens)),
 		)
 
 		resp, err := client.ChatCompletion(ctx, llm.ChatRequest{
-			Label:          label,
-			Endpoint:       endpoint,
-			Model:          modelCfg.Name,
-			Messages:       messages,
-			Temperature:    modelCfg.Temperature,
-			MaxTokens:      modelCfg.MaxOutputTokens,
-			ResponseSchema: auditSchema,
-			OutputMode:     outputMode,
-			ModelParams:    modelParams,
+			Label:                  label,
+			Endpoint:               endpoint,
+			Model:                  modelCfg.Name,
+			Messages:               messages,
+			Temperature:            modelCfg.Temperature,
+			OmitTemperature:        modelCfg.OmitTemperature,
+			MaxTokens:              modelCfg.MaxOutputTokens,
+			UseMaxCompletionTokens: modelCfg.UseMaxCompletionTokens,
+			ResponseSchema:         auditSchema,
+			OutputMode:             outputMode,
+			NativeStructuredOutput: modelCfg.NativeStructuredOutput,
+			ModelParams:            modelParams,
 		})
 		if err != nil {
 			return AuditResult{}, llm.TokenUsage{}, 0, fmt.Errorf("LLM call: %w", err)
 		}
 
 		u := resp.Usage
-		c := float64(u.PromptTokens)*modelCfg.InputPricePerM/1_000_000 +
-			float64(u.CompletionTokens)*modelCfg.OutputPricePerM/1_000_000
+		c := modelCfg.EstimateCost(u.PromptTokens, u.CompletionTokens)
 		slog.Info("audit batch complete",
 			"label", label,
 			"prompt_tokens", u.PromptTokens,
@@ -321,6 +331,8 @@ func applyAuditVerdicts(
 	refined := 0
 	escalated := 0
 	confirmed := 0
+	unverified := 0
+	coerced := 0
 
 	for _, result := range run.Results {
 		var filePath string
@@ -342,13 +354,46 @@ func applyAuditVerdicts(
 			continue
 		}
 
-		// Reject findings below confidence threshold.
+		// Symmetric-skepticism gate: a "rejected" verdict without a
+		// quoted blocking source line is an unsubstantiated rejection.
+		// Coerce to "unverified" so the finding survives instead of
+		// silently disappearing — multi-file invariants (e.g. Copy
+		// Fail-style splice→sink chains) routinely get rejected here
+		// just because the auditor couldn't re-prove the whole chain
+		// in one pass.
+		if af.Verdict == "rejected" && strings.TrimSpace(af.BlockingCode) == "" {
+			slog.Warn("audit: rejection without blocking_code — coerced to unverified",
+				"issue", af.OriginalIssue,
+				"file", af.FilePath,
+				"justification", af.Justification,
+			)
+			af.Verdict = "unverified"
+			coerced++
+		}
+
+		// "unverified" findings are retained. Floor confidence at the
+		// threshold so a low score doesn't immediately re-drop them.
+		// They are clearly marked as unverified in the SARIF message.
+		if af.Verdict == "unverified" {
+			unverified++
+			if af.Confidence < confidenceThreshold {
+				af.Confidence = confidenceThreshold
+			}
+			if af.RefinedTechnicalDetails == "" {
+				af.RefinedTechnicalDetails = result.Message.Text
+			}
+			af.RefinedTechnicalDetails = "[UNVERIFIED — audit could not re-prove the full chain; treat as a lead]\n\n" + af.RefinedTechnicalDetails
+		}
+
+		// Reject explicit rejections (now guaranteed to have blocking_code)
+		// and findings below confidence threshold.
 		if af.Verdict == "rejected" || af.Confidence < confidenceThreshold {
 			rejected++
 			slog.Debug("audit: rejected finding",
 				"issue", af.OriginalIssue,
 				"file", af.FilePath,
 				"confidence", af.Confidence,
+				"blocking_code", af.BlockingCode,
 				"reason", af.Justification,
 			)
 			continue
@@ -360,6 +405,8 @@ func applyAuditVerdicts(
 			refined++
 		case "escalated":
 			escalated++
+		case "unverified":
+			// counted above
 		default:
 			confirmed++
 		}
@@ -416,7 +463,9 @@ func applyAuditVerdicts(
 		"confirmed", confirmed,
 		"refined", refined,
 		"escalated", escalated,
+		"unverified", unverified,
 		"rejected", rejected,
+		"coerced_rejected_to_unverified", coerced,
 		"new", newCount,
 	)
 

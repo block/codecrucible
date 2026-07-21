@@ -152,7 +152,7 @@ const auditSchemaJSON = `{
         "description": "Audit verdicts for each initial finding",
         "items": {
           "type": "object",
-          "required": ["original_issue", "file_path", "start_line", "end_line", "verdict", "confidence", "refined_severity", "refined_technical_details", "refined_cwe_id", "justification"],
+          "required": ["original_issue", "file_path", "start_line", "end_line", "verdict", "confidence", "refined_severity", "refined_technical_details", "refined_cwe_id", "justification", "blocking_code"],
           "additionalProperties": false,
           "properties": {
             "original_issue": {
@@ -173,8 +173,8 @@ const auditSchemaJSON = `{
             },
             "verdict": {
               "type": "string",
-              "enum": ["confirmed", "refined", "rejected", "escalated"],
-              "description": "Audit verdict: confirmed, refined, rejected, or escalated"
+              "enum": ["confirmed", "refined", "rejected", "escalated", "unverified"],
+              "description": "Audit verdict. 'unverified' means you could not prove or disprove the chain in one pass — use this instead of 'rejected' when uncertain. 'rejected' REQUIRES a non-empty blocking_code citation."
             },
             "confidence": {
               "type": "number",
@@ -194,7 +194,11 @@ const auditSchemaJSON = `{
             },
             "justification": {
               "type": "string",
-              "description": "Justification for the verdict, explaining why the finding was confirmed, refined, rejected, or escalated"
+              "description": "Justification for the verdict, explaining why the finding was confirmed, refined, rejected, escalated, or unverified"
+            },
+            "blocking_code": {
+              "type": "string",
+              "description": "Required when verdict='rejected': quote the exact source line(s) (with file:line) that BLOCK the exploit chain. An empty string means rejection is not substantiated by code; the verdict will be auto-coerced to 'unverified'. Empty string is acceptable for non-rejected verdicts."
             }
           }
         }
@@ -251,8 +255,10 @@ const auditSchemaJSON = `{
 }`
 
 // OutputModeForModel returns the appropriate OutputMode for a model name.
-// OpenAI/GPT models use JSON Schema response_format, Claude uses tool_use,
-// and other models fall back to unstructured output.
+// OpenAI/GPT and Gemini models use JSON Schema response_format. Claude keeps
+// the tool-use mode classification so Databricks and older endpoints still
+// work; current direct Anthropic models override the wire format with
+// ModelConfig.NativeStructuredOutput.
 func OutputModeForModel(modelName string) OutputMode {
 	lower := strings.ToLower(modelName)
 
@@ -261,7 +267,7 @@ func OutputModeForModel(modelName string) OutputMode {
 		return OutputModeJSONSchema
 	}
 
-	// Claude models use tool_use for structured output.
+	// Claude models default to tool_use for structured output.
 	if strings.Contains(lower, "claude") || strings.Contains(lower, "anthropic") {
 		return OutputModeToolUse
 	}

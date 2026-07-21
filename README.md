@@ -29,36 +29,36 @@ export DATABRICKS_TOKEN=your-token
 
 # Direct Anthropic API scan
 export ANTHROPIC_API_KEY=your-anthropic-key
-./codecrucible scan /path/to/repo --provider anthropic --model claude-sonnet-4-6
+./codecrucible scan /path/to/repo --provider anthropic --model claude-sonnet-5
 
-# Anthropic API scan with adaptive thinking always enabled
+# Anthropic API scan with higher effort
 ./codecrucible scan /path/to/repo \
   --provider anthropic \
-  --model claude-sonnet-4-6 \
-  --model-params '{"thinking":{"type":"enabled","budget_tokens":4096}}'
+  --model claude-sonnet-5 \
+  --model-params '{"output_config":{"effort":"high"}}'
 
 # Or use Claude Code CLI auth (SSO/login) with no API key
 claude auth status
-./codecrucible scan /path/to/repo --provider anthropic --model claude-sonnet-4-6
+./codecrucible scan /path/to/repo --provider anthropic --model claude-sonnet-5
 
 # In Claude CLI auth mode, Anthropic beta headers are forwarded via `claude --betas`
 # (for example: --custom-headers "anthropic-beta: context-1m-2025-08-07").
 
 # Direct OpenAI API scan
 export OPENAI_API_KEY=your-openai-key
-./codecrucible scan /path/to/repo --provider openai --model gpt-5.2
+./codecrucible scan /path/to/repo --provider openai --model gpt-5.6
 
 # Direct Google Gemini scan (OpenAI-compat endpoint)
 export GOOGLE_API_KEY=your-google-key
-./codecrucible scan /path/to/repo --provider google --model gemini-3-pro
+./codecrucible scan /path/to/repo --provider google --model gemini-3.5-flash
 
 # Mix providers per phase: opus for analysis, gemini for audit
 export ANTHROPIC_API_KEY=your-anthropic-key
 export GOOGLE_API_KEY=your-google-key
 ./codecrucible scan /path/to/repo \
-  --model claude-opus-4-6 \
-  --audit-provider google --audit-model gemini-3-pro \
-  --fd-model gemini-3-flash --fd-provider google
+  --model claude-opus-4-8 \
+  --audit-provider google --audit-model gemini-3.1-pro-preview \
+  --fd-model gemini-3.5-flash --fd-provider google
 
 # Preview scope without making API calls
 ./codecrucible scan /path/to/repo --dry-run
@@ -135,7 +135,7 @@ Each pipeline phase (analysis, feature-detection, audit, context-compress) can u
 
 ```bash
 # Cheap model for feature detection, expensive model for analysis
-codecrucible scan --model claude-opus-4-6 --feature-detection-model claude-sonnet-4-6 .
+codecrucible scan --model claude-opus-4-8 --feature-detection-model claude-sonnet-5 .
 ```
 
 Per-phase flags follow the pattern `--{phase}-{flag}` (e.g. `--audit-model`, `--audit-provider`, `--audit-api-key`, `--audit-base-url`). Short aliases: `--fd-*` for feature-detection, `--cc-*` for context-compress.
@@ -175,6 +175,13 @@ Global Flags:
   --verbose         enable debug logging
 ```
 
+## Agent Skill
+
+An agent-facing skill for running and interpreting CodeCrucible scans lives at
+[`.agents/skills/codecrucible/SKILL.md`](.agents/skills/codecrucible/SKILL.md).
+It covers scan planning, model and prompt selection, cost checks, and SARIF
+interpretation.
+
 ## Prompt Sets
 
 The `prompts/` directory contains multiple prompt sets, each a complete set of YAML templates that control how the LLM analyzes code. The default set is `prompts/default/`.
@@ -203,7 +210,7 @@ Available sets:
 | `exploit-proof-web-python` | Python web apps (Django, Flask, FastAPI, Starlette, Tornado, aiohttp) |
 | `nano-analyzer` | Terse attacker-first voice adapted from weareaisle/nano-analyzer |
 
-See [SKILLS.md](SKILLS.md) for a fuller walkthrough of when to reach for each set.
+See [PROMPT_SETS.md](PROMPT_SETS.md) for a fuller walkthrough of when to reach for each set.
 
 Each prompt set directory must contain: `security_analysis_base.yaml`, `analysis_sections.yaml`, `feature_detection.yaml`, `audit.yaml`, `cwe_deep_analysis.yaml`, and optionally `context_compress.yaml`.
 
@@ -250,17 +257,16 @@ per-phase config via env.
 Create `.codecrucible.yaml` in your repo root or home directory:
 
 ```yaml
-model: claude-sonnet-4-6
-provider: databricks
+model: claude-sonnet-5
+provider: anthropic
 include-tests: false
 include-docs: false
 max-cost: 25
 fail-on-severity: 7.0
 concurrency: 3
 model-params:
-  thinking:
-    type: enabled
-    budget_tokens: 4096
+  output_config:
+    effort: high
 skip-audit: false
 audit-confidence-threshold: 0.3
 exclude:
@@ -270,44 +276,47 @@ exclude:
 
 ### Per-Phase Configuration
 
-The pipeline has three LLM phases: **feature detection** (gating, skipped for
-small repos), **analysis** (the main loop), and **audit** (validation). Each
-can run on a different provider, model, API key, and params.
+The pipeline has four LLM phases: **feature detection** (gating, skipped for
+small repos), **analysis** (the main loop), **audit** (validation), and
+**context compress** (optional supplementary-context summarization). Each can
+run on a different provider, model, API key, and params.
 
 The flat keys above (`model`, `provider`, `model-params`) configure the
-analysis phase and are **inherited** by the other two. A `phases:` block
+analysis phase and are **inherited** by the other phases. A `phases:` block
 overrides selectively:
 
 ```yaml
-# Analysis: claude-opus with extended thinking. Slow, thorough, expensive.
-model: claude-opus-4-6
+# Analysis: Opus with adaptive thinking and xhigh effort. Slow, thorough, expensive.
+model: claude-opus-4-8
 provider: anthropic
 model-params:
   thinking:
-    type: enabled
-    budget_tokens: 8192
+    type: adaptive
+  output_config:
+    effort: xhigh
 
 phases:
   # Feature detection is a cheap gating pass on a file manifest. A small
   # fast model is plenty. Skipped entirely when the repo fits in one chunk.
   feature-detection:
     provider: google
-    model: gemini-3-flash
+    model: gemini-3.5-flash
     api-key: ${GOOGLE_API_KEY}
-    # NOT setting model-params inherits thinking-mode from analysis, which
-    # gemini would reject. Setting any params replaces the inherited set
+    # NOT setting model-params inherits Anthropic-only analysis params, which
+    # Gemini would reject. Setting any params replaces the inherited set
     # wholesale (see inheritance rules below) — so put something gemini
     # actually wants:
     model-params:
       max_tokens: 2048
 
   # Audit is a validation pass — short, structured output. Dropping
-  # thinking-mode and capping max_tokens keeps it fast without hurting
+  # analysis-only adaptive-thinking params keeps it fast without hurting
   # quality.
   audit:
-    model: claude-sonnet-4-6
+    model: claude-sonnet-5
     model-params:
-      max_tokens: 8192
+      output_config:
+        effort: low
     # provider, api-key: inherited from analysis (anthropic + its key)
 ```
 
@@ -318,7 +327,7 @@ phases:
   **exactly** those params (replace, not merge) — so you can drop inherited
   keys.
 - `--context-limit` / `--max-output-tokens` inherit per-phase too. Previously
-  they only applied to the main model; now `--audit-model gemini-3-pro` with
+  they only applied to the main model; now `--audit-model gemini-3.1-pro-preview` with
   `--context-limit 500000` gives audit the override as well.
 
 **Provider resolution**, per phase: explicit `--<phase>-provider`, else the
@@ -414,7 +423,7 @@ aborts before any LLM call with a clear error.
 ### Model Params
 
 `model-params` is merged into the top level of the request body — use it for
-provider-specific knobs (thinking budgets, reasoning effort, custom safety
+provider-specific knobs (adaptive thinking, reasoning effort, custom safety
 settings).
 
 - YAML map form in config files; JSON string form on the CLI and in env vars.
@@ -428,16 +437,49 @@ settings).
 
 | Model | Provider | Context Limit | Max Output | Structured Output |
 |-------|----------|--------------|------------|-------------------|
-| claude-sonnet-4-6 | anthropic | 200K | 16K | tool_use |
-| claude-opus-4-6 | anthropic | 200K | 32K | tool_use |
-| claude-opus-4-7 | anthropic | 1M | 128K | tool_use |
-| gpt-5.2 | openai | 400K | 16K | response_format JSON Schema |
-| gpt-5.4 | openai | 1M | 128K | response_format JSON Schema |
-| gpt-5.5 | openai | 1M | 128K | response_format JSON Schema |
+| claude-sonnet-5 | anthropic | 1M | 128K | output_config.format JSON Schema |
+| claude-opus-4-8 | anthropic | 1M | 128K | output_config.format JSON Schema |
+| claude-fable-5 | anthropic | 1M | 128K | output_config.format JSON Schema |
+| claude-haiku-4-5 | anthropic | 200K | 64K | output_config.format JSON Schema |
+| goose-claude-4-6-opus | databricks | 200K | 32K | tool_use |
+| goose-claude-4-7-opus | databricks | 1M | 128K | tool_use |
+| gpt-5.6 | openai | 1.05M | 128K | response_format JSON Schema |
+| gpt-5.6-sol | openai | 1.05M | 128K | response_format JSON Schema |
+| gpt-5.6-terra | openai | 1.05M | 128K | response_format JSON Schema |
+| gpt-5.6-luna | openai | 1.05M | 128K | response_format JSON Schema |
+| gpt-5.5 | openai | 1.05M | 128K | response_format JSON Schema |
+| gpt-5.5-cyber-preview | openai | 272K | 128K | response_format JSON Schema |
+| gpt-5.5-cyber | openai | 272K | 128K | response_format JSON Schema |
+| gpt-5.4 | openai | 1.05M | 128K | response_format JSON Schema |
 | gpt-5.4-mini | openai | 400K | 128K | response_format JSON Schema |
 | gpt-5.4-nano | openai | 400K | 128K | response_format JSON Schema |
-| gemini-3-pro | google | 1M | 64K | response_format JSON Schema |
-| gemini-3-flash | google | 1M | 64K | response_format JSON Schema |
+| gemini-3.1-pro-preview | google | 1M | 64K | response_format JSON Schema |
+| gemini-3.5-flash | google | 1M | 64K | response_format JSON Schema |
+| gemini-3.1-flash-lite | google | 1M | 64K | response_format JSON Schema |
+
+The registry also carries the documented long-context pricing tiers for the
+`gpt-5.6` family, `gpt-5.5`, and `gpt-5.4` prompts above 272K input tokens,
+and `gemini-3.1-pro-preview` prompts above 200K input tokens.
+
+`gpt-5.6` is OpenAI's stable alias for `gpt-5.6-sol`; both entries use Sol
+pricing. The direct `gpt-5.6-terra` and `gpt-5.6-luna` entries expose the
+documented lower-cost tiers. All GPT-5.6 entries emit an execution warning
+because OpenAI documents real-time cyber safeguards that can block or pause
+generation during security work.
+
+`gpt-5.5-cyber-preview` and `gpt-5.5-cyber` are private/preview aliases with
+no public provider model page yet. Their built-in entries use the currently
+observed 272K context window plus GPT-5.5 request semantics and pricing, and
+emit a warning that those registry parameters and cost estimates are
+provisional. Override the entry under `models:` when your provider exposes
+different limits or billing.
+
+`claude-fable-5` also emits an execution warning because security-policy
+errors during a security scan can invalidate the resulting findings.
+
+The `goose-*` Databricks rows are workspace serving aliases, not public model
+IDs. They stay explicit because a public provider release does not establish
+which deployment name a Databricks workspace exposes.
 
 Gemini goes through Google's OpenAI-compat endpoint
 (`generativelanguage.googleapis.com/v1beta/openai`) — Bearer auth, OpenAI
@@ -461,24 +503,29 @@ you want to retune pricing / context limits without recompiling.
 ```yaml
 models:
   # Extend: a model the binary doesn't know about yet.
-  - name: claude-sonnet-4-8
-    provider: anthropic
+  - name: gpt-acme-frontier-v1
+    provider: openai-compat
+    execution_warning: registry parameters are operator supplied
     input_price_per_million: 3.0
     output_price_per_million: 15.0
     context_limit: 1000000
     max_output_tokens: 64000
-    tokenizer_encoding: claude
+    tokenizer_encoding: o200k_base
     supports_structured_output: true
 
   # Override: change a built-in's pricing without forking.
-  - name: claude-sonnet-4-6
-    provider: anthropic
-    input_price_per_million: 1.5   # negotiated rate
-    output_price_per_million: 7.5
-    context_limit: 200000
-    max_output_tokens: 16384
-    tokenizer_encoding: claude
+  - name: gpt-5.5
+    provider: openai
+    input_price_per_million: 4.5   # negotiated rate
+    output_price_per_million: 27.0
+    long_context_threshold: 272000
+    long_context_input_price_per_million: 9.0
+    long_context_output_price_per_million: 40.5
+    context_limit: 1050000
+    max_output_tokens: 128000
+    tokenizer_encoding: o200k_base
     supports_structured_output: true
+    use_max_completion_tokens: true
 
   # Azure / self-hosted: point at a non-standard endpoint.
   - name: azure-gpt-5
@@ -494,6 +541,9 @@ replaces it wholesale (case-insensitive), a new name extends the registry.
 Empty `endpoint` defaults to `<name>/invocations` to match the built-in
 convention (Databricks serving path; other providers ignore it). `name` is
 required; other fields follow the same YAML schema as the built-in registry.
+Set `execution_warning` when a model has provisional limits, estimated
+pricing, or operational caveats that should be logged whenever a scan selects
+it.
 
 
 ## Architecture

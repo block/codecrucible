@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"math"
+	"testing"
+)
 
 func TestDefaultModelRegistry_ContainsExpectedModels(t *testing.T) {
 	registry := DefaultModelRegistry()
@@ -9,16 +12,25 @@ func TestDefaultModelRegistry_ContainsExpectedModels(t *testing.T) {
 		name         string
 		contextLimit int
 	}{
-		{"claude-sonnet-4-6", 200000},
-		{"claude-opus-4-6", 200000},
-		{"claude-opus-4-7", 1000000},
-		{"gpt-5.2", 400000},
-		{"gpt-5.4", 1000000},
-		{"gpt-5.5", 1000000},
+		{"claude-sonnet-5", 1000000},
+		{"claude-opus-4-8", 1000000},
+		{"claude-fable-5", 1000000},
+		{"claude-haiku-4-5", 200000},
+		{"goose-claude-4-6-opus", 200000},
+		{"goose-claude-4-7-opus", 1000000},
+		{"gpt-5.6", 1050000},
+		{"gpt-5.6-sol", 1050000},
+		{"gpt-5.6-terra", 1050000},
+		{"gpt-5.6-luna", 1050000},
+		{"gpt-5.5", 1050000},
+		{"gpt-5.5-cyber-preview", 272000},
+		{"gpt-5.5-cyber", 272000},
+		{"gpt-5.4", 1050000},
 		{"gpt-5.4-mini", 400000},
 		{"gpt-5.4-nano", 400000},
-		{"gemini-3-pro", 1048576},
-		{"gemini-3-flash", 1048576},
+		{"gemini-3.1-pro-preview", 1048576},
+		{"gemini-3.5-flash", 1048576},
+		{"gemini-3.1-flash-lite", 1048576},
 	}
 
 	if len(registry) != len(expected) {
@@ -52,11 +64,16 @@ func TestLookupModel_ExactName(t *testing.T) {
 		wantEndpoint string
 		wantFound    bool
 	}{
-		{"claude-sonnet-4-6", "claude-sonnet-4-6", "claude-sonnet-4-6/invocations", true},
-		{"claude-opus-4-6", "claude-opus-4-6", "claude-opus-4-6/invocations", true},
-		{"gpt-5.2", "gpt-5.2", "gpt-5.2/invocations", true},
+		{"claude-sonnet-5", "claude-sonnet-5", "claude-sonnet-5/invocations", true},
+		{"claude-opus-4-8", "claude-opus-4-8", "claude-opus-4-8/invocations", true},
+		{"gpt-5.6", "gpt-5.6", "gpt-5.6/invocations", true},
+		{"gpt-5.6-sol", "gpt-5.6-sol", "gpt-5.6-sol/invocations", true},
+		{"gpt-5.6-terra", "gpt-5.6-terra", "gpt-5.6-terra/invocations", true},
+		{"gpt-5.6-luna", "gpt-5.6-luna", "gpt-5.6-luna/invocations", true},
 		{"gpt-5.5", "gpt-5.5", "gpt-5.5/invocations", true},
-		{"gemini-3-pro", "gemini-3-pro", "gemini-3-pro/invocations", true},
+		{"gpt-5.5-cyber-preview", "gpt-5.5-cyber-preview", "gpt-5.5-cyber-preview/invocations", true},
+		{"gpt-5.5-cyber", "gpt-5.5-cyber", "gpt-5.5-cyber/invocations", true},
+		{"gemini-3.1-pro-preview", "gemini-3.1-pro-preview", "gemini-3.1-pro-preview/invocations", true},
 		{"nonexistent-model", "", "", false},
 	}
 
@@ -84,11 +101,13 @@ func TestLookupModel_CaseInsensitive(t *testing.T) {
 		query    string
 		wantName string
 	}{
-		{"Claude-Sonnet-4-6", "claude-sonnet-4-6"},
-		{"CLAUDE-SONNET-4-6", "claude-sonnet-4-6"},
-		{"GPT-5.2", "gpt-5.2"},
+		{"Claude-Sonnet-5", "claude-sonnet-5"},
+		{"CLAUDE-SONNET-5", "claude-sonnet-5"},
+		{"GPT-5.6", "gpt-5.6"},
+		{"GPT-5.6-TERRA", "gpt-5.6-terra"},
 		{"GPT-5.5", "gpt-5.5"},
-		{"Gemini-3-Pro", "gemini-3-pro"},
+		{"GPT-5.5-CYBER-PREVIEW", "gpt-5.5-cyber-preview"},
+		{"Gemini-3.1-Pro-Preview", "gemini-3.1-pro-preview"},
 	}
 
 	for _, tt := range tests {
@@ -109,17 +128,15 @@ func TestLookupModel_PartialMatch(t *testing.T) {
 		query    string
 		wantName string
 	}{
-		{"sonnet", "claude-sonnet-4-6"},
-		// Two opus entries: longest-match prefers the first declared since
-		// names are the same length; claude-opus-4-6 comes first in the registry.
-		{"opus", "claude-opus-4-6"},
-		// Multiple gpt entries: longest-match picks gpt-5.4-mini (first of the
-		// 12-char entries in declaration order). Exact GPT queries still hit
-		// the exact-match fast path.
-		{"gpt", "gpt-5.4-mini"},
-		// Two gemini entries: longest-match picks flash (14 chars vs 12).
-		// Exact queries (gemini-3-pro) still hit the exact-match fast path.
-		{"gemini", "gemini-3-flash"},
+		{"sonnet", "claude-sonnet-5"},
+		// Use a direct-Claude fragment so workspace-specific goose aliases do
+		// not win the generic longest-match rule.
+		{"claude-opus", "claude-opus-4-8"},
+		// Multiple gpt entries: longest-match picks the cyber preview alias.
+		// Exact GPT queries still hit the exact-match fast path.
+		{"gpt", "gpt-5.5-cyber-preview"},
+		// The preview Pro ID is the longest Gemini entry.
+		{"gemini", "gemini-3.1-pro-preview"},
 	}
 
 	for _, tt := range tests {
@@ -141,11 +158,13 @@ func TestLookupModelByEndpoint(t *testing.T) {
 		wantName  string
 		wantFound bool
 	}{
-		{"claude-sonnet-4-6/invocations", "claude-sonnet-4-6", true},
-		{"claude-opus-4-6/invocations", "claude-opus-4-6", true},
-		{"gpt-5.2/invocations", "gpt-5.2", true},
+		{"claude-sonnet-5/invocations", "claude-sonnet-5", true},
+		{"claude-opus-4-8/invocations", "claude-opus-4-8", true},
+		{"gpt-5.6/invocations", "gpt-5.6", true},
+		{"gpt-5.6-sol/invocations", "gpt-5.6-sol", true},
 		{"gpt-5.5/invocations", "gpt-5.5", true},
-		{"gemini-3-pro/invocations", "gemini-3-pro", true},
+		{"gpt-5.5-cyber-preview/invocations", "gpt-5.5-cyber-preview", true},
+		{"gemini-3.1-pro-preview/invocations", "gemini-3.1-pro-preview", true},
 		{"nonexistent/invocations", "", false},
 	}
 
@@ -180,8 +199,8 @@ func TestLookupModel_GPT55Capabilities(t *testing.T) {
 	if m.OutputPricePerM != 30.0 {
 		t.Errorf("OutputPricePerM: got %f, want 30.0", m.OutputPricePerM)
 	}
-	if m.ContextLimit != 1000000 {
-		t.Errorf("ContextLimit: got %d, want 1000000", m.ContextLimit)
+	if m.ContextLimit != 1050000 {
+		t.Errorf("ContextLimit: got %d, want 1050000", m.ContextLimit)
 	}
 	if m.MaxOutputTokens != 128000 {
 		t.Errorf("MaxOutputTokens: got %d, want 128000", m.MaxOutputTokens)
@@ -195,15 +214,125 @@ func TestLookupModel_GPT55Capabilities(t *testing.T) {
 	if !m.SupportsStructuredOutput {
 		t.Error("SupportsStructuredOutput: got false, want true")
 	}
+	if !m.UseMaxCompletionTokens {
+		t.Error("UseMaxCompletionTokens: got false, want true")
+	}
+	if m.LongContextThreshold != 272000 {
+		t.Errorf("LongContextThreshold: got %d, want 272000", m.LongContextThreshold)
+	}
 }
 
-func TestDefaultModel_IsClaudeSonnet46(t *testing.T) {
-	m := DefaultModel()
-	if m.Name != "claude-sonnet-4-6" {
-		t.Errorf("Name: got %q, want %q", m.Name, "claude-sonnet-4-6")
+func TestLookupModel_GPT56FamilyCapabilities(t *testing.T) {
+	tests := []struct {
+		name                       string
+		inputPricePerM             float64
+		outputPricePerM            float64
+		longContextInputPricePerM  float64
+		longContextOutputPricePerM float64
+	}{
+		{"gpt-5.6", 5.0, 30.0, 10.0, 45.0},
+		{"gpt-5.6-sol", 5.0, 30.0, 10.0, 45.0},
+		{"gpt-5.6-terra", 2.5, 15.0, 5.0, 22.5},
+		{"gpt-5.6-luna", 1.0, 6.0, 2.0, 9.0},
 	}
-	if m.Endpoint != "claude-sonnet-4-6/invocations" {
-		t.Errorf("Endpoint: got %q, want %q", m.Endpoint, "claude-sonnet-4-6/invocations")
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m, found := LookupModel(tt.name)
+			if !found {
+				t.Fatalf("%s not found", tt.name)
+			}
+
+			if m.Provider != "openai" {
+				t.Errorf("Provider: got %q, want openai", m.Provider)
+			}
+			if m.InputPricePerM != tt.inputPricePerM || m.OutputPricePerM != tt.outputPricePerM {
+				t.Errorf("base pricing: got input=%f output=%f, want input=%f output=%f",
+					m.InputPricePerM, m.OutputPricePerM, tt.inputPricePerM, tt.outputPricePerM)
+			}
+			if m.LongContextInputPricePerM != tt.longContextInputPricePerM || m.LongContextOutputPricePerM != tt.longContextOutputPricePerM {
+				t.Errorf("long-context pricing: got input=%f output=%f, want input=%f output=%f",
+					m.LongContextInputPricePerM, m.LongContextOutputPricePerM,
+					tt.longContextInputPricePerM, tt.longContextOutputPricePerM)
+			}
+			if m.ContextLimit != 1050000 {
+				t.Errorf("ContextLimit: got %d, want 1050000", m.ContextLimit)
+			}
+			if m.MaxOutputTokens != 128000 {
+				t.Errorf("MaxOutputTokens: got %d, want 128000", m.MaxOutputTokens)
+			}
+			if m.LongContextThreshold != 272000 {
+				t.Errorf("LongContextThreshold: got %d, want 272000", m.LongContextThreshold)
+			}
+			if !m.UseMaxCompletionTokens {
+				t.Error("UseMaxCompletionTokens: got false, want true")
+			}
+			if !m.OmitTemperature {
+				t.Error("OmitTemperature: got false, want true")
+			}
+			if !m.SupportsStructuredOutput {
+				t.Error("SupportsStructuredOutput: got false, want true")
+			}
+			if m.ExecutionWarning == "" {
+				t.Error("ExecutionWarning: got empty, want safeguard warning")
+			}
+		})
+	}
+}
+
+func TestLookupModel_GPT55CyberAliasesUseProvisionalConfig(t *testing.T) {
+	base, found := LookupModel("gpt-5.5")
+	if !found {
+		t.Fatal("gpt-5.5 not found")
+	}
+
+	for _, name := range []string{"gpt-5.5-cyber-preview", "gpt-5.5-cyber"} {
+		t.Run(name, func(t *testing.T) {
+			m, found := LookupModel(name)
+			if !found {
+				t.Fatalf("%s not found", name)
+			}
+
+			if m.Provider != "openai" {
+				t.Errorf("Provider: got %q, want openai", m.Provider)
+			}
+			if m.ContextLimit != 272000 {
+				t.Errorf("ContextLimit: got %d, want 272000", m.ContextLimit)
+			}
+			if m.MaxOutputTokens != base.MaxOutputTokens {
+				t.Errorf("MaxOutputTokens: got %d, want GPT-5.5 value %d", m.MaxOutputTokens, base.MaxOutputTokens)
+			}
+			if m.InputPricePerM != base.InputPricePerM || m.OutputPricePerM != base.OutputPricePerM {
+				t.Errorf("pricing: got input=%f output=%f, want GPT-5.5 input=%f output=%f",
+					m.InputPricePerM, m.OutputPricePerM, base.InputPricePerM, base.OutputPricePerM)
+			}
+			if m.ExecutionWarning == "" {
+				t.Error("ExecutionWarning: got empty, want provisional-config warning")
+			}
+			if m.LongContextThreshold != 0 {
+				t.Errorf("LongContextThreshold: got %d, want 0 for a 272K context alias", m.LongContextThreshold)
+			}
+		})
+	}
+}
+
+func TestLookupModel_FableCarriesExecutionWarning(t *testing.T) {
+	m, found := LookupModel("claude-fable-5")
+	if !found {
+		t.Fatal("claude-fable-5 not found")
+	}
+	if m.ExecutionWarning == "" {
+		t.Error("ExecutionWarning: got empty, want security-policy warning")
+	}
+}
+
+func TestDefaultModel_IsClaudeSonnet5(t *testing.T) {
+	m := DefaultModel()
+	if m.Name != "claude-sonnet-5" {
+		t.Errorf("Name: got %q, want %q", m.Name, "claude-sonnet-5")
+	}
+	if m.Endpoint != "claude-sonnet-5/invocations" {
+		t.Errorf("Endpoint: got %q, want %q", m.Endpoint, "claude-sonnet-5/invocations")
 	}
 }
 
@@ -259,18 +388,18 @@ func TestRegisterModel_ReplacesExisting(t *testing.T) {
 	copy(saved, defaultModels)
 	defer func() { defaultModels = saved }()
 
-	original, _ := LookupModel("claude-sonnet-4-6")
-	if original.MaxOutputTokens != 16384 {
-		t.Fatalf("precondition: expected 16384, got %d", original.MaxOutputTokens)
+	original, _ := LookupModel("claude-sonnet-5")
+	if original.MaxOutputTokens != 128000 {
+		t.Fatalf("precondition: expected 128000, got %d", original.MaxOutputTokens)
 	}
 
 	RegisterModel(ModelConfig{
-		Name:            "claude-sonnet-4-6",
+		Name:            "claude-sonnet-5",
 		ContextLimit:    200000,
 		MaxOutputTokens: 32768,
 	})
 
-	updated, found := LookupModel("claude-sonnet-4-6")
+	updated, found := LookupModel("claude-sonnet-5")
 	if !found {
 		t.Fatal("replaced model not found")
 	}
@@ -302,9 +431,9 @@ func TestRegisterUserModels_AddsAndOverrides(t *testing.T) {
 		},
 		// Override of a built-in — same Name, different pricing.
 		{
-			Name:            "claude-sonnet-4-6",
+			Name:            "claude-sonnet-5",
 			Provider:        "anthropic",
-			InputPricePerM:  1.5, // halved vs built-in
+			InputPricePerM:  1.5,
 			OutputPricePerM: 7.5,
 			ContextLimit:    200000,
 			MaxOutputTokens: 16384,
@@ -326,7 +455,7 @@ func TestRegisterUserModels_AddsAndOverrides(t *testing.T) {
 		t.Errorf("Provider: got %q, want %q", added.Provider, "openai-compat")
 	}
 
-	overridden, _ := LookupModel("claude-sonnet-4-6")
+	overridden, _ := LookupModel("claude-sonnet-5")
 	if overridden.InputPricePerM != 1.5 {
 		t.Errorf("user override did not take effect: InputPricePerM got %v, want 1.5", overridden.InputPricePerM)
 	}
@@ -379,12 +508,20 @@ func TestDefaultModelRegistry_FieldValues(t *testing.T) {
 		structured  bool
 		temperature float64
 	}{
-		{"claude-sonnet-4-6", 16384, "claude", true, 0.0},
-		{"claude-opus-4-6", 32768, "claude", true, 0.0},
-		{"gpt-5.2", 16384, "o200k_base", true, 0.0},
+		{"claude-sonnet-5", 128000, "claude", true, 0.0},
+		{"claude-opus-4-8", 128000, "claude", true, 0.0},
+		{"claude-fable-5", 128000, "claude", true, 0.0},
+		{"claude-haiku-4-5", 64000, "claude", true, 0.0},
+		{"gpt-5.6", 128000, "o200k_base", true, 0.0},
+		{"gpt-5.6-sol", 128000, "o200k_base", true, 0.0},
+		{"gpt-5.6-terra", 128000, "o200k_base", true, 0.0},
+		{"gpt-5.6-luna", 128000, "o200k_base", true, 0.0},
 		{"gpt-5.5", 128000, "o200k_base", true, 1.0},
-		{"gemini-3-pro", 65536, "cl100k_base", true, 0.0},
-		{"gemini-3-flash", 65536, "cl100k_base", true, 0.0},
+		{"gpt-5.5-cyber-preview", 128000, "o200k_base", true, 1.0},
+		{"gpt-5.5-cyber", 128000, "o200k_base", true, 1.0},
+		{"gemini-3.1-pro-preview", 65536, "cl100k_base", true, 0.0},
+		{"gemini-3.5-flash", 65536, "cl100k_base", true, 0.0},
+		{"gemini-3.1-flash-lite", 65536, "cl100k_base", true, 0.0},
 	}
 
 	for _, tt := range tests {
@@ -404,6 +541,33 @@ func TestDefaultModelRegistry_FieldValues(t *testing.T) {
 			}
 			if m.Temperature != tt.temperature {
 				t.Errorf("Temperature: got %f, want %f", m.Temperature, tt.temperature)
+			}
+		})
+	}
+}
+
+func TestModelConfig_EstimateCost_LongContextPricing(t *testing.T) {
+	tests := []struct {
+		name         string
+		model        string
+		inputTokens  int
+		outputTokens int
+		want         float64
+	}{
+		{name: "gpt threshold uses base rate", model: "gpt-5.5", inputTokens: 272000, outputTokens: 1000, want: 1.39},
+		{name: "gpt over threshold uses long rate", model: "gpt-5.5", inputTokens: 272001, outputTokens: 1000, want: 2.76501},
+		{name: "gpt-5.6-luna over threshold uses long rate", model: "gpt-5.6-luna", inputTokens: 272001, outputTokens: 1000, want: 0.553002},
+		{name: "gemini over threshold uses long rate", model: "gemini-3.1-pro-preview", inputTokens: 200001, outputTokens: 1000, want: 0.818004},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m, found := LookupModel(tt.model)
+			if !found {
+				t.Fatalf("model %q not found", tt.model)
+			}
+			if got := m.EstimateCost(tt.inputTokens, tt.outputTokens); math.Abs(got-tt.want) > 1e-9 {
+				t.Errorf("EstimateCost(%d, %d) = %f, want %f", tt.inputTokens, tt.outputTokens, got, tt.want)
 			}
 		})
 	}

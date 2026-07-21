@@ -89,7 +89,7 @@ against a specialist set, and a smaller model for audit:
 ```bash
 codecrucible scan ./target \
   --prompts-dir prompts/exploit-proof-web-go \
-  --fd-provider google --fd-model gemini-3-flash \
-  --model claude-opus-4-7 \
-  --audit-model claude-sonnet-4-6
+  --fd-provider google --fd-model gemini-3.5-flash \
+  --model claude-opus-4-8 \
+  --audit-model claude-sonnet-5
 ```

@@ -13,10 +13,12 @@ import (
 // wired to the context-compress phase config, the prompt template, and a
 // counter for re-measuring the result.
 type Compressor struct {
-	Client  llm.Client
-	Prompt  llm.ContextCompressPrompt
-	Counter TokenCounter
-	Model   string // sent in ChatRequest.Model
+	Client                 llm.Client
+	Prompt                 llm.ContextCompressPrompt
+	Counter                TokenCounter
+	Model                  string // sent in ChatRequest.Model
+	OmitTemperature        bool
+	UseMaxCompletionTokens bool
 }
 
 // Compress squeezes sources that exceed their fair share of the budget. Only
@@ -74,8 +76,10 @@ func (c *Compressor) compressOne(ctx context.Context, name, content string, targ
 		// Give the model headroom above target — it can't count its own
 		// tokens precisely, and truncating a summary mid-sentence is worse
 		// than going slightly over. Pack will enforce the hard budget.
-		MaxTokens:  target * 2,
-		OutputMode: llm.OutputModeNone,
+		OmitTemperature:        c.OmitTemperature,
+		MaxTokens:              target * 2,
+		UseMaxCompletionTokens: c.UseMaxCompletionTokens,
+		OutputMode:             llm.OutputModeNone,
 	})
 	if err != nil {
 		return "", err

@@ -108,15 +108,18 @@ func analyzeChunk(
 
 	chunkLabel := fmt.Sprintf("analysis chunk %d/%d", c.Index+1, c.Total)
 	resp, err := client.ChatCompletion(ctx, llm.ChatRequest{
-		Label:          chunkLabel,
-		Endpoint:       endpoint,
-		Model:          modelCfg.Name,
-		Messages:       messages,
-		Temperature:    modelCfg.Temperature,
-		MaxTokens:      modelCfg.MaxOutputTokens,
-		ResponseSchema: schema,
-		OutputMode:     outputMode,
-		ModelParams:    modelParams,
+		Label:                  chunkLabel,
+		Endpoint:               endpoint,
+		Model:                  modelCfg.Name,
+		Messages:               messages,
+		Temperature:            modelCfg.Temperature,
+		OmitTemperature:        modelCfg.OmitTemperature,
+		MaxTokens:              modelCfg.MaxOutputTokens,
+		UseMaxCompletionTokens: modelCfg.UseMaxCompletionTokens,
+		ResponseSchema:         schema,
+		OutputMode:             outputMode,
+		NativeStructuredOutput: modelCfg.NativeStructuredOutput,
+		ModelParams:            modelParams,
 	})
 	if err != nil {
 		// Context overflow is recoverable by the caller (split and retry).
@@ -141,8 +144,7 @@ func analyzeChunk(
 	}
 
 	usage := resp.Usage
-	chunkCost := float64(usage.PromptTokens)*modelCfg.InputPricePerM/1_000_000 +
-		float64(usage.CompletionTokens)*modelCfg.OutputPricePerM/1_000_000
+	chunkCost := modelCfg.EstimateCost(usage.PromptTokens, usage.CompletionTokens)
 
 	elapsed := time.Since(start)
 	attrs := []any{
@@ -243,17 +245,19 @@ func analyzeChunk(
 					"(error: " + parseErr.Error() + "). " +
 					"Return ONLY the corrected JSON object, nothing else:\n\n" + resp.Content,
 			}},
-			Temperature:    modelCfg.Temperature,
-			MaxTokens:      modelCfg.MaxOutputTokens,
-			ResponseSchema: schema,
-			OutputMode:     outputMode,
-			ModelParams:    modelParams,
+			Temperature:            modelCfg.Temperature,
+			OmitTemperature:        modelCfg.OmitTemperature,
+			MaxTokens:              modelCfg.MaxOutputTokens,
+			UseMaxCompletionTokens: modelCfg.UseMaxCompletionTokens,
+			ResponseSchema:         schema,
+			OutputMode:             outputMode,
+			NativeStructuredOutput: modelCfg.NativeStructuredOutput,
+			ModelParams:            modelParams,
 		})
 		if repairErr == nil {
 			usage.PromptTokens += repairResp.Usage.PromptTokens
 			usage.CompletionTokens += repairResp.Usage.CompletionTokens
-			chunkCost += float64(repairResp.Usage.PromptTokens)*modelCfg.InputPricePerM/1_000_000 +
-				float64(repairResp.Usage.CompletionTokens)*modelCfg.OutputPricePerM/1_000_000
+			chunkCost += modelCfg.EstimateCost(repairResp.Usage.PromptTokens, repairResp.Usage.CompletionTokens)
 			repaired, _ := llm.RepairJSON(repairResp.Content)
 			if err := json.Unmarshal([]byte(repaired), &result); err == nil {
 				slog.Info("recovered malformed LLM response via model reformat", "chunk", c.Index)
@@ -337,15 +341,18 @@ func runFeatureDetection(
 	slog.Info("running feature detection pre-pass")
 
 	resp, err := client.ChatCompletion(ctx, llm.ChatRequest{
-		Label:          "feature-detection",
-		Endpoint:       endpoint,
-		Model:          modelCfg.Name,
-		Messages:       messages,
-		Temperature:    modelCfg.Temperature,
-		MaxTokens:      modelCfg.MaxOutputTokens,
-		ResponseSchema: featureSchema,
-		OutputMode:     outputMode,
-		ModelParams:    modelParams,
+		Label:                  "feature-detection",
+		Endpoint:               endpoint,
+		Model:                  modelCfg.Name,
+		Messages:               messages,
+		Temperature:            modelCfg.Temperature,
+		OmitTemperature:        modelCfg.OmitTemperature,
+		MaxTokens:              modelCfg.MaxOutputTokens,
+		UseMaxCompletionTokens: modelCfg.UseMaxCompletionTokens,
+		ResponseSchema:         featureSchema,
+		OutputMode:             outputMode,
+		NativeStructuredOutput: modelCfg.NativeStructuredOutput,
+		ModelParams:            modelParams,
 	})
 	if err != nil {
 		return nil, 0, fmt.Errorf("feature detection LLM call: %w", err)

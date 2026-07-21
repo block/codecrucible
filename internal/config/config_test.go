@@ -116,23 +116,23 @@ func TestBindEnvVars_ModelParamsJSON(t *testing.T) {
 	SetDefaults(v)
 	BindEnvVars(v)
 
-	t.Setenv("CODECRUCIBLE_MODEL_PARAMS", `{"thinking":{"type":"enabled","budget_tokens":2048}}`)
+	t.Setenv("CODECRUCIBLE_MODEL_PARAMS", `{"output_config":{"effort":"high"}}`)
 
 	cfg, err := Load(v)
 	if err != nil {
 		t.Fatalf("Load failed: %v", err)
 	}
 
-	thinkingRaw, ok := cfg.ModelParams["thinking"]
+	outputConfigRaw, ok := cfg.ModelParams["output_config"]
 	if !ok {
-		t.Fatalf("expected thinking in model params, got %+v", cfg.ModelParams)
+		t.Fatalf("expected output_config in model params, got %+v", cfg.ModelParams)
 	}
-	thinking, ok := thinkingRaw.(map[string]any)
+	outputConfig, ok := outputConfigRaw.(map[string]any)
 	if !ok {
-		t.Fatalf("expected thinking object, got %T", thinkingRaw)
+		t.Fatalf("expected output_config object, got %T", outputConfigRaw)
 	}
-	if thinking["type"] != "enabled" {
-		t.Errorf("thinking.type: got %v, want enabled", thinking["type"])
+	if outputConfig["effort"] != "high" {
+		t.Errorf("output_config.effort: got %v, want high", outputConfig["effort"])
 	}
 }
 
@@ -140,9 +140,8 @@ func TestLoad_ModelParamsJSON_MergesWithConfigObject(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.yaml")
 	cfgBody := `model-params:
-  thinking:
-    type: enabled
-    budget_tokens: 1024
+  output_config:
+    effort: medium
   extra:
     keep: true
 `
@@ -155,26 +154,28 @@ func TestLoad_ModelParamsJSON_MergesWithConfigObject(t *testing.T) {
 		t.Fatalf("SetupViper failed: %v", err)
 	}
 
-	v.Set("model-params-json", `{"thinking":{"budget_tokens":4096,"mode":"adaptive"}}`)
+	v.Set("model-params-json", `{"output_config":{"effort":"high"},"thinking":{"type":"adaptive"}}`)
 
 	cfg, err := Load(v)
 	if err != nil {
 		t.Fatalf("Load failed: %v", err)
 	}
 
+	outputConfigRaw := cfg.ModelParams["output_config"]
+	outputConfig, ok := outputConfigRaw.(map[string]any)
+	if !ok {
+		t.Fatalf("expected output_config object, got %T", outputConfigRaw)
+	}
+	if outputConfig["effort"] != "high" {
+		t.Errorf("output_config.effort: got %v, want high", outputConfig["effort"])
+	}
 	thinkingRaw := cfg.ModelParams["thinking"]
 	thinking, ok := thinkingRaw.(map[string]any)
 	if !ok {
 		t.Fatalf("expected thinking object, got %T", thinkingRaw)
 	}
-	if thinking["type"] != "enabled" {
-		t.Errorf("thinking.type: got %v, want enabled", thinking["type"])
-	}
-	if thinking["budget_tokens"] != float64(4096) {
-		t.Errorf("thinking.budget_tokens: got %v, want 4096", thinking["budget_tokens"])
-	}
-	if thinking["mode"] != "adaptive" {
-		t.Errorf("thinking.mode: got %v, want adaptive", thinking["mode"])
+	if thinking["type"] != "adaptive" {
+		t.Errorf("thinking.type: got %v, want adaptive", thinking["type"])
 	}
 
 	extraRaw := cfg.ModelParams["extra"]
@@ -340,6 +341,7 @@ models:
   # Extend: a local Ollama model.
   - name: llama-4-405b
     provider: ollama
+    execution_warning: local model limits are operator supplied
     input_price_per_million: 0.0
     output_price_per_million: 0.0
     context_limit: 131072
@@ -348,15 +350,16 @@ models:
     supports_structured_output: false
 
   # Override: retune a built-in.
-  - name: claude-sonnet-4-6
+  - name: claude-sonnet-5
     provider: anthropic
-    endpoint: claude-sonnet-4-6/invocations
-    input_price_per_million: 2.0
-    output_price_per_million: 10.0
-    context_limit: 200000
-    max_output_tokens: 16384
+    endpoint: claude-sonnet-5/invocations
+    input_price_per_million: 1.5
+    output_price_per_million: 7.5
+    context_limit: 1000000
+    max_output_tokens: 128000
     tokenizer_encoding: claude
     supports_structured_output: true
+    native_structured_output: true
 `
 	if err := os.WriteFile(cfgPath, []byte(cfgBody), 0644); err != nil {
 		t.Fatalf("writing config: %v", err)
@@ -387,14 +390,17 @@ models:
 	if llama.Provider != "ollama" {
 		t.Errorf("llama Provider: got %q, want ollama", llama.Provider)
 	}
+	if llama.ExecutionWarning != "local model limits are operator supplied" {
+		t.Errorf("llama ExecutionWarning: got %q, want config-file value", llama.ExecutionWarning)
+	}
 
 	// Override round-trip: built-in pricing was replaced.
-	sonnet, _ := LookupModel("claude-sonnet-4-6")
-	if sonnet.InputPricePerM != 2.0 {
-		t.Errorf("claude-sonnet-4-6 override InputPricePerM: got %v, want 2.0", sonnet.InputPricePerM)
+	sonnet, _ := LookupModel("claude-sonnet-5")
+	if sonnet.InputPricePerM != 1.5 {
+		t.Errorf("claude-sonnet-5 override InputPricePerM: got %v, want 1.5", sonnet.InputPricePerM)
 	}
-	if sonnet.OutputPricePerM != 10.0 {
-		t.Errorf("claude-sonnet-4-6 override OutputPricePerM: got %v, want 10.0", sonnet.OutputPricePerM)
+	if sonnet.OutputPricePerM != 7.5 {
+		t.Errorf("claude-sonnet-5 override OutputPricePerM: got %v, want 7.5", sonnet.OutputPricePerM)
 	}
 }
 

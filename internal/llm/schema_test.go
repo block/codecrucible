@@ -65,10 +65,10 @@ func TestOutputModeForModel_Classification(t *testing.T) {
 		model string
 		want  OutputMode
 	}{
-		{name: "gpt", model: "gpt-5.2", want: OutputModeJSONSchema},
+		{name: "gpt", model: "gpt-5.5", want: OutputModeJSONSchema},
 		{name: "o-series", model: "o3-mini", want: OutputModeJSONSchema},
-		{name: "claude", model: "claude-sonnet-4-6", want: OutputModeToolUse},
-		{name: "gemini", model: "gemini-3-pro", want: OutputModeJSONSchema},
+		{name: "claude", model: "claude-sonnet-5", want: OutputModeToolUse},
+		{name: "gemini", model: "gemini-3.1-pro-preview", want: OutputModeJSONSchema},
 		{name: "other", model: "llama-3-405b", want: OutputModeNone},
 	}
 

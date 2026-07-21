@@ -31,15 +31,18 @@ type ChatRequest struct {
 	// Label is a caller-supplied tag for log correlation (e.g. "chunk 3/9",
 	// "feature-detection"). Carried into every log line inside the retry
 	// loop so concurrent requests can be distinguished.
-	Label          string           `json:"-"`
-	Endpoint       string           `json:"-"`           // Model serving endpoint name.
-	Model          string           `json:"-"`           // Model name (used by Anthropic/OpenAI direct APIs).
-	Messages       []Message        `json:"messages"`    // System + user messages.
-	Temperature    float64          `json:"temperature"` // Sampling temperature.
-	MaxTokens      int              `json:"max_tokens"`  // Max output tokens.
-	ResponseSchema *json.RawMessage `json:"-"`           // JSON Schema for response_format enforcement.
-	OutputMode     OutputMode       `json:"-"`           // How to enforce structured output.
-	ModelParams    map[string]any   `json:"-"`           // Provider-specific request body params (merged at top level).
+	Label                  string           `json:"-"`
+	Endpoint               string           `json:"-"`           // Model serving endpoint name.
+	Model                  string           `json:"-"`           // Model name (used by Anthropic/OpenAI direct APIs).
+	Messages               []Message        `json:"messages"`    // System + user messages.
+	Temperature            float64          `json:"temperature"` // Sampling temperature.
+	OmitTemperature        bool             `json:"-"`           // Model rejects or does not need an explicit temperature.
+	MaxTokens              int              `json:"max_tokens"`  // Max output tokens.
+	UseMaxCompletionTokens bool             `json:"-"`           // Model requires max_completion_tokens instead of max_tokens.
+	ResponseSchema         *json.RawMessage `json:"-"`           // JSON Schema for response_format enforcement.
+	OutputMode             OutputMode       `json:"-"`           // How to enforce structured output.
+	NativeStructuredOutput bool             `json:"-"`           // Provider has a native JSON-schema request field.
+	ModelParams            map[string]any   `json:"-"`           // Provider-specific request body params (merged at top level).
 }
 
 // ChatResponse holds the result of a chat completion call.
@@ -82,7 +85,8 @@ const (
 	OutputModeNone OutputMode = iota
 	// OutputModeJSONSchema uses response_format with JSON Schema (OpenAI/GPT endpoints).
 	OutputModeJSONSchema
-	// OutputModeToolUse uses tool_use for structured output (Claude endpoints).
+	// OutputModeToolUse uses tool_use for structured output. Current direct
+	// Claude models can override this with NativeStructuredOutput.
 	OutputModeToolUse
 )
 
@@ -215,8 +219,11 @@ func (c *httpClient) ChatCompletion(ctx context.Context, req ChatRequest) (*Chat
 
 	var lastErr error
 	disableForcedToolChoice := c.noForcedToolChoice.Load()
-	dropTemperature := c.dropTemperature.Load()
-	useMaxCompletionTokens := c.useMaxCompletionTokens.Load()
+	// Anthropic rejects an explicit temperature whenever thinking is enabled,
+	// including Opus requests that opt into adaptive thinking via model params.
+	dropTemperature := c.dropTemperature.Load() || req.OmitTemperature ||
+		(c.provider == "anthropic" && hasModelParam(req.ModelParams, "thinking"))
+	useMaxCompletionTokens := c.useMaxCompletionTokens.Load() || req.UseMaxCompletionTokens
 
 	for attempt := 0; attempt <= c.maxRetries; attempt++ {
 		if attempt > 0 {
@@ -676,14 +683,24 @@ func (c *httpClient) handleResponse(resp *http.Response) (*ChatResponse, time.Du
 
 // anthropicRequest is the Anthropic Messages API request body.
 type anthropicRequest struct {
-	Model       string          `json:"model"`
-	Messages    []Message       `json:"messages"`
-	System      string          `json:"system,omitempty"`
-	MaxTokens   int             `json:"max_tokens"`
-	Temperature *float64        `json:"temperature,omitempty"`
-	Tools       []anthropicTool `json:"tools,omitempty"`
-	ToolChoice  any             `json:"tool_choice,omitempty"`
-	Stream      bool            `json:"stream,omitempty"`
+	Model        string                 `json:"model"`
+	Messages     []Message              `json:"messages"`
+	System       string                 `json:"system,omitempty"`
+	MaxTokens    int                    `json:"max_tokens"`
+	Temperature  *float64               `json:"temperature,omitempty"`
+	OutputConfig *anthropicOutputConfig `json:"output_config,omitempty"`
+	Tools        []anthropicTool        `json:"tools,omitempty"`
+	ToolChoice   any                    `json:"tool_choice,omitempty"`
+	Stream       bool                   `json:"stream,omitempty"`
+}
+
+type anthropicOutputConfig struct {
+	Format *anthropicJSONSchemaFormat `json:"format,omitempty"`
+}
+
+type anthropicJSONSchemaFormat struct {
+	Type   string           `json:"type"`
+	Schema *json.RawMessage `json:"schema"`
 }
 
 type anthropicTool struct {
@@ -750,7 +767,14 @@ func (c *httpClient) buildAnthropicRequestBody(req ChatRequest, forceToolChoice,
 		apiReq.Temperature = &t
 	}
 
-	if req.OutputMode == OutputModeToolUse && req.ResponseSchema != nil {
+	if req.OutputMode == OutputModeToolUse && req.ResponseSchema != nil && req.NativeStructuredOutput {
+		apiReq.OutputConfig = &anthropicOutputConfig{
+			Format: &anthropicJSONSchemaFormat{
+				Type:   "json_schema",
+				Schema: extractInnerSchema(req.ResponseSchema),
+			},
+		}
+	} else if req.OutputMode == OutputModeToolUse && req.ResponseSchema != nil {
 		inputSchema := extractInnerSchema(req.ResponseSchema)
 		apiReq.Tools = []anthropicTool{
 			{
@@ -820,6 +844,14 @@ func requestParamsWithout(modelParams map[string]any, drop bool, keys ...string)
 		}
 	}
 	return out
+}
+
+func hasModelParam(modelParams map[string]any, key string) bool {
+	if len(modelParams) == 0 {
+		return false
+	}
+	_, ok := modelParams[key]
+	return ok
 }
 
 // atomicRequestKeys are request-body keys whose value the user's model-params

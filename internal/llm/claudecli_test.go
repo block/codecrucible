@@ -35,7 +35,7 @@ func TestClaudeCLIClient_ChatCompletionStructuredOutput(t *testing.T) {
 printf '%s\n' "$@" >"$TEST_ARGS_FILE"
 cat >"$TEST_STDIN_FILE"
 cat <<'JSON'
-{"type":"result","subtype":"success","is_error":false,"result":"","structured_output":{"ok":true},"stop_reason":"max_tokens","usage":{"input_tokens":123,"output_tokens":45},"modelUsage":{"claude-sonnet-4-6":{"inputTokens":123,"outputTokens":45}}}
+{"type":"result","subtype":"success","is_error":false,"result":"","structured_output":{"ok":true},"stop_reason":"max_tokens","usage":{"input_tokens":123,"output_tokens":45},"modelUsage":{"claude-sonnet-5":{"inputTokens":123,"outputTokens":45}}}
 JSON
 `
 	if err := os.WriteFile(claudePath, []byte(script), 0755); err != nil {
@@ -58,7 +58,7 @@ JSON
 
 	schema := json.RawMessage(`{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"]}`)
 	resp, err := client.ChatCompletion(context.Background(), ChatRequest{
-		Model:          "claude-sonnet-4-6",
+		Model:          "claude-sonnet-5",
 		Messages:       []Message{{Role: "system", Content: "system prompt"}, {Role: "user", Content: "user prompt"}},
 		ResponseSchema: &schema,
 	})
@@ -72,8 +72,8 @@ JSON
 	if resp.FinishReason != "length" {
 		t.Fatalf("FinishReason = %q, want %q", resp.FinishReason, "length")
 	}
-	if resp.Model != "claude-sonnet-4-6" {
-		t.Fatalf("Model = %q, want %q", resp.Model, "claude-sonnet-4-6")
+	if resp.Model != "claude-sonnet-5" {
+		t.Fatalf("Model = %q, want %q", resp.Model, "claude-sonnet-5")
 	}
 	if resp.Usage.PromptTokens != 123 || resp.Usage.CompletionTokens != 45 {
 		t.Fatalf("Usage = %+v, want prompt=123 completion=45", resp.Usage)
@@ -92,7 +92,7 @@ JSON
 		"--permission-mode",
 		"bypassPermissions",
 		"--model",
-		"claude-sonnet-4-6",
+		"claude-sonnet-5",
 		"--system-prompt",
 		"system prompt",
 		"--json-schema",
@@ -131,7 +131,7 @@ func TestClaudeCLIClient_ContextLengthError(t *testing.T) {
 	}
 
 	_, err = client.ChatCompletion(context.Background(), ChatRequest{
-		Model:    "claude-sonnet-4-6",
+		Model:    "claude-sonnet-5",
 		Messages: []Message{{Role: "user", Content: "hi"}},
 	})
 	if err != ErrContextLengthExceeded {
