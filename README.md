@@ -1,10 +1,17 @@
 # codecrucible
 
-A purpose-built Go CLI tool that analyzes Git repositories for security vulnerabilities using LLM-based analysis and produces [SARIF v2.1.0](https://docs.oasis-open.org/sarif/sarif/v2.1.0/sarif-v2.1.0.html) output for GitHub Code Scanning integration.
+CodeCrucible is a command-line security analysis tool for source code
+repositories. It uses large language models to review application code for
+exploitable vulnerabilities, validates findings through a dedicated audit pass,
+and writes standards-compliant [SARIF v2.1.0](https://docs.oasis-open.org/sarif/sarif/v2.1.0/sarif-v2.1.0.html)
+for GitHub Code Scanning and other SARIF-compatible workflows.
 
 ## Overview
 
-codecrucible replaces the original Python/repomix pipeline with a single static Go binary. Key improvements:
+CodeCrucible is designed for cost-aware, reproducible security scans of real
+repositories. It ingests source files, filters low-value inputs, chunks large
+codebases into model-safe prompts, runs configurable LLM analysis and audit
+phases, and preserves phase artifacts for debugging and review.
 
 - **No Node.js/Python runtime** — single binary, distroless Docker image (<50MB)
 - **Structured output enforcement** — JSON Schema (`response_format`) for GPT/Gemini, `tool_use` for Claude
