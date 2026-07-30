@@ -81,7 +81,10 @@ func (c *claudeCLIClient) ChatCompletion(ctx context.Context, req ChatRequest) (
 		args = append(args, "--system-prompt", systemPrompt)
 	}
 	if req.ResponseSchema != nil {
-		args = append(args, "--json-schema", string(*req.ResponseSchema))
+		// ResponseSchema is the OpenAI envelope {"name","strict","schema"};
+		// Claude CLI --json-schema expects the inner JSON Schema only.
+		schema := extractInnerSchema(req.ResponseSchema)
+		args = append(args, "--json-schema", string(*schema))
 	}
 	if len(c.betas) > 0 {
 		args = append(args, "--betas")

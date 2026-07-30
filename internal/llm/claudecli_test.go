@@ -56,11 +56,13 @@ JSON
 		t.Fatalf("NewClaudeCLIClient returned error: %v", err)
 	}
 
-	schema := json.RawMessage(`{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"]}`)
+	// Pass the OpenAI-style envelope; Claude CLI must receive only the inner schema.
+	envelope := json.RawMessage(`{"name":"security_analysis","strict":true,"schema":{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"]}}`)
+	innerSchema := `{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"]}`
 	resp, err := client.ChatCompletion(context.Background(), ChatRequest{
 		Model:          "claude-sonnet-5",
 		Messages:       []Message{{Role: "system", Content: "system prompt"}, {Role: "user", Content: "user prompt"}},
-		ResponseSchema: &schema,
+		ResponseSchema: &envelope,
 	})
 	if err != nil {
 		t.Fatalf("ChatCompletion returned error: %v", err)
@@ -84,6 +86,9 @@ JSON
 		t.Fatalf("read args file: %v", err)
 	}
 	args := string(argsData)
+	if strings.Contains(args, `"name"`) {
+		t.Fatalf("args still contain envelope keyword name; got:\n%s", args)
+	}
 	for _, want := range []string{
 		"-p",
 		"--output-format",
@@ -96,7 +101,7 @@ JSON
 		"--system-prompt",
 		"system prompt",
 		"--json-schema",
-		string(schema),
+		innerSchema,
 		"--betas",
 		"context-1m-2025-08-07",
 		"other-beta",
