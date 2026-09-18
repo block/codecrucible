@@ -12,7 +12,8 @@ import (
 //
 // The zero value inherits: any field left at its zero value on the
 // feature-detection or audit phase is filled from the analysis phase by
-// ResolvePhases. For ModelParams, "zero" means len == 0 — a phase that
+// ResolvePhases, except provider-specific settings when providers differ.
+// For ModelParams, "zero" means len == 0 — a phase that
 // genuinely needs to clear inherited params can set {"_":""} or similar,
 // but in practice nobody wants that.
 //
@@ -134,6 +135,13 @@ func ResolvePhases(cfg *Config) error {
 	}
 	cfg.Phases.Analysis = base
 
+	analysisProvider := base.Provider
+	if analysisProvider == "" {
+		probe := base
+		probe.ModelCfg = lookupOrDefault(base.Model, "analysis")
+		analysisProvider = detectProvider(&probe, cfg)
+	}
+
 	// ── 2. Secondary phases: inherit from analysis, then overlay ───────
 	secondaries := []struct {
 		name        string
@@ -158,6 +166,20 @@ func ResolvePhases(cfg *Config) error {
 			pc.Model = s.legacyModel
 		}
 
+		// Resolve the destination before inheriting provider-specific settings.
+		probe := pc
+		overlay(&probe, s.dst)
+		probe.ModelCfg = lookupOrDefault(probe.Model, s.name)
+		targetProvider := probe.Provider
+		if targetProvider == "" {
+			targetProvider = detectProvider(&probe, cfg)
+		}
+		if targetProvider != analysisProvider {
+			pc.APIKey, pc.BaseURL, pc.Endpoint = "", "", ""
+			pc.Headers = nil
+			pc.ModelParams = nil
+			pc.ModelParamsJSON = ""
+		}
 		overlay(&pc, s.dst)
 		if err := parsePhaseParams(&pc, s.name); err != nil {
 			return err
@@ -184,6 +206,12 @@ func ResolvePhases(cfg *Config) error {
 	for name, pc := range allPhases(cfg) {
 		if pc.Provider == "" {
 			pc.Provider = detectProvider(pc, cfg)
+		}
+		if pc.Provider == "cerebras" && strings.TrimSpace(pc.Model) == "" {
+			return fmt.Errorf("%s: provider=cerebras requires an explicit model (use --model or phases.%s.model)", name, name)
+		}
+		if pc.Provider == "cerebras" && pc.ModelCfg.InputPricePerM == 0 && pc.ModelCfg.OutputPricePerM == 0 {
+			pc.ModelCfg.ExecutionWarning = strings.TrimSpace(pc.ModelCfg.ExecutionWarning + " Cerebras pricing is not configured; reported costs exclude this model and --max-cost cannot enforce its spend. Configure models: pricing before relying on the budget.")
 		}
 		if pc.APIKey == "" {
 			pc.APIKey = ambientKey(pc.Provider, cfg)
@@ -287,6 +315,9 @@ func detectProvider(pc *PhaseConfig, cfg *Config) string {
 	if cfg.GoogleAPIKey != "" {
 		return "google"
 	}
+	if cfg.CerebrasAPIKey != "" {
+		return "cerebras"
+	}
 	// No credentials detected — fall back to anthropic (Claude CLI can
 	// authenticate without an API key) rather than databricks which
 	// requires host+token env vars.
@@ -304,6 +335,8 @@ func ambientKey(provider string, cfg *Config) string {
 		return cfg.OpenAIAPIKey
 	case "google":
 		return cfg.GoogleAPIKey
+	case "cerebras":
+		return cfg.CerebrasAPIKey
 	}
 	return ""
 }

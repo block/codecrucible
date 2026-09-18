@@ -39,7 +39,7 @@ pipeline and produces SARIF output suitable for GitHub Code Scanning integration
 	// the analysis values.
 	for _, p := range phaseFlagSets {
 		cmd.Flags().String(p.prefix+"model", "", p.what+" model"+p.inherit)
-		cmd.Flags().String(p.prefix+"provider", "", p.what+" provider: anthropic, openai, google, ollama, openai-compat, databricks"+p.inherit)
+		cmd.Flags().String(p.prefix+"provider", "", p.what+" provider: anthropic, openai, google, cerebras, ollama, openai-compat, databricks"+p.inherit)
 		cmd.Flags().String(p.prefix+"api-key", "", p.what+" API key (optional for ollama/openai-compat)"+p.inherit)
 		cmd.Flags().String(p.prefix+"base-url", "", p.what+" base URL override"+p.inherit)
 		cmd.Flags().String(p.prefix+"model-params", "", p.what+" model request params as JSON (merged into request body)"+p.inherit)
@@ -451,7 +451,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 	}
 
 	schema := llm.SecurityAnalysisSchema()
-	outputMode := llm.OutputModeForModel(modelCfg.Name)
+	outputMode := llm.OutputModeForConfig(modelCfg)
 	repoName := filepath.Base(repoRoot)
 	artifacts := newPhaseArtifactWriter(cfg)
 	if artifacts.Enabled() {
@@ -513,7 +513,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 			slog.Info("feature detection uses separate configuration",
 				"provider", fd.Provider, "model", fd.ModelCfg.Name)
 		}
-		fdOutputMode := llm.OutputModeForModel(fd.ModelCfg.Name)
+		fdOutputMode := llm.OutputModeForConfig(fd.ModelCfg)
 		var fdCorrection float64
 		detectedFeatures, fdCorrection, err = runFeatureDetection(cmd.Context(), filtered, repoName, fdClient, fdEndpoint, fd.ModelCfg, promptLoader, fdOutputMode, fd.ModelParams, counter)
 		if err != nil {
@@ -810,7 +810,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 			slog.Info("audit phase uses separate configuration",
 				"provider", audit.Provider, "model", audit.ModelCfg.Name)
 		}
-		auditOutputMode := llm.OutputModeForModel(audit.ModelCfg.Name)
+		auditOutputMode := llm.OutputModeForConfig(audit.ModelCfg)
 
 		auditedDoc, auditUsage, auditCost, auditErr := runAuditPhase(
 			cmd.Context(), merged, repoName,

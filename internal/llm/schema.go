@@ -3,6 +3,8 @@ package llm
 import (
 	"encoding/json"
 	"strings"
+
+	"github.com/block/codecrucible/internal/config"
 )
 
 // SecurityAnalysisSchema returns the JSON Schema for the security analysis response format.
@@ -281,4 +283,16 @@ func OutputModeForModel(modelName string) OutputMode {
 	}
 
 	return OutputModeNone
+}
+
+// OutputModeForConfig honors configured capabilities, including custom model IDs.
+// Claude's tool schema remains necessary for Databricks and older endpoints.
+func OutputModeForConfig(m config.ModelConfig) OutputMode {
+	if !m.SupportsStructuredOutput {
+		return OutputModeNone
+	}
+	if OutputModeForModel(m.Name) == OutputModeToolUse {
+		return OutputModeToolUse
+	}
+	return OutputModeJSONSchema
 }

@@ -71,13 +71,15 @@ max-output-tokens: 128000
 request-timeout: 900      # seconds; bump for large-context + thinking models
 
 # --- Provider (flat form — inherited by all phases) ----------------------
-# Providers: anthropic, openai, google, ollama, openai-compat, databricks
+# Providers: anthropic, openai, google, cerebras, ollama, openai-compat, databricks
 # API keys come from env: ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY,
-# DATABRICKS_HOST + DATABRICKS_TOKEN. Provider auto-detects from whichever
+# CEREBRAS_API_KEY, DATABRICKS_HOST + DATABRICKS_TOKEN. Provider auto-detects from whichever
 # is set unless pinned here. ollama and openai-compat don't require API keys.
 
 provider: anthropic
 model: claude-sonnet-5
+# Cerebras: set provider: cerebras and model: <ID from list-models --provider cerebras>.
+# Configure verified limits, pricing and structured-output support under models:.
 # base-url: ""   # override default provider URL (required for openai-compat)
 # custom-headers:
 #   - "anthropic-beta: context-1m-2025-08-07"
@@ -90,7 +92,8 @@ model: claude-sonnet-5
 #     effort: high
 
 # --- Per-phase overrides -------------------------------------------------
-# Any field left unset inherits from the flat fields above. Analysis is the
+# Provider changes reset inherited keys, URLs, headers and model parameters.
+# Other unset fields inherit from the flat fields above. Analysis is the
 # main scan pass; feature-detection is a cheap pre-pass (also calibrates
 # the tokenizer — don't skip it on large repos); audit re-checks findings.
 #
@@ -117,7 +120,7 @@ phases:
   #   provider: google
   #   model: gemini-3.1-pro-preview
   #   api-key: ${GOOGLE_API_KEY}
-  #   # Drop analysis-phase model-params that don't apply here:
+  #   # Optional provider-specific parameters:
   #   model-params:
   #     max_tokens: 8192
 

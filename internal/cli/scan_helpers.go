@@ -35,6 +35,12 @@ type providerPreset struct {
 // handled separately because it uses host+token env vars rather than a
 // single API key.
 var providerPresets = map[string]providerPreset{
+	"cerebras": {
+		baseURL:      "https://api.cerebras.ai",
+		keyEnv:       "CEREBRAS_API_KEY",
+		authRequired: true,
+		wireProvider: "openai",
+	},
 	"anthropic": {
 		baseURL:      "https://api.anthropic.com",
 		keyEnv:       "ANTHROPIC_API_KEY",
@@ -127,7 +133,12 @@ func buildPhaseClient(pc config.PhaseConfig, cfg *config.Config) (llm.Client, st
 		return client, "", nil
 	}
 
-	// Databricks (and any unrecognised provider string, as before).
+	// Reject typos rather than silently routing them to Databricks.
+	if pc.Provider != "databricks" {
+		return nil, "", fmt.Errorf("unsupported provider %q", pc.Provider)
+	}
+
+	// Databricks.
 	if cfg.DatabricksHost == "" {
 		return nil, "", fmt.Errorf("DATABRICKS_HOST is not set (provider=%s)", pc.Provider)
 	}

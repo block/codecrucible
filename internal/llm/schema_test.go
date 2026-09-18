@@ -2,6 +2,7 @@ package llm
 
 import (
 	"encoding/json"
+	"github.com/block/codecrucible/internal/config"
 	"testing"
 )
 
@@ -93,4 +94,54 @@ func decodeSchemaPayload(t *testing.T, raw *json.RawMessage) map[string]any {
 		t.Fatalf("unmarshal schema: %v", err)
 	}
 	return payload
+}
+
+func TestConfiguredOutputMode(t *testing.T) {
+	for _, tc := range []struct {
+		model config.ModelConfig
+		want  OutputMode
+	}{
+		{config.ModelConfig{Name: "custom-glm", SupportsStructuredOutput: true}, OutputModeJSONSchema},
+		{config.ModelConfig{Name: "gpt-custom", SupportsStructuredOutput: false}, OutputModeNone},
+		{config.ModelConfig{Name: "claude-sonnet-5", SupportsStructuredOutput: true}, OutputModeToolUse},
+	} {
+		if got := OutputModeForConfig(tc.model); got != tc.want {
+			t.Errorf("%s: got %v want %v", tc.model.Name, got, tc.want)
+		}
+	}
+}
+
+// Cerebras version 2 requires every strict object to disallow extra keys
+// and include every property in required, including nested array objects.
+func TestStrictSchemaObjects(t *testing.T) {
+	var check func(any)
+	check = func(value any) {
+		switch node := value.(type) {
+		case map[string]any:
+			if node["type"] == "object" {
+				if node["additionalProperties"] != false {
+					t.Error("object allows additional properties")
+				}
+				required := map[string]bool{}
+				for _, key := range node["required"].([]any) {
+					required[key.(string)] = true
+				}
+				for key := range node["properties"].(map[string]any) {
+					if !required[key] {
+						t.Errorf("property %s not required", key)
+					}
+				}
+			}
+			for _, child := range node {
+				check(child)
+			}
+		case []any:
+			for _, child := range node {
+				check(child)
+			}
+		}
+	}
+	for _, raw := range []*json.RawMessage{SecurityAnalysisSchema(), FeatureDetectionSchema(), AuditSchema()} {
+		check(decodeSchemaPayload(t, raw)["schema"])
+	}
 }

@@ -23,12 +23,12 @@ func newListEndpointsCommand() *cobra.Command {
 
 Provider is chosen by --provider if set. Otherwise, Databricks is used when
 DATABRICKS_HOST + DATABRICKS_TOKEN are set; failing that, the first of
-ANTHROPIC_API_KEY / OPENAI_API_KEY / GOOGLE_API_KEY present is used.
+ANTHROPIC_API_KEY / OPENAI_API_KEY / GOOGLE_API_KEY / CEREBRAS_API_KEY present is used.
 
-Supported providers: databricks, anthropic, openai, google, ollama.`,
+Supported providers: databricks, anthropic, openai, google, cerebras, ollama.`,
 		RunE: runListEndpoints,
 	}
-	cmd.Flags().String("provider", "", "provider to query (databricks, anthropic, openai, google, ollama)")
+	cmd.Flags().String("provider", "", "provider to query (databricks, anthropic, openai, google, cerebras, ollama)")
 	cmd.Flags().String("base-url", "", "override provider base URL (useful for OpenAI-compat endpoints)")
 	return cmd
 }
@@ -60,6 +60,8 @@ func runListEndpoints(cmd *cobra.Command, args []string) error {
 		entries, err = listDatabricks(cmd.Context(), cfg)
 	case "anthropic":
 		entries, err = listAnthropic(cmd.Context(), cfg, cmdStringFlag(cmd, "base-url"))
+	case "cerebras":
+		entries, err = listCerebras(cmd.Context(), cfg, cmdStringFlag(cmd, "base-url"))
 	case "openai":
 		entries, err = listOpenAI(cmd.Context(), cfg, cmdStringFlag(cmd, "base-url"))
 	case "google":
@@ -67,7 +69,7 @@ func runListEndpoints(cmd *cobra.Command, args []string) error {
 	case "ollama":
 		entries, err = listOllama(cmd.Context(), cmdStringFlag(cmd, "base-url"))
 	default:
-		return fmt.Errorf("unsupported provider %q (supported: databricks, anthropic, openai, google, ollama)", provider)
+		return fmt.Errorf("unsupported provider %q (supported: databricks, anthropic, openai, google, cerebras, ollama)", provider)
 	}
 	if err != nil {
 		return err
@@ -110,7 +112,10 @@ func resolveListProvider(cmd *cobra.Command, cfg *config.Config) (string, error)
 	if cfg.GoogleAPIKey != "" {
 		return "google", nil
 	}
-	return "", fmt.Errorf("no provider specified and no credentials detected; pass --provider or set one of ANTHROPIC_API_KEY / OPENAI_API_KEY / GOOGLE_API_KEY / (DATABRICKS_HOST + DATABRICKS_TOKEN)")
+	if cfg.CerebrasAPIKey != "" {
+		return "cerebras", nil
+	}
+	return "", fmt.Errorf("no provider specified and no credentials detected; pass --provider or set one of ANTHROPIC_API_KEY / OPENAI_API_KEY / GOOGLE_API_KEY / CEREBRAS_API_KEY / (DATABRICKS_HOST + DATABRICKS_TOKEN)")
 }
 
 func cmdStringFlag(cmd *cobra.Command, name string) string {
@@ -315,6 +320,37 @@ func listOpenAI(ctx context.Context, cfg *config.Config, baseURL string) ([]mode
 			State: "available",
 			Model: firstNonEmpty(m.OwnedBy, m.ID),
 			Usage: "--provider openai --model " + m.ID,
+		})
+	}
+	return entries, nil
+}
+
+func listCerebras(ctx context.Context, cfg *config.Config, baseURL string) ([]modelEntry, error) {
+	if cfg.CerebrasAPIKey == "" {
+		return nil, fmt.Errorf("CEREBRAS_API_KEY is not set")
+	}
+	base := firstNonEmpty(baseURL, cfg.BaseURL, "https://api.cerebras.ai")
+	url := strings.TrimRight(base, "/") + "/v1/models"
+
+	body, err := httpGetJSON(ctx, url, http.Header{
+		"Authorization": []string{"Bearer " + cfg.CerebrasAPIKey},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("querying Cerebras: %w", err)
+	}
+
+	var list openaiModelList
+	if err := json.Unmarshal(body, &list); err != nil {
+		return nil, fmt.Errorf("parsing response: %w", err)
+	}
+
+	entries := make([]modelEntry, 0, len(list.Data))
+	for _, m := range list.Data {
+		entries = append(entries, modelEntry{
+			Name:  m.ID,
+			State: "available",
+			Model: firstNonEmpty(m.OwnedBy, m.ID),
+			Usage: "--provider cerebras --model " + m.ID,
 		})
 	}
 	return entries, nil
