@@ -589,7 +589,7 @@ func TestBlockKimiProvisionalPricing(t *testing.T) {
 	if !ok || m.Provider != "cerebras" || m.InputPricePerM != 2 || m.OutputPricePerM != 8 {
 		t.Fatalf("missing provisional pricing: %+v", m)
 	}
-	if m.ExecutionWarning == "" || m.SupportsStructuredOutput {
+	if m.ExecutionWarning == "" || !m.SupportsStructuredOutput {
 		t.Fatal("unverified settings must remain explicit")
 	}
 }

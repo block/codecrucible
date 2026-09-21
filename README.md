@@ -145,7 +145,7 @@ CodeCrucible reads the model from `--model` (or YAML / `PHASES_ANALYSIS_MODEL`).
 Cerebras requires an explicit model. `block-kimi-k2.6` has a provisional registry
 entry with **assumed** rates of $2/M input and $8/M output, not verified contract
 pricing. It retains fallback limits of 128K context and 8192 output tokens and
-does not assume structured-output support. Every scan selecting it emits a
+uses live-verified JSON Schema output support. Every scan selecting it emits a
 warning. Override the entry under `models:` once deployment settings are known.
 Use `--fd-model`, `--audit-model`, and `--cc-model` to choose different models,
 and the corresponding provider flags to mix providers.

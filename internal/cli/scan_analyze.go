@@ -167,6 +167,9 @@ func analyzeChunk(
 			"gen_time", resp.GenerationTime.Round(time.Millisecond),
 		)
 	}
+	if usage.ReasoningTokens > 0 {
+		attrs = append(attrs, "reasoning_tokens", usage.ReasoningTokens)
+	}
 	if usage.ThinkingChars > 0 {
 		attrs = append(attrs, "thinking_chars", usage.ThinkingChars)
 	}

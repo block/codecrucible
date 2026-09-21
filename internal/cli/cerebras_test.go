@@ -36,7 +36,7 @@ func TestCerebrasClientContract(t *testing.T) {
 			t.Error("missing schema enforcement")
 		}
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"choices":[{"message":{"content":"{}"},"finish_reason":"stop"}],"usage":{"prompt_tokens":100,"completion_tokens":20,"total_tokens":120}}`)
+		fmt.Fprint(w, `{"choices":[{"message":{"content":"{}"},"finish_reason":"stop"}],"usage":{"prompt_tokens":100,"completion_tokens":20,"completion_tokens_details":{"reasoning_tokens":15},"total_tokens":120}}`)
 	}))
 	defer server.Close()
 	client, _, err := buildPhaseClient(config.PhaseConfig{Provider: "cerebras", APIKey: "test-key", BaseURL: server.URL + "/"}, &config.Config{})
@@ -49,7 +49,7 @@ func TestCerebrasClientContract(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if resp.Usage.PromptTokens != 100 || resp.Usage.CompletionTokens != 20 {
+		if resp.Usage.PromptTokens != 100 || resp.Usage.CompletionTokens != 20 || resp.Usage.ReasoningTokens != 15 {
 			t.Fatal("usage lost")
 		}
 	}

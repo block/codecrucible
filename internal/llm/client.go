@@ -67,6 +67,7 @@ type ChatResponse struct {
 type TokenUsage struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`
+	ReasoningTokens  int `json:"reasoning_tokens,omitempty"` // Subset of completion tokens, not an additional charge.
 	// Anthropic prompt-caching fields. Creation is billed at ~1.25× input
 	// rate; reads at ~0.1×. Zero for providers that don't report them.
 	CacheCreationTokens int `json:"cache_creation_tokens,omitempty"`
@@ -485,6 +486,17 @@ func extractInnerSchema(raw *json.RawMessage) *json.RawMessage {
 }
 
 func (c *httpClient) doRequest(ctx context.Context, url, label string, body []byte) (*http.Response, error) {
+	// Inspect only allowlisted scalar fields after model-params merging. Never
+	// log prompts, headers, credentials, or generated reasoning text.
+	var metadata struct {
+		Model               string `json:"model"`
+		MaxTokens           int    `json:"max_tokens"`
+		MaxCompletionTokens int    `json:"max_completion_tokens"`
+	}
+	if json.Unmarshal(body, &metadata) == nil {
+		c.logger.Debug("LLM wire request limits", "label", label, "model", metadata.Model,
+			"max_tokens", metadata.MaxTokens, "max_completion_tokens", metadata.MaxCompletionTokens)
+	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("creating request: %w", err)
@@ -549,8 +561,11 @@ func (c *httpClient) doRequest(ctx context.Context, url, label string, body []by
 type apiResponse struct {
 	Choices []apiChoice `json:"choices"`
 	Usage   struct {
-		PromptTokens     int `json:"prompt_tokens"`
-		CompletionTokens int `json:"completion_tokens"`
+		PromptTokens      int `json:"prompt_tokens"`
+		CompletionTokens  int `json:"completion_tokens"`
+		CompletionDetails struct {
+			ReasoningTokens int `json:"reasoning_tokens"`
+		} `json:"completion_tokens_details"`
 	} `json:"usage"`
 	Model string    `json:"model"`
 	Error *apiError `json:"error,omitempty"`
@@ -710,7 +725,7 @@ func (c *httpClient) handleResponse(resp *http.Response) (*ChatResponse, time.Du
 
 	return &ChatResponse{
 		Content:      content,
-		Usage:        TokenUsage{PromptTokens: apiResp.Usage.PromptTokens, CompletionTokens: apiResp.Usage.CompletionTokens},
+		Usage:        TokenUsage{PromptTokens: apiResp.Usage.PromptTokens, CompletionTokens: apiResp.Usage.CompletionTokens, ReasoningTokens: apiResp.Usage.CompletionDetails.ReasoningTokens},
 		FinishReason: choice.FinishReason,
 		Model:        apiResp.Model,
 	}, 0, nil
