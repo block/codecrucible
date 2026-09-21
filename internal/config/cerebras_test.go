@@ -66,3 +66,34 @@ func TestProviderChangePreservesExplicitSettings(t *testing.T) {
 		t.Fatal("explicit overrides lost")
 	}
 }
+
+func TestKimiAliasesResolveWireModelAcrossPhases(t *testing.T) {
+	for _, alias := range []string{"kimi", "Kimi", "Block-Kimi", "block_kimi", "kimi-k2", "KIMI-K2.6", " block kimi k2.6 ", "block-kimi-k2.6"} {
+		t.Run(alias, func(t *testing.T) {
+			cfg := &Config{Provider: "cerebras", Model: alias}
+			if err := ResolvePhases(cfg); err != nil {
+				t.Fatal(err)
+			}
+			for phase, pc := range allPhases(cfg) {
+				if pc.ModelCfg.Name != "block-kimi-k2.6" {
+					t.Errorf("%s sends %q", phase, pc.ModelCfg.Name)
+				}
+			}
+		})
+	}
+	for _, name := range []string{"kimi-k3", "my-kimi-proxy", "block-kimi-k2.7", "databricks-claude-sonnet-5"} {
+		if got := lookupOrDefault(name, "analysis").Name; got != name {
+			t.Errorf("rewrote %q as %q", name, got)
+		}
+	}
+}
+
+func TestKimiAliasPreservesExactUserModel(t *testing.T) {
+	saved := DefaultModelRegistry()
+	t.Cleanup(func() { modelsMu.Lock(); defaultModels = saved; modelsMu.Unlock() })
+	RegisterModel(ModelConfig{Name: "kimi", Provider: "openai-compat", ContextLimit: 64000})
+	got := lookupOrDefault("kimi", "analysis")
+	if got.Name != "kimi" || got.Provider != "openai-compat" || got.ContextLimit != 64000 {
+		t.Fatalf("lost user override: %+v", got)
+	}
+}

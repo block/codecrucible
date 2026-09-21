@@ -348,8 +348,11 @@ func lookupOrDefault(name, phase string) ModelConfig {
 	if m, ok := LookupModel(name); ok {
 		// Preserve the user-supplied name: the registry may have matched by
 		// substring (databricks-claude-opus → claude-opus-4), and the API
-		// wants the name the user typed.
-		m.Name = name
+		// wants the name the user typed. Known Kimi shorthand is the exception:
+		// send its canonical deployment ID, not the user-facing alias.
+		if !isKimiAlias(name) || !strings.EqualFold(m.Name, "block-kimi-k2.6") {
+			m.Name = name
+		}
 		return m
 	}
 	slog.Warn("model not in registry, using defaults", "phase", phase, "model", name)

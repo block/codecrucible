@@ -142,6 +142,12 @@ codecrucible scan ./target --provider cerebras --model "$CEREBRAS_MODEL" --outpu
 
 `CEREBRAS_MODEL` here is a shell variable containing your selected model ID;
 CodeCrucible reads the model from `--model` (or YAML / `PHASES_ANALYSIS_MODEL`).
+You can select this deployment with `--provider cerebras --model kimi` (or
+`PHASES_ANALYSIS_MODEL=kimi`). Kimi aliases are case-insensitive and tolerate
+spaces, hyphens, underscores, and dots: `Kimi`, `block-kimi`, `kimi-k2`, and
+`kimi-k2.6` all send `block-kimi-k2.6` to the API. Exact custom registry entries
+win; unknown versions and unrelated names are not rewritten.
+
 Cerebras requires an explicit model. `block-kimi-k2.6` has a provisional registry
 entry with **assumed** rates of $2/M input and $8/M output, not verified contract
 pricing. It retains fallback limits of 128K context and 8192 output tokens and

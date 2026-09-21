@@ -25,7 +25,7 @@ func TestCerebrasClientContract(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Error(err)
 		}
-		if body["model"] != "custom-glm" || body["max_completion_tokens"] != float64(65536) {
+		if body["model"] != "block-kimi-k2.6" || body["max_completion_tokens"] != float64(65536) {
 			t.Errorf("incorrect model or output limit: %v", body)
 		}
 		if _, exists := body["max_tokens"]; exists {
@@ -43,7 +43,11 @@ func TestCerebrasClientContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	model := config.ModelConfig{Name: "custom-glm", SupportsStructuredOutput: true}
+	cfg := &config.Config{Provider: "cerebras", Model: "kimi"}
+	if err := config.ResolvePhases(cfg); err != nil {
+		t.Fatal(err)
+	}
+	model := cfg.Phases.Analysis.ModelCfg
 	for _, schema := range []*json.RawMessage{llm.SecurityAnalysisSchema(), llm.FeatureDetectionSchema(), llm.AuditSchema()} {
 		resp, err := client.ChatCompletion(context.Background(), llm.ChatRequest{Model: model.Name, MaxTokens: 65536, ResponseSchema: schema, OutputMode: llm.OutputModeForConfig(model)})
 		if err != nil {

@@ -440,6 +440,15 @@ func LookupModel(name string) (ModelConfig, bool) {
 			return m, true
 		}
 	}
+	// Known Kimi shorthand is routed to the deployed API model. Keep exact
+	// user registry entries above authoritative, including a custom "kimi".
+	if isKimiAlias(name) {
+		for _, m := range defaultModels {
+			if strings.EqualFold(m.Name, "block-kimi-k2.6") {
+				return m, true
+			}
+		}
+	}
 	// Partial match: query contains model name, or model name contains query.
 	// Try longest match first to avoid "claude-opus-4" matching before a more specific entry.
 	var best ModelConfig
@@ -490,5 +499,18 @@ func UnknownModelDefaults(name string) ModelConfig {
 		Temperature:              0.0,
 		Encoding:                 "cl100k_base",
 		SupportsStructuredOutput: false,
+	}
+}
+
+// isKimiAlias tolerates case and common separators but deliberately does not
+// map unknown versions or arbitrary names containing "kimi" to this deployment.
+func isKimiAlias(name string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(name))
+	normalized = strings.NewReplacer("-", "", "_", "", ".", "", " ", "").Replace(normalized)
+	switch normalized {
+	case "kimi", "blockkimi", "kimik2", "blockkimik2", "kimik26", "blockkimik26":
+		return true
+	default:
+		return false
 	}
 }
