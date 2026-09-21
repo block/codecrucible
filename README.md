@@ -80,9 +80,13 @@ phase artifacts beside it: `results.feature-detection.json`,
 `--phase-output-dir DIR` to choose an explicit artifact directory, including
 for stdout workflows.
 
-Dry runs estimate input-token cost only. Real scans also bill completion tokens
-from analysis, repair, and audit phases, so final cost can be higher than the
-dry-run estimate.
+Dry runs show source-input cost plus a separate rough input-and-output estimate.
+The planning estimate assumes 25% input overhead, output tokens equal to 1/16
+of padded input, and one repository-sized audit pass when audit is enabled.
+It displays a 2–3× allowance, not a ceiling. Separate feature detection,
+context compression, retries, and repeated audit batches are excluded.
+The existing preflight budget check uses source-input cost; runtime accounting
+uses reported token usage. All dollar values depend on configured model rates.
 
 ## Installation
 
@@ -138,7 +142,11 @@ codecrucible scan ./target --provider cerebras --model "$CEREBRAS_MODEL" --outpu
 
 `CEREBRAS_MODEL` here is a shell variable containing your selected model ID;
 CodeCrucible reads the model from `--model` (or YAML / `PHASES_ANALYSIS_MODEL`).
-Cerebras requires an explicit model. No account-specific model ID is hardcoded.
+Cerebras requires an explicit model. `block-kimi-k2.6` has a provisional registry
+entry with **assumed** rates of $2/M input and $8/M output, not verified contract
+pricing. It retains fallback limits of 128K context and 8192 output tokens and
+does not assume structured-output support. Every scan selecting it emits a
+warning. Override the entry under `models:` once deployment settings are known.
 Use `--fd-model`, `--audit-model`, and `--cc-model` to choose different models,
 and the corresponding provider flags to mix providers.
 

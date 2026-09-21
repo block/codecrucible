@@ -335,6 +335,20 @@ var defaultModels = []ModelConfig{
 		Encoding:                 "cl100k_base",
 		SupportsStructuredOutput: true,
 	},
+	{
+		// Planning assumptions agreed for the Block deployment, not provider
+		// pricing. Keep existing unknown-model sizing/capability defaults until
+		// the deployment's actual limits and schema support are verified.
+		Name:             "block-kimi-k2.6",
+		Provider:         "cerebras",
+		Endpoint:         "block-kimi-k2.6/invocations",
+		InputPricePerM:   2.0,
+		OutputPricePerM:  8.0,
+		ContextLimit:     128000,
+		MaxOutputTokens:  8192,
+		Encoding:         "cl100k_base",
+		ExecutionWarning: "block-kimi-k2.6 uses provisional planning rates of $2/M input and $8/M output, not verified Cerebras contract prices; 128K context and 8192 output are fallback limits. Override models: with verified deployment settings. Cost limits use these assumed rates and cannot guarantee actual billed spend",
+	},
 }
 
 // EstimateInputCost returns the input-token charge for one request. Providers
