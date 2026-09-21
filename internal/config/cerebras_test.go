@@ -68,20 +68,20 @@ func TestProviderChangePreservesExplicitSettings(t *testing.T) {
 }
 
 func TestKimiAliasesResolveWireModelAcrossPhases(t *testing.T) {
-	for _, alias := range []string{"kimi", "Kimi", "Block-Kimi", "block_kimi", "kimi-k2", "KIMI-K2.6", " block kimi k2.6 ", "block-kimi-k2.6"} {
+	for _, alias := range []string{"kimi", "Kimi", "kimi-k2", "KIMI-K2.6", " kimi k2.6 ", "kimi-k2.6"} {
 		t.Run(alias, func(t *testing.T) {
 			cfg := &Config{Provider: "cerebras", Model: alias}
 			if err := ResolvePhases(cfg); err != nil {
 				t.Fatal(err)
 			}
 			for phase, pc := range allPhases(cfg) {
-				if pc.ModelCfg.Name != "block-kimi-k2.6" {
+				if pc.ModelCfg.Name != "kimi-k2.6" {
 					t.Errorf("%s sends %q", phase, pc.ModelCfg.Name)
 				}
 			}
 		})
 	}
-	for _, name := range []string{"kimi-k3", "my-kimi-proxy", "block-kimi-k2.7", "databricks-claude-sonnet-5"} {
+	for _, name := range []string{"kimi-k3", "my-kimi-proxy", "kimi-k2.7", "databricks-claude-sonnet-5"} {
 		if got := lookupOrDefault(name, "analysis").Name; got != name {
 			t.Errorf("rewrote %q as %q", name, got)
 		}

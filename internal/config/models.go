@@ -336,18 +336,18 @@ var defaultModels = []ModelConfig{
 		SupportsStructuredOutput: true,
 	},
 	{
-		// Planning assumptions agreed for the Block deployment, not provider
+		// Provisional planning assumptions for this model, not provider
 		// pricing. Keep existing unknown-model sizing/capability defaults until
 		// the deployment's actual limits are verified. JSON Schema was live-tested.
-		Name:                     "block-kimi-k2.6",
+		Name:                     "kimi-k2.6",
 		Provider:                 "cerebras",
-		Endpoint:                 "block-kimi-k2.6/invocations",
+		Endpoint:                 "kimi-k2.6/invocations",
 		InputPricePerM:           2.0,
 		OutputPricePerM:          8.0,
 		ContextLimit:             128000,
 		MaxOutputTokens:          8192,
 		Encoding:                 "cl100k_base",
-		ExecutionWarning:         "block-kimi-k2.6 uses provisional planning rates of $2/M input and $8/M output, not verified Cerebras contract prices; 128K context and 8192 output are fallback limits. Override models: with verified deployment settings. Cost limits use these assumed rates and cannot guarantee actual billed spend",
+		ExecutionWarning:         "kimi-k2.6 uses provisional planning rates of $2/M input and $8/M output, not verified Cerebras contract prices; 128K context and 8192 output are fallback limits. Override models: with verified deployment settings. Cost limits use these assumed rates and cannot guarantee actual billed spend",
 		SupportsStructuredOutput: true,
 	},
 }
@@ -444,7 +444,7 @@ func LookupModel(name string) (ModelConfig, bool) {
 	// user registry entries above authoritative, including a custom "kimi".
 	if isKimiAlias(name) {
 		for _, m := range defaultModels {
-			if strings.EqualFold(m.Name, "block-kimi-k2.6") {
+			if strings.EqualFold(m.Name, "kimi-k2.6") {
 				return m, true
 			}
 		}
@@ -508,7 +508,7 @@ func isKimiAlias(name string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(name))
 	normalized = strings.NewReplacer("-", "", "_", "", ".", "", " ", "").Replace(normalized)
 	switch normalized {
-	case "kimi", "blockkimi", "kimik2", "blockkimik2", "kimik26", "blockkimik26":
+	case "kimi", "kimik2", "kimik26":
 		return true
 	default:
 		return false

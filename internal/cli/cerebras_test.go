@@ -25,7 +25,7 @@ func TestCerebrasClientContract(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Error(err)
 		}
-		if body["model"] != "block-kimi-k2.6" || body["max_completion_tokens"] != float64(65536) {
+		if body["model"] != "kimi-k2.6" || body["max_completion_tokens"] != float64(65536) {
 			t.Errorf("incorrect model or output limit: %v", body)
 		}
 		if _, exists := body["max_tokens"]; exists {

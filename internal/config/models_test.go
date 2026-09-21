@@ -32,7 +32,7 @@ func TestDefaultModelRegistry_ContainsExpectedModels(t *testing.T) {
 		{"gemini-3.1-pro-preview", 1048576},
 		{"gemini-3.5-flash", 1048576},
 		{"gemini-3.1-flash-lite", 1048576},
-		{"block-kimi-k2.6", 128000},
+		{"kimi-k2.6", 128000},
 	}
 
 	if len(registry) != len(expected) {
@@ -584,8 +584,8 @@ func TestModelConfig_EstimateCost_LongContextPricing(t *testing.T) {
 	}
 }
 
-func TestBlockKimiProvisionalPricing(t *testing.T) {
-	m, ok := LookupModel("block-kimi-k2.6")
+func TestKimiProvisionalPricing(t *testing.T) {
+	m, ok := LookupModel("kimi-k2.6")
 	if !ok || m.Provider != "cerebras" || m.InputPricePerM != 2 || m.OutputPricePerM != 8 {
 		t.Fatalf("missing provisional pricing: %+v", m)
 	}
