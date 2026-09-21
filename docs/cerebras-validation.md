@@ -19,3 +19,16 @@ Before relying on an account's Cerebras deployment:
    concurrency. Check context overflow, rate limits, latency and actual cost.
 
 No real repository needs to be submitted to complete the initial smoke test.
+
+## Observed truncation on block-kimi-k2.6
+
+Live user runs reported `finish_reason=length` and exactly 8192 completion
+tokens with requested output limits of 32768 and 65536. A local wire capture
+confirmed the old binary sent `max_tokens: 65536`; no local clamp was observed.
+Cerebras requests now use canonical `max_completion_tokens` instead of the
+legacy alias, with contract tests covering 65536 and model-parameter overrides.
+This is a compatibility change, not a confirmed resolution: both parameter
+names are documented as aliases. Verify with a small scan before repeating
+whole-repository scans. If the same cutoff persists, investigate deployment
+caps and reasoning-token usage accounting. The model metadata endpoint returned
+HTTP 403 with the configured credentials, so account limits remain unverified.

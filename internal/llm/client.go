@@ -225,7 +225,7 @@ func (c *httpClient) ChatCompletion(ctx context.Context, req ChatRequest) (*Chat
 	// including Opus requests that opt into adaptive thinking via model params.
 	dropTemperature := c.dropTemperature.Load() || req.OmitTemperature ||
 		(c.provider == "anthropic" && hasModelParam(req.ModelParams, "thinking"))
-	useMaxCompletionTokens := c.useMaxCompletionTokens.Load() || req.UseMaxCompletionTokens
+	useMaxCompletionTokens := c.provider == "cerebras" || c.useMaxCompletionTokens.Load() || req.UseMaxCompletionTokens
 
 	for attempt := 0; attempt <= c.maxRetries; attempt++ {
 		if attempt > 0 {
@@ -345,7 +345,7 @@ func (c *httpClient) buildURL(endpoint string) string {
 	switch c.provider {
 	case "anthropic":
 		return c.baseURL + "/v1/messages"
-	case "openai":
+	case "openai", "cerebras":
 		return c.baseURL + "/v1/chat/completions"
 	case "google":
 		// Google's OpenAI-compat layer: request body, response body, and
@@ -448,7 +448,20 @@ func (c *httpClient) buildRequestBody(req ChatRequest, forceToolChoice, dropTemp
 		}
 	}
 
-	return marshalWithModelParams(apiReq, requestParamsWithout(req.ModelParams, dropTemperature, "temperature"))
+	params := requestParamsWithout(req.ModelParams, dropTemperature, "temperature")
+	if c.provider == "cerebras" && hasModelParam(params, "max_tokens") {
+		// Preserve legacy model-params overrides without sending both aliases.
+		normalized := make(map[string]any, len(params))
+		for k, v := range params {
+			normalized[k] = v
+		}
+		if !hasModelParam(normalized, "max_completion_tokens") {
+			normalized["max_completion_tokens"] = normalized["max_tokens"]
+		}
+		delete(normalized, "max_tokens")
+		params = normalized
+	}
+	return marshalWithModelParams(apiReq, params)
 }
 
 // extractInnerSchema extracts the inner "schema" object from the response_format

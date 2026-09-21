@@ -39,7 +39,7 @@ var providerPresets = map[string]providerPreset{
 		baseURL:      "https://api.cerebras.ai",
 		keyEnv:       "CEREBRAS_API_KEY",
 		authRequired: true,
-		wireProvider: "openai",
+		wireProvider: "cerebras",
 	},
 	"anthropic": {
 		baseURL:      "https://api.anthropic.com",

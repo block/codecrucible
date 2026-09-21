@@ -25,8 +25,11 @@ func TestCerebrasClientContract(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Error(err)
 		}
-		if body["model"] != "custom-glm" || body["max_tokens"] != float64(512) {
+		if body["model"] != "custom-glm" || body["max_completion_tokens"] != float64(65536) {
 			t.Errorf("incorrect model or output limit: %v", body)
+		}
+		if _, exists := body["max_tokens"]; exists {
+			t.Error("legacy max_tokens must not be sent")
 		}
 		format, ok := body["response_format"].(map[string]any)
 		if !ok || format["type"] != "json_schema" {
@@ -42,12 +45,29 @@ func TestCerebrasClientContract(t *testing.T) {
 	}
 	model := config.ModelConfig{Name: "custom-glm", SupportsStructuredOutput: true}
 	for _, schema := range []*json.RawMessage{llm.SecurityAnalysisSchema(), llm.FeatureDetectionSchema(), llm.AuditSchema()} {
-		resp, err := client.ChatCompletion(context.Background(), llm.ChatRequest{Model: model.Name, MaxTokens: 512, ResponseSchema: schema, OutputMode: llm.OutputModeForConfig(model)})
+		resp, err := client.ChatCompletion(context.Background(), llm.ChatRequest{Model: model.Name, MaxTokens: 65536, ResponseSchema: schema, OutputMode: llm.OutputModeForConfig(model)})
 		if err != nil {
 			t.Fatal(err)
 		}
 		if resp.Usage.PromptTokens != 100 || resp.Usage.CompletionTokens != 20 {
 			t.Fatal("usage lost")
+		}
+	}
+
+	for _, params := range []map[string]any{
+		{"max_tokens": 65536},
+		{"max_tokens": 8192, "max_completion_tokens": 65536},
+	} {
+		_, err := client.ChatCompletion(context.Background(), llm.ChatRequest{
+			Model: model.Name, MaxTokens: 65536,
+			ResponseSchema: llm.SecurityAnalysisSchema(), OutputMode: llm.OutputModeForConfig(model),
+			ModelParams: params,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := params["max_tokens"]; !ok {
+			t.Fatal("request mutated caller params")
 		}
 	}
 }
