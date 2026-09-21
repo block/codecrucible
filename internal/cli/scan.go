@@ -383,28 +383,14 @@ func runScan(cmd *cobra.Command, args []string) error {
 		flatResult.BuildFullXML(filtered, flattenCfg)
 	}
 
-	// Estimate cost.
-	analysisCost := modelCfg.EstimateInputCost(totalTokens)
-
-	// Estimate audit phase cost (assumes all repo tokens as context in the worst case).
-	var auditCostEstimate float64
-	if !cfg.SkipAudit {
-		auditCostEstimate = cfg.Phases.Audit.ModelCfg.EstimateInputCost(totalTokens)
-	}
-
-	estimatedCost := analysisCost + auditCostEstimate
-	planningCost := estimatePlanningCost(totalTokens, cfg)
-
-	slog.Info("analysis scope",
+	costEstimate := estimateScanCost(totalTokens, cfg)
+	scopeAttrs := []any{
 		"files", len(filtered),
 		"tokens", totalTokens,
 		"model", modelCfg.Name,
 		"context_limit", modelCfg.ContextLimit,
-		"estimated_analysis_cost", fmt.Sprintf("$%.4f", analysisCost),
-		"estimated_audit_cost", fmt.Sprintf("$%.4f", auditCostEstimate),
-		"estimated_total_input_cost", fmt.Sprintf("$%.4f", estimatedCost),
-		"estimated_planning_cost", fmt.Sprintf("$%.4f", planningCost),
-	)
+	}
+	slog.Info("analysis scope", append(scopeAttrs, costEstimate.logAttrs()...)...)
 
 	// Handle empty repo.
 	if len(filtered) == 0 {
@@ -417,15 +403,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 		fmt.Printf("  Files: %d (of %d total)\n", stats.Kept, stats.Total)
 		fmt.Printf("  Tokens: %d\n", totalTokens)
 		fmt.Printf("  Model: %s (context limit: %d)\n", modelCfg.Name, modelCfg.ContextLimit)
-		fmt.Printf("  Estimated analysis input cost: $%.4f\n", analysisCost)
-		if !cfg.SkipAudit {
-			fmt.Printf("  Estimated audit input cost:    $%.4f (model: %s)\n", auditCostEstimate, cfg.Phases.Audit.ModelCfg.Name)
-		}
-		fmt.Printf("  Estimated total input cost:    $%.4f\n", estimatedCost)
-		fmt.Printf("  Rough input + output cost:    $%.4f\n", planningCost)
-		fmt.Printf("  Planning allowance (2–3x):    $%.2f–$%.2f (not a ceiling)\n", planningCost*2, planningCost*3)
-		fmt.Printf("  Assumptions: 25%% input overhead and output equal to 1/16 of padded input, for analysis plus one audit pass when enabled.\n")
-		fmt.Printf("  Excludes separate feature detection, context compression, retries and repeated audit batches.\n")
+		costEstimate.writeSummary(os.Stdout)
 		for _, warning := range modelWarnings {
 			fmt.Printf("  Warning: %s (model: %s; phases: %s)\n",
 				warning.Message, warning.Model, strings.Join(warning.Phases, ", "))
@@ -437,9 +415,8 @@ func runScan(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	// Check max cost.
-	if cfg.MaxCost > 0 && estimatedCost > cfg.MaxCost {
-		return fmt.Errorf("estimated cost $%.4f exceeds --max-cost $%.2f; aborting (use --dry-run to preview)", estimatedCost, cfg.MaxCost)
+	if err := costEstimate.checkBudget(cfg.MaxCost); err != nil {
+		return err
 	}
 
 	// --- Stage 5: Prepare LLM ---
