@@ -39,7 +39,7 @@ pipeline and produces SARIF output suitable for GitHub Code Scanning integration
 	// the analysis values.
 	for _, p := range phaseFlagSets {
 		cmd.Flags().String(p.prefix+"model", "", p.what+" model"+p.inherit)
-		cmd.Flags().String(p.prefix+"provider", "", p.what+" provider: anthropic, openai, google, ollama, openai-compat, databricks"+p.inherit)
+		cmd.Flags().String(p.prefix+"provider", "", p.what+" provider: anthropic, openai, google, cerebras, ollama, openai-compat, databricks"+p.inherit)
 		cmd.Flags().String(p.prefix+"api-key", "", p.what+" API key (optional for ollama/openai-compat)"+p.inherit)
 		cmd.Flags().String(p.prefix+"base-url", "", p.what+" base URL override"+p.inherit)
 		cmd.Flags().String(p.prefix+"model-params", "", p.what+" model request params as JSON (merged into request body)"+p.inherit)
@@ -383,26 +383,14 @@ func runScan(cmd *cobra.Command, args []string) error {
 		flatResult.BuildFullXML(filtered, flattenCfg)
 	}
 
-	// Estimate cost.
-	analysisCost := modelCfg.EstimateInputCost(totalTokens)
-
-	// Estimate audit phase cost (assumes all repo tokens as context in the worst case).
-	var auditCostEstimate float64
-	if !cfg.SkipAudit {
-		auditCostEstimate = cfg.Phases.Audit.ModelCfg.EstimateInputCost(totalTokens)
-	}
-
-	estimatedCost := analysisCost + auditCostEstimate
-
-	slog.Info("analysis scope",
+	costEstimate := estimateScanCost(totalTokens, cfg)
+	scopeAttrs := []any{
 		"files", len(filtered),
 		"tokens", totalTokens,
 		"model", modelCfg.Name,
 		"context_limit", modelCfg.ContextLimit,
-		"estimated_analysis_cost", fmt.Sprintf("$%.4f", analysisCost),
-		"estimated_audit_cost", fmt.Sprintf("$%.4f", auditCostEstimate),
-		"estimated_total_input_cost", fmt.Sprintf("$%.4f", estimatedCost),
-	)
+	}
+	slog.Info("analysis scope", append(scopeAttrs, costEstimate.logAttrs()...)...)
 
 	// Handle empty repo.
 	if len(filtered) == 0 {
@@ -415,11 +403,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 		fmt.Printf("  Files: %d (of %d total)\n", stats.Kept, stats.Total)
 		fmt.Printf("  Tokens: %d\n", totalTokens)
 		fmt.Printf("  Model: %s (context limit: %d)\n", modelCfg.Name, modelCfg.ContextLimit)
-		fmt.Printf("  Estimated analysis input cost: $%.4f\n", analysisCost)
-		if !cfg.SkipAudit {
-			fmt.Printf("  Estimated audit input cost:    $%.4f (model: %s)\n", auditCostEstimate, cfg.Phases.Audit.ModelCfg.Name)
-		}
-		fmt.Printf("  Estimated total input cost:    $%.4f\n", estimatedCost)
+		costEstimate.writeSummary(os.Stdout)
 		for _, warning := range modelWarnings {
 			fmt.Printf("  Warning: %s (model: %s; phases: %s)\n",
 				warning.Message, warning.Model, strings.Join(warning.Phases, ", "))
@@ -431,9 +415,8 @@ func runScan(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	// Check max cost.
-	if cfg.MaxCost > 0 && estimatedCost > cfg.MaxCost {
-		return fmt.Errorf("estimated cost $%.4f exceeds --max-cost $%.2f; aborting (use --dry-run to preview)", estimatedCost, cfg.MaxCost)
+	if err := costEstimate.checkBudget(cfg.MaxCost); err != nil {
+		return err
 	}
 
 	// --- Stage 5: Prepare LLM ---
@@ -451,7 +434,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 	}
 
 	schema := llm.SecurityAnalysisSchema()
-	outputMode := llm.OutputModeForModel(modelCfg.Name)
+	outputMode := llm.OutputModeForConfig(modelCfg)
 	repoName := filepath.Base(repoRoot)
 	artifacts := newPhaseArtifactWriter(cfg)
 	if artifacts.Enabled() {
@@ -513,7 +496,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 			slog.Info("feature detection uses separate configuration",
 				"provider", fd.Provider, "model", fd.ModelCfg.Name)
 		}
-		fdOutputMode := llm.OutputModeForModel(fd.ModelCfg.Name)
+		fdOutputMode := llm.OutputModeForConfig(fd.ModelCfg)
 		var fdCorrection float64
 		detectedFeatures, fdCorrection, err = runFeatureDetection(cmd.Context(), filtered, repoName, fdClient, fdEndpoint, fd.ModelCfg, promptLoader, fdOutputMode, fd.ModelParams, counter)
 		if err != nil {
@@ -810,7 +793,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 			slog.Info("audit phase uses separate configuration",
 				"provider", audit.Provider, "model", audit.ModelCfg.Name)
 		}
-		auditOutputMode := llm.OutputModeForModel(audit.ModelCfg.Name)
+		auditOutputMode := llm.OutputModeForConfig(audit.ModelCfg)
 
 		auditedDoc, auditUsage, auditCost, auditErr := runAuditPhase(
 			cmd.Context(), merged, repoName,

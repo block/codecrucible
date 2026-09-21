@@ -32,6 +32,7 @@ func TestDefaultModelRegistry_ContainsExpectedModels(t *testing.T) {
 		{"gemini-3.1-pro-preview", 1048576},
 		{"gemini-3.5-flash", 1048576},
 		{"gemini-3.1-flash-lite", 1048576},
+		{"kimi-k2.6", 128000},
 	}
 
 	if len(registry) != len(expected) {
@@ -580,5 +581,15 @@ func TestModelConfig_EstimateCost_LongContextPricing(t *testing.T) {
 				t.Errorf("EstimateCost(%d, %d) = %f, want %f", tt.inputTokens, tt.outputTokens, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestKimiProvisionalPricing(t *testing.T) {
+	m, ok := LookupModel("kimi-k2.6")
+	if !ok || m.Provider != "cerebras" || m.InputPricePerM != 2 || m.OutputPricePerM != 8 {
+		t.Fatalf("missing provisional pricing: %+v", m)
+	}
+	if m.ExecutionWarning == "" || !m.SupportsStructuredOutput {
+		t.Fatal("unverified settings must remain explicit")
 	}
 }

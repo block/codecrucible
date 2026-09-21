@@ -67,6 +67,7 @@ type ChatResponse struct {
 type TokenUsage struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`
+	ReasoningTokens  int `json:"reasoning_tokens,omitempty"` // Subset of completion tokens, not an additional charge.
 	// Anthropic prompt-caching fields. Creation is billed at ~1.25× input
 	// rate; reads at ~0.1×. Zero for providers that don't report them.
 	CacheCreationTokens int `json:"cache_creation_tokens,omitempty"`
@@ -225,7 +226,7 @@ func (c *httpClient) ChatCompletion(ctx context.Context, req ChatRequest) (*Chat
 	// including Opus requests that opt into adaptive thinking via model params.
 	dropTemperature := c.dropTemperature.Load() || req.OmitTemperature ||
 		(c.provider == "anthropic" && hasModelParam(req.ModelParams, "thinking"))
-	useMaxCompletionTokens := c.useMaxCompletionTokens.Load() || req.UseMaxCompletionTokens
+	useMaxCompletionTokens := c.provider == "cerebras" || c.useMaxCompletionTokens.Load() || req.UseMaxCompletionTokens
 
 	for attempt := 0; attempt <= c.maxRetries; attempt++ {
 		if attempt > 0 {
@@ -345,7 +346,7 @@ func (c *httpClient) buildURL(endpoint string) string {
 	switch c.provider {
 	case "anthropic":
 		return c.baseURL + "/v1/messages"
-	case "openai":
+	case "openai", "cerebras":
 		return c.baseURL + "/v1/chat/completions"
 	case "google":
 		// Google's OpenAI-compat layer: request body, response body, and
@@ -448,7 +449,20 @@ func (c *httpClient) buildRequestBody(req ChatRequest, forceToolChoice, dropTemp
 		}
 	}
 
-	return marshalWithModelParams(apiReq, requestParamsWithout(req.ModelParams, dropTemperature, "temperature"))
+	params := requestParamsWithout(req.ModelParams, dropTemperature, "temperature")
+	if c.provider == "cerebras" && hasModelParam(params, "max_tokens") {
+		// Preserve legacy model-params overrides without sending both aliases.
+		normalized := make(map[string]any, len(params))
+		for k, v := range params {
+			normalized[k] = v
+		}
+		if !hasModelParam(normalized, "max_completion_tokens") {
+			normalized["max_completion_tokens"] = normalized["max_tokens"]
+		}
+		delete(normalized, "max_tokens")
+		params = normalized
+	}
+	return marshalWithModelParams(apiReq, params)
 }
 
 // extractInnerSchema extracts the inner "schema" object from the response_format
@@ -472,6 +486,17 @@ func extractInnerSchema(raw *json.RawMessage) *json.RawMessage {
 }
 
 func (c *httpClient) doRequest(ctx context.Context, url, label string, body []byte) (*http.Response, error) {
+	// Inspect only allowlisted scalar fields after model-params merging. Never
+	// log prompts, headers, credentials, or generated reasoning text.
+	var metadata struct {
+		Model               string `json:"model"`
+		MaxTokens           int    `json:"max_tokens"`
+		MaxCompletionTokens int    `json:"max_completion_tokens"`
+	}
+	if json.Unmarshal(body, &metadata) == nil {
+		c.logger.Debug("LLM wire request limits", "label", label, "model", metadata.Model,
+			"max_tokens", metadata.MaxTokens, "max_completion_tokens", metadata.MaxCompletionTokens)
+	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("creating request: %w", err)
@@ -536,8 +561,11 @@ func (c *httpClient) doRequest(ctx context.Context, url, label string, body []by
 type apiResponse struct {
 	Choices []apiChoice `json:"choices"`
 	Usage   struct {
-		PromptTokens     int `json:"prompt_tokens"`
-		CompletionTokens int `json:"completion_tokens"`
+		PromptTokens      int `json:"prompt_tokens"`
+		CompletionTokens  int `json:"completion_tokens"`
+		CompletionDetails struct {
+			ReasoningTokens int `json:"reasoning_tokens"`
+		} `json:"completion_tokens_details"`
 	} `json:"usage"`
 	Model string    `json:"model"`
 	Error *apiError `json:"error,omitempty"`
@@ -697,7 +725,7 @@ func (c *httpClient) handleResponse(resp *http.Response) (*ChatResponse, time.Du
 
 	return &ChatResponse{
 		Content:      content,
-		Usage:        TokenUsage{PromptTokens: apiResp.Usage.PromptTokens, CompletionTokens: apiResp.Usage.CompletionTokens},
+		Usage:        TokenUsage{PromptTokens: apiResp.Usage.PromptTokens, CompletionTokens: apiResp.Usage.CompletionTokens, ReasoningTokens: apiResp.Usage.CompletionDetails.ReasoningTokens},
 		FinishReason: choice.FinishReason,
 		Model:        apiResp.Model,
 	}, 0, nil

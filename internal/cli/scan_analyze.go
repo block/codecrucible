@@ -167,6 +167,9 @@ func analyzeChunk(
 			"gen_time", resp.GenerationTime.Round(time.Millisecond),
 		)
 	}
+	if usage.ReasoningTokens > 0 {
+		attrs = append(attrs, "reasoning_tokens", usage.ReasoningTokens)
+	}
 	if usage.ThinkingChars > 0 {
 		attrs = append(attrs, "thinking_chars", usage.ThinkingChars)
 	}
@@ -210,12 +213,13 @@ func analyzeChunk(
 		// Truncation, not drift. The JSON was cut mid-object when it hit
 		// max_tokens. Model-repair gets the same cap — it would re-truncate
 		// or emit {"security_issues":[]} to fit, which is worse than honest
-		// failure. Point at the flag that actually fixes this.
-		slog.Error("output truncated at max_tokens; repair would hit the same cap",
+		// failure. Distinguish a lower reported cutoff from the configured limit.
+		message := truncationMessage(usage.CompletionTokens, modelCfg.MaxOutputTokens)
+		slog.Error("output truncated; skipping model repair",
 			"chunk", c.Index,
 			"completion_tokens", usage.CompletionTokens,
 			"max_output_tokens", modelCfg.MaxOutputTokens,
-			"fix", "increase --max-output-tokens (thinking tokens count against this limit)",
+			"detail", message,
 		)
 		doc := sarif.Build(sarif.AnalysisResult{RepoName: repoName}, nil, sarif.BuilderConfig{})
 		doc.Runs[0].Invocations = []sarif.SARIFInvocation{{
@@ -223,9 +227,7 @@ func analyzeChunk(
 			ToolExecutionNotifications: []sarif.SARIFNotification{{
 				Level: "error",
 				Message: sarif.SARIFMessage{Text: fmt.Sprintf(
-					"chunk %d/%d: output truncated at max_tokens=%d (finish_reason=length). "+
-						"Increase --max-output-tokens; thinking tokens count against this limit.",
-					c.Index+1, c.Total, modelCfg.MaxOutputTokens)},
+					"chunk %d/%d: %s", c.Index+1, c.Total, message)},
 			}},
 		}}
 		return doc, usage, chunkCost, nil
@@ -379,4 +381,14 @@ func runFeatureDetection(
 	}
 
 	return result.DetectedFeatures, correction, nil
+}
+
+// Completion usage may not fully account for reasoning on every endpoint, so a
+// lower reported count is a diagnostic signal, not proof of a server-side cap.
+func truncationMessage(completionTokens, requested int) string {
+	detail := fmt.Sprintf("output truncated (finish_reason=length): reported completion_tokens=%d, requested max_output_tokens=%d. ", completionTokens, requested)
+	if completionTokens > 0 && completionTokens < requested {
+		return detail + "The reported cutoff is below the requested limit. Check provider/deployment caps, request parameter overrides, and reasoning-token accounting; increasing the local limit alone may not help."
+	}
+	return detail + "Increase --max-output-tokens within the deployment's limits; thinking tokens count against the output budget."
 }

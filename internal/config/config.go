@@ -67,6 +67,9 @@ type Config struct {
 	// OpenAI options (from env vars)
 	OpenAIAPIKey string `mapstructure:"openai-api-key"`
 
+	// Cerebras options (from env vars)
+	CerebrasAPIKey string `mapstructure:"cerebras-api-key"`
+
 	// Google options (from env vars)
 	GoogleAPIKey string `mapstructure:"google-api-key"`
 
@@ -181,6 +184,7 @@ func BindEnvVars(v *viper.Viper) {
 	// which ResolvePhases then cascades to any phase that didn't set its own.
 	_ = v.BindEnv("anthropic-api-key", "ANTHROPIC_API_KEY")
 	_ = v.BindEnv("openai-api-key", "OPENAI_API_KEY")
+	_ = v.BindEnv("cerebras-api-key", "CEREBRAS_API_KEY")
 	_ = v.BindEnv("google-api-key", "GOOGLE_API_KEY", "GEMINI_API_KEY")
 	_ = v.BindEnv("provider", "CODECRUCIBLE_PROVIDER")
 	_ = v.BindEnv("model-params-json", "CODECRUCIBLE_MODEL_PARAMS")

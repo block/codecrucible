@@ -80,9 +80,13 @@ phase artifacts beside it: `results.feature-detection.json`,
 `--phase-output-dir DIR` to choose an explicit artifact directory, including
 for stdout workflows.
 
-Dry runs estimate input-token cost only. Real scans also bill completion tokens
-from analysis, repair, and audit phases, so final cost can be higher than the
-dry-run estimate.
+Dry runs show source-input cost plus a separate rough input-and-output estimate.
+The planning estimate assumes 25% input overhead, output tokens equal to 1/16
+of padded input, and one repository-sized audit pass when audit is enabled.
+It displays a 2–3× allowance, not a ceiling. Separate feature detection,
+context compression, retries, and repeated audit batches are excluded.
+The existing preflight budget check uses source-input cost; runtime accounting
+uses reported token usage. All dollar values depend on configured model rates.
 
 ## Installation
 
@@ -124,7 +128,49 @@ they don't set.
 | `--base-url`          | `--feature-detection-base-url`           | `--audit-base-url`      | `--context-compress-base-url`           |
 | `--model-params`      | `--feature-detection-model-params`       | `--audit-model-params`  | `--context-compress-model-params`       |
 
-Providers: `anthropic`, `openai`, `google`, `ollama`, `openai-compat`, `databricks`. Auto-detected from env vars when unset.
+Providers: `anthropic`, `openai`, `google`, `cerebras`, `ollama`, `openai-compat`, `databricks`. Auto-detected from env vars when unset.
+
+### Cerebras
+
+Set `CEREBRAS_API_KEY` in your environment, then discover available model IDs:
+
+```bash
+codecrucible list-models --provider cerebras
+codecrucible scan ./target --provider cerebras --model "$CEREBRAS_MODEL" --dry-run
+codecrucible scan ./target --provider cerebras --model "$CEREBRAS_MODEL" --output results.sarif
+```
+
+`CEREBRAS_MODEL` here is a shell variable containing your selected model ID;
+CodeCrucible reads the model from `--model` (or YAML / `PHASES_ANALYSIS_MODEL`).
+You can select this deployment with `--provider cerebras --model kimi` (or
+`PHASES_ANALYSIS_MODEL=kimi`). Kimi aliases are case-insensitive and tolerate
+spaces, hyphens, underscores, and dots: `Kimi`, `kimi-k2`, and
+`kimi-k2.6` resolve to `kimi-k2.6`. For an account-specific deployment ID,
+set `model` in `model-params` (or `PHASES_ANALYSIS_MODEL_PARAMS_JSON` in your
+local environment); this overrides the API model name without changing the
+registry entry used for sizing and estimates. Exact custom registry entries
+win; unknown versions and unrelated names are not rewritten.
+
+Cerebras requires an explicit model. `kimi-k2.6` has a provisional registry
+entry with **assumed** rates of $2/M input and $8/M output, not verified contract
+pricing. It retains fallback limits of 128K context and 8192 output tokens and
+uses live-verified JSON Schema output support. Every scan selecting it emits a
+warning. Override the entry under `models:` once deployment settings are known.
+Use `--fd-model`, `--audit-model`, and `--cc-model` to choose different models,
+and the corresponding provider flags to mix providers.
+
+The default base URL is `https://api.cerebras.ai`. Base URL overrides use the
+same convention as the OpenAI provider: omit `/v1`, since the client appends
+`/v1/chat/completions` (and model discovery appends `/v1/models`).
+
+For a model absent from the registry, configure verified context/output limits,
+pricing, and `supports_structured_output: true` under `models:` when the model
+supports JSON Schema. See “Adding models via config” below. Unknown models use
+128K context, 8192 output tokens, and no schema enforcement; these assumptions
+may not match your endpoint. Use `--context-limit` and `--max-output-tokens` to
+override limits. Cerebras models with no configured pricing emit a warning:
+reported costs exclude their usage and `--max-cost` cannot enforce that spend.
+Model listing discovers IDs; it does not populate pricing or capabilities.
 
 ### Custom / Local LLMs
 
@@ -240,8 +286,9 @@ Configuration follows a priority chain: **CLI flags > environment variables > co
 | `DATABRICKS_ENDPOINT` | Model serving endpoint (overrides `--model`) |
 | `ANTHROPIC_API_KEY` | Anthropic API key (optional if Claude Code CLI is installed and logged in) |
 | `OPENAI_API_KEY` | OpenAI API key |
+| `CEREBRAS_API_KEY` | Cerebras API key |
 | `GOOGLE_API_KEY` / `GEMINI_API_KEY` | Google AI Studio API key |
-| `CODECRUCIBLE_PROVIDER` | Provider override (`databricks`, `anthropic`, `openai`, `google`) |
+| `CODECRUCIBLE_PROVIDER` | Provider override (`databricks`, `anthropic`, `openai`, `google`, `cerebras`) |
 | `CODECRUCIBLE_MODEL_PARAMS` | JSON object merged into model request body |
 
 **Per-phase overrides** — `PHASES_<PHASE>_<KEY>` where `<PHASE>` is `ANALYSIS`,
@@ -313,10 +360,8 @@ phases:
     provider: google
     model: gemini-3.5-flash
     api-key: ${GOOGLE_API_KEY}
-    # NOT setting model-params inherits Anthropic-only analysis params, which
-    # Gemini would reject. Setting any params replaces the inherited set
-    # wholesale (see inheritance rules below) — so put something gemini
-    # actually wants:
+    # Switching providers clears inherited provider-specific parameters.
+    # Optional Gemini-specific parameters:
     model-params:
       max_tokens: 2048
 
@@ -334,6 +379,9 @@ phases:
 **Inheritance rules**
 
 - Any per-phase field left at its zero value inherits from the analysis phase.
+- When the resolved provider changes, API key, base URL, endpoint, headers, and
+  model parameters are reset before applying explicit phase overrides. The new
+  provider uses its own ambient credentials and default URL.
 - `model-params` inherits on empty; a phase that sets its own params gets
   **exactly** those params (replace, not merge) — so you can drop inherited
   keys.
