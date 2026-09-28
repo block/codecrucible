@@ -42,18 +42,22 @@ func (c *Compressor) Compress(ctx context.Context, loaded []Loaded, budget int) 
 
 	for i := range out {
 		l := &out[i]
+		l.CompressionStatus = "not_needed"
 		if !l.Compress || l.Tokens <= share {
 			continue
 		}
 		slog.Info("compressing context source", "name", l.Name, "tokens", l.Tokens, "target", share)
 
 		compressed, err := c.compressOne(ctx, l.Name, l.Content, share)
+		l.CompressionMaxTokens = share * 2
 		if err != nil {
+			l.CompressionStatus = "failed"
 			slog.Warn("context compression failed, will truncate instead",
 				"name", l.Name, "error", err)
 			continue
 		}
 		l.Content = compressed
+		l.CompressionStatus = "completed"
 		l.Tokens = c.Counter.Count(compressed)
 		slog.Info("context source compressed", "name", l.Name, "tokens", l.Tokens)
 	}

@@ -61,12 +61,15 @@ type Source struct {
 // Loaded is a source whose content has been fetched and token-counted but not
 // yet packed. Priority is carried through so Pack can sort.
 type Loaded struct {
-	Name     string
-	Content  string
-	Tokens   int
-	Priority int
-	Compress bool
-	Phases   []string
+	SourceIndex          int    // position in the configured sources, including skipped sources
+	CompressionStatus    string // not_needed, completed, or failed
+	CompressionMaxTokens int
+	Name                 string
+	Content              string
+	Tokens               int
+	Priority             int
+	Compress             bool
+	Phases               []string
 }
 
 // TokenCounter is the subset of chunk.TokenCounter this package needs.
@@ -99,12 +102,13 @@ func LoadAll(ctx context.Context, srcs []Source, counter TokenCounter) []Loaded 
 			continue
 		}
 		out = append(out, Loaded{
-			Name:     s.Name,
-			Content:  content,
-			Tokens:   counter.Count(content),
-			Priority: s.Priority,
-			Compress: s.Compress,
-			Phases:   s.Phases,
+			SourceIndex: i,
+			Name:        s.Name,
+			Content:     content,
+			Tokens:      counter.Count(content),
+			Priority:    s.Priority,
+			Compress:    s.Compress,
+			Phases:      s.Phases,
 		})
 	}
 	return out

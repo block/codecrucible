@@ -44,6 +44,7 @@ type SARIFRun struct {
 	Results     []SARIFResult     `json:"results"`
 	Invocations []SARIFInvocation `json:"invocations,omitempty"`
 	Taxonomies  []SARIFTaxonomy   `json:"taxonomies,omitempty"`
+	Properties  *RunProperties    `json:"properties,omitempty"`
 }
 
 // SARIFTool describes the analysis tool.
@@ -104,7 +105,8 @@ type SARIFTaxon struct {
 
 // SARIFMessage is a simple text message wrapper used throughout SARIF.
 type SARIFMessage struct {
-	Text string `json:"text"`
+	Text     string `json:"text"`
+	Markdown string `json:"markdown,omitempty"`
 }
 
 // SARIFResult is a single finding referencing a rule.

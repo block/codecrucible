@@ -436,7 +436,15 @@ func runScan(cmd *cobra.Command, args []string) error {
 	schema := llm.SecurityAnalysisSchema()
 	outputMode := llm.OutputModeForConfig(modelCfg)
 	repoName := filepath.Base(repoRoot)
+
+	metadata := newScanMetadata(cfg)
+	metadata.Recipe.Prompts.Fingerprint, err = promptLoader.Fingerprint()
+	if err != nil {
+		return err
+	}
 	artifacts := newPhaseArtifactWriter(cfg)
+	artifacts.metadata = metadata
+	recordActualPhase(metadata, "analysis", *analysis, cfg, false)
 	if artifacts.Enabled() {
 		slog.Info("phase artifacts enabled",
 			"feature_detection", artifacts.Path("feature-detection"),
@@ -446,7 +454,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 	}
 
 	// --- Stage 5.25: Load & pack supplementary context ---
-	analysisCtx, auditCtx, err := loadSupplementaryContext(cmd.Context(), cfg, counter, promptLoader, modelCfg.ContextLimit)
+	analysisCtx, auditCtx, err := loadSupplementaryContext(cmd.Context(), cfg, counter, promptLoader, modelCfg.ContextLimit, metadata)
 	if err != nil {
 		return err
 	}
@@ -496,10 +504,12 @@ func runScan(cmd *cobra.Command, args []string) error {
 			slog.Info("feature detection uses separate configuration",
 				"provider", fd.Provider, "model", fd.ModelCfg.Name)
 		}
+		recordActualPhase(metadata, "feature-detection", *fd, cfg, fdErr != nil)
 		fdOutputMode := llm.OutputModeForConfig(fd.ModelCfg)
 		var fdCorrection float64
 		detectedFeatures, fdCorrection, err = runFeatureDetection(cmd.Context(), filtered, repoName, fdClient, fdEndpoint, fd.ModelCfg, promptLoader, fdOutputMode, fd.ModelParams, counter)
 		if err != nil {
+			setPhaseStatus(metadata, "feature-detection", "failed", "using all sections")
 			if wErr := artifacts.WriteFeatureDetection(featureDetectionArtifact{
 				Phase:    "feature-detection",
 				Status:   "failed",
@@ -513,6 +523,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 			}
 			slog.Warn("feature detection failed, using all sections", "error", err)
 		} else {
+			setPhaseStatus(metadata, "feature-detection", "completed", "")
 			if wErr := artifacts.WriteFeatureDetection(featureDetectionArtifact{
 				Phase:            "feature-detection",
 				Status:           "completed",
@@ -543,6 +554,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 		}
 	} else {
 		slog.Info("feature detection skipped (repo fits in single chunk)")
+		setPhaseStatus(metadata, "feature-detection", "skipped", "repo fits in single chunk")
 		if wErr := artifacts.WriteFeatureDetection(featureDetectionArtifact{
 			Phase:  "feature-detection",
 			Status: "skipped",
@@ -552,6 +564,9 @@ func runScan(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("writing feature-detection artifact: %w", wErr)
 		}
 	}
+
+	metadata.Execution.DetectedFeatures = append([]string{}, detectedFeatures...)
+	metadata.Execution.TokenCorrection = tokenCorrection
 
 	// Release SourceFile slice — FileMap retains the content strings via
 	// shared Go string backing bytes; the slice of structs is no longer needed.
@@ -661,6 +676,9 @@ func runScan(cmd *cobra.Command, args []string) error {
 		"effective_limit", effectiveLimit,
 	)
 
+	metadata.Execution.Chunks.Initial = len(chunks)
+	metadata.Execution.Chunks.Budget = chunkBudget
+
 	// Release the full XML string — the chunker has either returned it
 	// verbatim (single-chunk) or built per-file XML from FileMap
 	// (multi-chunk). Holding it further wastes ~2x source-size bytes.
@@ -709,8 +727,10 @@ func runScan(cmd *cobra.Command, args []string) error {
 	for i, r := range results {
 		if errors.Is(r.err, llm.ErrContextLengthExceeded) {
 			overflowPaths = append(overflowPaths, chunks[i].Paths...)
+			metadata.Execution.Chunks.Overflowed++
 			continue
 		}
+		recordChunkOutcome(metadata, r.doc, r.err)
 		sarifDocs = append(sarifDocs, r.doc)
 		totalUsage.PromptTokens += r.usage.PromptTokens
 		totalUsage.CompletionTokens += r.usage.CompletionTokens
@@ -724,6 +744,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 	// overflows, the heuristic is off by >40% and we'd rather fail loudly.
 	if len(overflowPaths) > 0 {
 		retryBudget := chunkBudget * 6 / 10
+		metadata.Execution.Chunks.RecoveryBudget = retryBudget
 		slog.Warn("re-chunking files from overflowed chunks at reduced budget",
 			"files", len(overflowPaths),
 			"original_budget", chunkBudget,
@@ -739,14 +760,17 @@ func runScan(cmd *cobra.Command, args []string) error {
 		retryChunks, rErr := chunker.Chunk(ingest.FlattenResult{FileMap: retryMap}, retryBudget, chunkOpts)
 		if rErr != nil {
 			slog.Error("overflow recovery re-chunking failed; files skipped", "error", rErr, "files", len(overflowPaths))
+			metadata.Execution.Chunks.Failed += metadata.Execution.Chunks.Overflowed
 		} else {
 			slog.Info("overflow recovery pass starting", "chunks", len(retryChunks))
+			metadata.Execution.Chunks.Recovery = len(retryChunks)
 			for _, rc := range retryChunks {
 				doc, usage, cost, aErr := analyzeChunk(
 					cmd.Context(), rc, repoName, client, endpoint,
 					modelCfg, promptLoader, schema, outputMode,
 					cfg.CustomRequirements, analysisCtx.Rendered, detectedFeatures, flatResult.FileMap, analysis.ModelParams,
 				)
+				recordChunkOutcome(metadata, doc, aErr)
 				if errors.Is(aErr, llm.ErrContextLengthExceeded) {
 					slog.Error("overflow recovery chunk still exceeds context; files skipped",
 						"files", len(rc.Paths),
@@ -776,6 +800,10 @@ func runScan(cmd *cobra.Command, args []string) error {
 		"completion_tokens", totalUsage.CompletionTokens,
 		"total_cost", fmt.Sprintf("$%.4f", totalCost),
 	)
+	setPhaseStatus(metadata, "analysis", "completed", "")
+	if metadata.Execution.Chunks.Failed > 0 {
+		setPhaseStatus(metadata, "analysis", "failed", "one or more chunks failed")
+	}
 	if err := artifacts.WriteSARIF("analysis", merged); err != nil {
 		return fmt.Errorf("writing analysis artifact: %w", err)
 	}
@@ -793,21 +821,26 @@ func runScan(cmd *cobra.Command, args []string) error {
 			slog.Info("audit phase uses separate configuration",
 				"provider", audit.Provider, "model", audit.ModelCfg.Name)
 		}
+		recordActualPhase(metadata, "audit", *audit, cfg, auditErr != nil)
 		auditOutputMode := llm.OutputModeForConfig(audit.ModelCfg)
 
 		auditedDoc, auditUsage, auditCost, auditErr := runAuditPhase(
 			cmd.Context(), merged, repoName,
 			auditClient, auditEndpoint, audit.ModelCfg, promptLoader,
 			auditOutputMode, flatResult.FileMap, cfg.AuditConfidenceThreshold, audit.ModelParams, auditCtx.Rendered,
-			cfg.AuditBatchSize, !cfg.IncludeTests, counter,
+			cfg.AuditBatchSize, !cfg.IncludeTests, counter, metadata,
 		)
 		if auditErr != nil {
+			setPhaseStatus(metadata, "audit", "failed", "audit failed")
 			merged = markInvocationFailed(merged, "audit phase failed: "+auditErr.Error())
 			if err := artifacts.WriteSARIF("audit", merged); err != nil {
 				return fmt.Errorf("writing audit artifact: %w", err)
 			}
 		}
 		if auditedDoc != nil {
+			if auditErr == nil && metadata.Execution.Phases["audit"].Status != "failed" {
+				setPhaseStatus(metadata, "audit", "completed", "")
+			}
 			merged = *auditedDoc
 			totalUsage.PromptTokens += auditUsage.PromptTokens
 			totalUsage.CompletionTokens += auditUsage.CompletionTokens
@@ -820,6 +853,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 		slog.Info("audit phase skipped (--skip-audit)")
 	} else {
 		slog.Info("audit phase skipped (no findings to audit)")
+		setPhaseStatus(metadata, "audit", "skipped", "no findings")
 	}
 
 	slog.Info("analysis complete",
@@ -831,6 +865,10 @@ func runScan(cmd *cobra.Command, args []string) error {
 	)
 
 	// --- Stage 7: Output ---
+	merged, err = prepareSARIF(merged, metadata, "final")
+	if err != nil {
+		return err
+	}
 	output, err := json.MarshalIndent(merged, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshaling SARIF: %w", err)

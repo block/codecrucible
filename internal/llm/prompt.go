@@ -1,6 +1,9 @@
 package llm
 
 import (
+	"crypto/sha256"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"strings"
@@ -103,7 +106,8 @@ type AuditParams struct {
 // Templates are cached after first load to avoid repeated disk I/O and YAML parsing.
 type PromptLoader struct {
 	fsys fs.FS
-	mu   sync.Mutex // protects cached* fields for concurrent access
+	mu   sync.Mutex        // protects cached* fields for concurrent access
+	raw  map[string][]byte // immutable snapshot used for scan fingerprinting
 
 	// Cached templates (populated on first load).
 	cachedBase     *BasePrompt
@@ -136,7 +140,7 @@ func (l *PromptLoader) LoadBasePrompt() (*BasePrompt, error) {
 		return l.cachedBase, nil
 	}
 
-	data, err := fs.ReadFile(l.fsys, "security_analysis_base.yaml")
+	data, err := l.readTemplate("security_analysis_base.yaml")
 	if err != nil {
 		return nil, fmt.Errorf("loading base prompt: %w", err)
 	}
@@ -158,7 +162,7 @@ func (l *PromptLoader) LoadAnalysisSections() (*AnalysisSectionsFile, error) {
 		return l.cachedSections, nil
 	}
 
-	data, err := fs.ReadFile(l.fsys, "analysis_sections.yaml")
+	data, err := l.readTemplate("analysis_sections.yaml")
 	if err != nil {
 		return nil, fmt.Errorf("loading analysis sections: %w", err)
 	}
@@ -249,7 +253,7 @@ func (l *PromptLoader) LoadFeatureDetectionPrompt() (*FeatureDetectionPrompt, er
 		return l.cachedFeature, nil
 	}
 
-	data, err := fs.ReadFile(l.fsys, "feature_detection.yaml")
+	data, err := l.readTemplate("feature_detection.yaml")
 	if err != nil {
 		return nil, fmt.Errorf("loading feature detection prompt: %w", err)
 	}
@@ -420,7 +424,7 @@ func (l *PromptLoader) LoadAuditPrompt() (*AuditPrompt, error) {
 		return l.cachedAudit, nil
 	}
 
-	data, err := fs.ReadFile(l.fsys, "audit.yaml")
+	data, err := l.readTemplate("audit.yaml")
 	if err != nil {
 		return nil, fmt.Errorf("loading audit prompt: %w", err)
 	}
@@ -442,7 +446,7 @@ func (l *PromptLoader) LoadCWEPrompts() (*CWEPromptsFile, error) {
 		return l.cachedCWE, nil
 	}
 
-	data, err := fs.ReadFile(l.fsys, "cwe_deep_analysis.yaml")
+	data, err := l.readTemplate("cwe_deep_analysis.yaml")
 	if err != nil {
 		return nil, fmt.Errorf("loading CWE prompts: %w", err)
 	}
@@ -464,7 +468,7 @@ func (l *PromptLoader) LoadContextCompressPrompt() (*ContextCompressPrompt, erro
 	if l.cachedCompress != nil {
 		return l.cachedCompress, nil
 	}
-	data, err := fs.ReadFile(l.fsys, "context_compress.yaml")
+	data, err := l.readTemplate("context_compress.yaml")
 	if err != nil {
 		l.cachedCompress = &ContextCompressPrompt{
 			SystemMessage:      "You are a technical writer specialising in security documentation. Compress reference material while preserving security-relevant detail.",
@@ -610,4 +614,44 @@ func isEntrypoint(path string) bool {
 	}
 
 	return false
+}
+
+// Fingerprint snapshots all supported templates before a scan. Optional missing
+// templates remain missing; unrelated files and installation paths are excluded.
+// Subsequent reads use these exact bytes, so the digest describes the prompts
+// actually used even if a file is edited during the scan.
+func (l *PromptLoader) Fingerprint() (string, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.raw == nil {
+		raw := map[string][]byte{}
+		for _, name := range []string{"security_analysis_base.yaml", "analysis_sections.yaml", "feature_detection.yaml", "audit.yaml", "cwe_deep_analysis.yaml", "context_compress.yaml"} {
+			data, err := fs.ReadFile(l.fsys, name)
+			if errors.Is(err, fs.ErrNotExist) && name != "security_analysis_base.yaml" {
+				continue
+			}
+			if err != nil {
+				return "", fmt.Errorf("fingerprinting prompt %s: %w", name, err)
+			}
+			raw[name] = data
+		}
+		l.raw = raw
+	}
+	data, err := json.Marshal(l.raw)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("sha256:%x", sha256.Sum256(data)), nil
+}
+
+// Called with l.mu held by the template loaders.
+func (l *PromptLoader) readTemplate(name string) ([]byte, error) {
+	if l.raw == nil {
+		return fs.ReadFile(l.fsys, name)
+	}
+	data, ok := l.raw[name]
+	if !ok {
+		return nil, &fs.PathError{Op: "read", Path: name, Err: fs.ErrNotExist}
+	}
+	return data, nil
 }

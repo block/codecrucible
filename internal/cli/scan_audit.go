@@ -76,6 +76,7 @@ func runAuditPhase(
 	batchSize int,
 	productionOnly bool,
 	counter *chunk.TokenCounter,
+	metadata *sarif.ScanMetadata,
 ) (*sarif.SARIFDocument, llm.TokenUsage, float64, error) {
 	slog.Info("starting audit phase",
 		"findings_to_audit", len(doc.Runs[0].Results),
@@ -291,6 +292,7 @@ func runAuditPhase(
 		return nil, usage, cost, fmt.Errorf("all audit batches failed: %w", firstBatchErr)
 	}
 	if failedBatches > 0 {
+		setPhaseStatus(metadata, "audit", "failed", "one or more audit batches failed")
 		slog.Warn("some audit batches failed; surviving findings from those batches remain unaudited",
 			"failed_batches", failedBatches,
 			"total_batches", numBatches,
