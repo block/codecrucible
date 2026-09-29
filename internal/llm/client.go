@@ -18,6 +18,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/block/codecrucible/internal/usage"
 )
 
 // Message represents a single chat message.
@@ -47,6 +49,7 @@ type ChatRequest struct {
 
 // ChatResponse holds the result of a chat completion call.
 type ChatResponse struct {
+	UsageStatus  string     `json:"-"`             // reported, partial, or unknown.
 	Content      string     `json:"content"`       // Raw response content.
 	Usage        TokenUsage `json:"usage"`         // Input/output token counts.
 	FinishReason string     `json:"finish_reason"` // "stop", "length", "content_filter", etc.
@@ -63,20 +66,8 @@ type ChatResponse struct {
 	GenerationTime   time.Duration `json:"-"`
 }
 
-// TokenUsage tracks input and output token consumption.
-type TokenUsage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	ReasoningTokens  int `json:"reasoning_tokens,omitempty"` // Subset of completion tokens, not an additional charge.
-	// Anthropic prompt-caching fields. Creation is billed at ~1.25× input
-	// rate; reads at ~0.1×. Zero for providers that don't report them.
-	CacheCreationTokens int `json:"cache_creation_tokens,omitempty"`
-	CacheReadTokens     int `json:"cache_read_tokens,omitempty"`
-	// Characters (not tokens — Anthropic doesn't break the count down) in
-	// thinking blocks. Shows how much of CompletionTokens was reasoning vs
-	// the output you actually see. Streaming only.
-	ThinkingChars int `json:"thinking_chars,omitempty"`
-}
+// TokenUsage preserves the token categories reported by each provider.
+type TokenUsage = usage.Tokens
 
 // OutputMode specifies how to enforce structured output.
 type OutputMode int
@@ -219,6 +210,7 @@ func NewClient(cfg ClientConfig) Client {
 // ChatCompletion sends a chat completion request with retry logic for transient errors.
 func (c *httpClient) ChatCompletion(ctx context.Context, req ChatRequest) (*ChatResponse, error) {
 	url := c.buildURL(req.Endpoint)
+	recorder := usage.Begin(ctx, "http", req.Model, req.Label)
 
 	var lastErr error
 	disableForcedToolChoice := c.noForcedToolChoice.Load()
@@ -245,8 +237,10 @@ func (c *httpClient) ChatCompletion(ctx context.Context, req ChatRequest) (*Chat
 			return nil, fmt.Errorf("llm: building request body: %w", err)
 		}
 
+		started := time.Now()
 		resp, err := c.doRequest(ctx, url, req.Label, body)
 		if err != nil {
+			recorder.Record(attempt+1, started, attemptResult(ctx, nil, 0, err))
 			// Context cancellation is not retryable.
 			if ctx.Err() != nil {
 				return nil, fmt.Errorf("llm: context cancelled: %w", ctx.Err())
@@ -264,6 +258,7 @@ func (c *httpClient) ChatCompletion(ctx context.Context, req ChatRequest) (*Chat
 		}
 
 		chatResp, retryAfter, err := c.handleResponse(resp)
+		recorder.Record(attempt+1, started, attemptResult(ctx, chatResp, resp.StatusCode, err))
 		if err != nil {
 			// Some endpoints reject forced tool_choice for specific models.
 			// Retry once without forcing tool use while still providing tools.
@@ -643,7 +638,7 @@ type apiError struct {
 
 // handleResponse processes the HTTP response, returning the chat response, retry-after duration,
 // and any error. A non-nil error with retryAfter > 0 indicates a retryable error.
-func (c *httpClient) handleResponse(resp *http.Response) (*ChatResponse, time.Duration, error) {
+func (c *httpClient) handleResponse(resp *http.Response) (result *ChatResponse, retryDelay time.Duration, resultErr error) {
 	defer resp.Body.Close()
 
 	// Streaming responses (Anthropic only for now). Dispatch on Content-Type so
@@ -656,6 +651,18 @@ func (c *httpClient) handleResponse(resp *http.Response) (*ChatResponse, time.Du
 	}
 
 	respBody, err := io.ReadAll(resp.Body)
+	// Capture usage even when an HTTP error or unusable response prevents a
+	// completion from reaching the caller. Never retain the response body.
+	defer func() {
+		tokens, status, model := decodeReportedUsage(respBody, c.provider)
+		if result == nil {
+			result = &ChatResponse{}
+		}
+		result.Usage, result.UsageStatus = tokens, status
+		if result.Model == "" {
+			result.Model = model
+		}
+	}()
 	if err != nil {
 		return nil, 0, fmt.Errorf("reading response body: %w", err)
 	}
@@ -1038,9 +1045,20 @@ func (c *httpClient) readAnthropicStream(body io.Reader) (*ChatResponse, time.Du
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
 	var resp anthropicResponse
+	usageStarted, usageEnded, usageSeen := false, false, false
+	partial := func() *ChatResponse {
+		out := mapAnthropicResponse(&resp)
+		out.Content = ""
+		out.Usage.ThinkingChars = thinkingChars
+		out.UsageStatus = "unknown"
+		if usageSeen {
+			out.UsageStatus = "partial"
+		}
+		return out
+	}
 	var cur *anthropicBlock       // nil between content_block_start/stop
 	var toolInput strings.Builder // accumulates input_json_delta fragments
-	var ev struct {               // reused per data: line; Decode zeroes it
+	var ev struct {               // zeroed before decoding each event
 		Type         string            `json:"type"`
 		Message      anthropicResponse `json:"message"`       // message_start
 		Index        int               `json:"index"`         // content_block_*
@@ -1070,6 +1088,7 @@ func (c *httpClient) readAnthropicStream(body io.Reader) (*ChatResponse, time.Du
 		toolInput.Reset()
 	}
 
+	zeroEvent := ev
 	for sc.Scan() {
 		line := sc.Bytes()
 		// SSE framing: "event:" lines name the event, "data:" lines carry the
@@ -1083,17 +1102,21 @@ func (c *httpClient) readAnthropicStream(body io.Reader) (*ChatResponse, time.Du
 			continue
 		}
 
+		ev = zeroEvent
 		if err := json.Unmarshal(payload, &ev); err != nil {
-			return nil, 0, fmt.Errorf("llm: parsing stream event: %w", err)
+			return partial(), 0, fmt.Errorf("llm: parsing stream event: %w", err)
 		}
 
 		switch ev.Type {
 		case "message_start":
+			usageStarted = hasMessageUsageField(payload, "input_tokens")
 			resp.ID = ev.Message.ID
 			resp.Model = ev.Message.Model
-			resp.Usage.InputTokens = ev.Message.Usage.InputTokens
-			resp.Usage.CacheCreationInputTokens = ev.Message.Usage.CacheCreationInputTokens
-			resp.Usage.CacheReadInputTokens = ev.Message.Usage.CacheReadInputTokens
+			usageSeen = ev.Message.Usage.InputTokens > 0 || hasMessageUsageField(payload, "input_tokens") || hasMessageUsageField(payload, "output_tokens") || hasMessageUsageField(payload, "cache_read_input_tokens") || hasMessageUsageField(payload, "cache_creation_input_tokens")
+			resp.Usage.InputTokens = max(0, ev.Message.Usage.InputTokens)
+			resp.Usage.OutputTokens = max(0, ev.Message.Usage.OutputTokens)
+			resp.Usage.CacheCreationInputTokens = max(0, ev.Message.Usage.CacheCreationInputTokens)
+			resp.Usage.CacheReadInputTokens = max(0, ev.Message.Usage.CacheReadInputTokens)
 
 		case "content_block_start":
 			flush()
@@ -1125,12 +1148,38 @@ func (c *httpClient) readAnthropicStream(body io.Reader) (*ChatResponse, time.Du
 			flush()
 
 		case "message_delta":
-			resp.StopReason = ev.Delta.StopReason
-			resp.Usage.OutputTokens = ev.Usage.OutputTokens
+			if ev.Delta.StopReason != "" {
+				resp.StopReason = ev.Delta.StopReason
+			}
+			// Usage fields are cumulative snapshots, including input/cache
+			// corrections when the provider supplies them on a later delta.
+			if hasUsageField(payload, "input_tokens") {
+				usageStarted, usageSeen = true, true
+				resp.Usage.InputTokens = ev.Usage.InputTokens
+			}
+			if hasUsageField(payload, "cache_creation_input_tokens") {
+				usageSeen = true
+				resp.Usage.CacheCreationInputTokens = ev.Usage.CacheCreationInputTokens
+			}
+			if hasUsageField(payload, "cache_read_input_tokens") {
+				usageSeen = true
+				resp.Usage.CacheReadInputTokens = ev.Usage.CacheReadInputTokens
+			}
+			if hasUsageField(payload, "output_tokens") {
+				usageEnded, usageSeen = true, true
+				resp.Usage.OutputTokens = ev.Usage.OutputTokens
+			}
 
 		case "message_stop":
 			flush()
 			out := mapAnthropicResponse(&resp)
+			out.UsageStatus = "unknown"
+			if usageSeen {
+				out.UsageStatus = "partial"
+			}
+			if usageStarted && usageEnded {
+				out.UsageStatus = "reported"
+			}
 			out.Usage.ThinkingChars = thinkingChars
 			if !firstDeltaAt.IsZero() {
 				out.TimeToFirstToken = firstDeltaAt.Sub(streamStart)
@@ -1141,17 +1190,16 @@ func (c *httpClient) readAnthropicStream(body io.Reader) (*ChatResponse, time.Du
 		case "error":
 			// overloaded_error mid-stream is the common case; plain error
 			// keeps it retryable via the ChatCompletion loop.
-			return nil, 0, fmt.Errorf("llm: stream error (%s): %s", ev.Error.Type, ev.Error.Message)
+			return partial(), 0, fmt.Errorf("llm: stream error (%s): %s", ev.Error.Type, ev.Error.Message)
 		}
 	}
 
 	if err := sc.Err(); err != nil {
-		return nil, 0, fmt.Errorf("llm: reading stream: %w", err)
+		return partial(), 0, fmt.Errorf("llm: reading stream: %w", err)
 	}
 	// Scanner hit EOF without message_stop — the connection was cut. Surface
-	// what we have so the retry log is informative, but don't return a partial
-	// result: tool_use input is likely truncated mid-JSON.
-	return nil, 0, fmt.Errorf("llm: stream ended without message_stop (got %d blocks, stop_reason=%q)", len(resp.Content), resp.StopReason)
+	// partial usage for accounting, but never return truncated content as success.
+	return partial(), 0, fmt.Errorf("llm: stream ended without message_stop (got %d blocks, stop_reason=%q)", len(resp.Content), resp.StopReason)
 }
 
 func isToolChoiceIncompatibleError(body string) bool {

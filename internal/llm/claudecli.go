@@ -11,6 +11,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/block/codecrucible/internal/usage"
 )
 
 var lookPathClaude = exec.LookPath
@@ -65,7 +67,7 @@ type claudeCLIResult struct {
 	ModelUsage map[string]json.RawMessage `json:"modelUsage"`
 }
 
-func (c *claudeCLIClient) ChatCompletion(ctx context.Context, req ChatRequest) (*ChatResponse, error) {
+func (c *claudeCLIClient) ChatCompletion(ctx context.Context, req ChatRequest) (response *ChatResponse, resultErr error) {
 	systemPrompt, userPrompt := splitClaudeCLIMessages(req.Messages)
 
 	args := []string{
@@ -91,7 +93,28 @@ func (c *claudeCLIClient) ChatCompletion(ctx context.Context, req ChatRequest) (
 		args = append(args, c.betas...)
 	}
 
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	recorder := usage.Begin(ctx, "claude_cli", req.Model, req.Label)
+	started := time.Now()
 	stdout, stderr, err := c.run(ctx, args, userPrompt)
+	defer func() {
+		tokens, status, _ := decodeReportedUsage([]byte(stdout), "anthropic")
+		var envelope claudeCLIResult
+		_ = json.Unmarshal([]byte(stdout), &envelope)
+		metadata := &ChatResponse{Usage: tokens, UsageStatus: status, Model: firstClaudeCLIModel(envelope.ModelUsage, "")}
+		result := attemptResult(ctx, metadata, 0, resultErr)
+		if len(envelope.ModelUsage) > 1 {
+			result.Model = ""
+			result.Unpriced = true
+			result.Reason = "multiple_cli_models"
+		}
+		recorder.Record(1, started, result)
+		if response != nil {
+			response.Usage, response.UsageStatus = tokens, status
+		}
+	}()
 	if err != nil {
 		combined := strings.TrimSpace(strings.Join([]string{stdout, stderr}, "\n"))
 		if isClaudeCLIContextLengthError(combined) {

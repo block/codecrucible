@@ -17,6 +17,7 @@ import (
 	"github.com/block/codecrucible/internal/llm"
 	"github.com/block/codecrucible/internal/sarif"
 	"github.com/block/codecrucible/internal/supctx"
+	"github.com/block/codecrucible/internal/usage"
 )
 
 // providerPreset describes how to build a client for a given provider.
@@ -368,7 +369,7 @@ func loadSupplementaryContext(
 					UseMaxCompletionTokens: cc.ModelCfg.UseMaxCompletionTokens,
 				}
 
-				loaded = compressor.Compress(ctx, loaded, budget)
+				loaded = compressor.Compress(phaseUsageContext(ctx, "context-compress", *cc, ""), loaded, budget)
 				attempted, failed := false, false
 				for _, source := range loaded {
 					state := &metadata.Execution.ContextSources[source.SourceIndex]
@@ -464,4 +465,12 @@ func logPack(phase string, r supctx.PackResult) {
 	if r.Truncated != "" {
 		slog.Warn("context source truncated", "phase", phase, "source", r.Truncated)
 	}
+}
+
+// phaseUsageContext carries only public model/pricing metadata to the ledger.
+func phaseUsageContext(ctx context.Context, name string, pc config.PhaseConfig, fallback string) context.Context {
+	m := pc.ModelCfg
+	return usage.WithPhase(ctx, usage.Phase{Name: name, Provider: pc.Provider, PricingModel: m.Name, FallbackReason: fallback,
+		Pricing: usage.Pricing{InputPerMillion: m.InputPricePerM, OutputPerMillion: m.OutputPricePerM,
+			LongContextThreshold: m.LongContextThreshold, LongInputPerMillion: m.LongContextInputPricePerM, LongOutputPerMillion: m.LongContextOutputPricePerM}})
 }

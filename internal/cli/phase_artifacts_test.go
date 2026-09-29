@@ -24,6 +24,7 @@ func TestPhaseArtifactWriter_DerivesSidecarPathsFromOutput(t *testing.T) {
 		"feature-detection": filepath.Join(dir, "results.feature-detection.json"),
 		"analysis":          filepath.Join(dir, "results.analysis.sarif"),
 		"audit":             filepath.Join(dir, "results.audit.sarif"),
+		"usage":             filepath.Join(dir, "results.usage.json"),
 	}
 	for phase, want := range tests {
 		if got := w.Path(phase); got != want {
@@ -44,6 +45,9 @@ func TestPhaseArtifactWriter_UsesExplicitDirectoryForStdoutOutput(t *testing.T) 
 	}
 	if got, want := w.Path("analysis"), filepath.Join(dir, "analysis.sarif"); got != want {
 		t.Fatalf("analysis path = %q, want %q", got, want)
+	}
+	if got, want := w.Path("usage"), filepath.Join(dir, "usage.json"); got != want {
+		t.Fatalf("usage path = %q, want %q", got, want)
 	}
 }
 
