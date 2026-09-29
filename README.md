@@ -719,6 +719,72 @@ SARIF when possible. Check `runs[0].invocations[0].executionSuccessful` and
 `toolExecutionNotifications` for the embedded failure details; the CLI also
 returns exit code 1 so CI does not mistake a failed scan for a clean result.
 
+## SARIF descriptions and scan comparisons
+
+GitHub alert descriptions include a short rule/CWE summary and general review
+guidance in plain-text rule help. Each result's `message.text` contains its own
+evidence, audit refinements, confidence, and uncertainty markers. Shared rule
+help stays independent of individual findings, so another location's evidence
+or audit verdict cannot appear there. The final report excludes rejected
+findings.
+
+CodeCrucible does not convert plain-text messages into Markdown. Literal
+payloads, angle brackets, backslashes, and code examples retain their original
+text. Existing GitHub alerts receive the updated descriptions on the next SARIF
+upload.
+
+Every SARIF run includes `properties.codecrucible` with `schemaVersion: 1`:
+
+| Field | Contents |
+|-------|----------|
+| `recipe` | Scanner version/commit, resolved phase configurations, scan controls, prompt identity, custom-requirement and supplementary-source fingerprints |
+| `recipe.phases` | Analysis, feature detection, audit, and context compression: provider/model, sanitized base URL/endpoint, transport, model parameters, context/output limits, temperature settings, output mode, timeout, tokenizer, and pricing assumptions |
+| `recipe.controls` | Scope filters, test/document inclusion, file-size limit, compression, concurrency, cost limit, severity gate, phase toggles, audit confidence/batch size, and context budget |
+| `recipeFingerprint` | SHA-256 of the canonical JSON recipe (sorted object keys, preserved array order); excludes output paths, credentials, timestamps, and execution outcomes |
+| `execution` | Artifact stage, phase statuses and actual phase configurations, fallbacks, detected features, token correction, chunk/recovery counts, source loading/compression outcomes, and packed-context fingerprints/truncation |
+
+Phase configuration reflects inheritance and overrides after configuration
+resolution. Model parameters are recorded separately from model-registry
+defaults; they can override request-body fields. `execution.phases.*.actual`
+identifies the configuration used when a phase ran, including fallback to the
+analysis client. `requestPolicy` explains exceptions such as Claude CLI-managed
+sampling and context compression's per-source output limits. This is not a
+trace of provider-side defaults or per-request retry adaptations.
+
+Analysis, audit, and final files have independent execution snapshots and the
+same recipe fingerprint. `pending` means a phase had not run at that snapshot;
+`skipped`, `completed`, and `failed` describe its outcome. Empty scans include
+metadata too, but do not fetch supplementary sources; prompt fingerprints are
+included when local templates are available. Failed or empty context sources
+have no content fingerprint, and a skipped audit has no audit artifact.
+
+API keys, tokens, header values, raw arguments, and environment variables are
+excluded from metadata. URLs omit credentials, queries, and fragments. Known
+numeric/boolean tuning parameters and supported enumerations are readable;
+other parameter values use `{ "omitted": true, "fingerprint": "sha256:…" }`.
+Credential-named parameter fields are excluded entirely. Prompt templates,
+custom requirements, and loaded context are fingerprinted, not embedded;
+context locations and absolute prompt-directory paths are omitted. Treat the
+SARIF file itself as source-derived data: finding messages and snippets still
+contain evidence from the scanned repository.
+
+Compare the saved SARIF artifacts directly; GitHub does not expose arbitrary
+custom SARIF properties in its alert interface:
+
+```bash
+# Inspect configuration and execution outcomes.
+jq '.runs[0].properties.codecrucible' results.sarif
+
+# Compare recipes, excluding differences caused only by run outcomes.
+jq -S '.runs[0].properties.codecrucible.recipe' before.sarif > before.recipe.json
+jq -S '.runs[0].properties.codecrucible.recipe' after.sarif > after.recipe.json
+diff -u before.recipe.json after.recipe.json
+```
+
+Matching recipe fingerprints identify matching recorded settings and reference
+inputs, not identical source revisions or guaranteed identical model responses.
+Compare execution outcomes too, particularly partial failures and fallbacks.
+
 ## CI Integration
 
 ```yaml

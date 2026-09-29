@@ -172,11 +172,11 @@ func Build(result AnalysisResult, fileMap FileMap, cfg BuilderConfig) SARIFDocum
 		}}
 	}
 
-	return SARIFDocument{
+	return RefreshDescriptions(SARIFDocument{
 		Schema:  sarifSchema,
 		Version: sarifVersion,
 		Runs:    []SARIFRun{run},
-	}
+	})
 }
 
 // severityLevel maps a numeric severity (0–10) to a SARIF level string.

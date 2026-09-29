@@ -240,6 +240,17 @@ func capManifest(paths []string, charBudget int) []string {
 
 // outputEmptySARIF produces a valid SARIF document with zero findings.
 func outputEmptySARIF(cfg *config.Config) error {
+	metadata := newScanMetadata(cfg)
+	for phase := range metadata.Execution.Phases {
+		setPhaseStatus(metadata, phase, "skipped", "no source files")
+	}
+	// Capture local template identity when available, without requiring
+	// prompts or fetching remote context for an empty scan.
+	if loader, err := resolvePromptLoader(cfg.PromptsDir); err == nil {
+		metadata.Recipe.Prompts.Fingerprint, _ = loader.Fingerprint()
+	}
+	artifacts := newPhaseArtifactWriter(cfg)
+	artifacts.metadata = metadata
 	doc := sarif.Build(sarif.AnalysisResult{}, nil, sarif.BuilderConfig{
 		ToolVersion: version,
 	})
@@ -251,13 +262,20 @@ func outputEmptySARIF(cfg *config.Config) error {
 		}},
 	}}
 
+	if err := artifacts.WriteSARIF("analysis", doc); err != nil {
+		return err
+	}
+	doc, err := prepareSARIF(doc, metadata, "final")
+	if err != nil {
+		return err
+	}
 	output, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshaling SARIF: %w", err)
 	}
 
 	if cfg.Output != "" {
-		return os.WriteFile(cfg.Output, output, 0644)
+		return os.WriteFile(cfg.Output, output, 0600)
 	}
 	fmt.Println(string(output))
 	return nil
@@ -277,6 +295,7 @@ func loadSupplementaryContext(
 	counter *chunk.TokenCounter,
 	promptLoader *llm.PromptLoader,
 	contextLimit int,
+	metadata *sarif.ScanMetadata,
 ) (analysisCtx, auditCtx supctx.PackResult, err error) {
 	if len(cfg.ContextSources) == 0 {
 		return
@@ -310,6 +329,18 @@ func loadSupplementaryContext(
 	}
 
 	loaded := supctx.LoadAll(ctx, srcs, counter)
+	for _, source := range loaded {
+		metadata.Recipe.ContextSources[source.SourceIndex].ContentFingerprint = fingerprint([]byte(source.Content))
+		state := &metadata.Execution.ContextSources[source.SourceIndex]
+		state.Status = "loaded"
+		state.Compression = "not_needed"
+	}
+	for i := range metadata.Execution.ContextSources {
+		if metadata.Execution.ContextSources[i].Status == "not_loaded" {
+			metadata.Execution.ContextSources[i].Status = "empty_or_failed"
+		}
+	}
+
 	if len(loaded) == 0 {
 		slog.Warn("no supplementary context loaded (all sources empty or failed)")
 		return
@@ -321,10 +352,12 @@ func loadSupplementaryContext(
 		ccClient, _, ccErr := buildPhaseClient(*cc, cfg)
 		if ccErr != nil {
 			slog.Warn("context-compress client build failed; skipping compression", "error", ccErr)
+			setPhaseStatus(metadata, "context-compress", "failed", "client unavailable; using original context")
 		} else {
 			cp, cpErr := promptLoader.LoadContextCompressPrompt()
 			if cpErr != nil {
 				slog.Warn("failed to load context compress prompt; skipping compression", "error", cpErr)
+				setPhaseStatus(metadata, "context-compress", "failed", "prompt unavailable; using original context")
 			} else {
 				compressor := supctx.Compressor{
 					Client:                 ccClient,
@@ -334,7 +367,33 @@ func loadSupplementaryContext(
 					OmitTemperature:        cc.ModelCfg.OmitTemperature,
 					UseMaxCompletionTokens: cc.ModelCfg.UseMaxCompletionTokens,
 				}
+
 				loaded = compressor.Compress(ctx, loaded, budget)
+				attempted, failed := false, false
+				for _, source := range loaded {
+					state := &metadata.Execution.ContextSources[source.SourceIndex]
+					state.Compression = source.CompressionStatus
+					state.MaxOutputTokens = source.CompressionMaxTokens
+					attempted = attempted || source.CompressionMaxTokens > 0
+					failed = failed || source.CompressionStatus == "failed"
+				}
+				if attempted {
+					recordActualPhase(metadata, "context-compress", *cc, cfg, false)
+					state := metadata.Execution.Phases["context-compress"]
+					state.RequestPolicy = "per-source maxOutputTokens = 2 * max(200, contextBudget / loadedSources); temperature = 0; outputMode = none; modelParams not forwarded; endpoint empty"
+					// Report the current compressor's actual behavior, without changing it.
+					state.Actual.Temperature = 0
+					state.Actual.OutputMode = "none"
+					state.Actual.ModelParams = map[string]any{}
+					state.Actual.Endpoint = ""
+					state.Actual.MaxOutputTokens = 0 // per-source values are recorded separately
+					metadata.Execution.Phases["context-compress"] = state
+					setPhaseStatus(metadata, "context-compress", "completed", "")
+					if failed {
+						setPhaseStatus(metadata, "context-compress", "failed", "using original context for failed sources")
+					}
+				}
+
 			}
 		}
 	}
@@ -342,6 +401,18 @@ func loadSupplementaryContext(
 	analysisCtx = supctx.Pack(supctx.FilterPhase(loaded, "analysis"), budget, counter)
 	auditCtx = supctx.Pack(supctx.FilterPhase(loaded, "audit"), budget, counter)
 
+	for _, source := range loaded {
+		if source.Compress && source.CompressionStatus == "" && metadata.Execution.Phases["context-compress"].Status == "failed" {
+			metadata.Execution.ContextSources[source.SourceIndex].Compression = "not_run"
+		}
+		metadata.Execution.ContextSources[source.SourceIndex].Fingerprint = fingerprint([]byte(source.Content))
+	}
+	for phase, packed := range map[string]supctx.PackResult{"analysis": analysisCtx, "audit": auditCtx} {
+		metadata.Execution.ContextPacking[phase] = sarif.ContextPacking{
+			Fingerprint: fingerprint([]byte(packed.Rendered)), Tokens: packed.Tokens,
+			Dropped: append([]string{}, packed.Dropped...), Truncated: packed.Truncated,
+		}
+	}
 	logPack("analysis", analysisCtx)
 	logPack("audit", auditCtx)
 
