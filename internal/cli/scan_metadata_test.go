@@ -314,14 +314,33 @@ func TestAuditDescriptionsFollowFinalVerdicts(t *testing.T) {
 		t.Fatal("wrong final finding count")
 	}
 	for _, rule := range final.Runs[0].Tool.Driver.Rules {
-		if strings.Contains(rule.Help.Text, "REMOVE ME") || strings.Contains(rule.Help.Text, "OLD DETAILS") {
-			t.Fatal("stale evidence", rule.Help.Text)
+		for _, evidence := range []string{"REMOVE ME", "OLD DETAILS", "FINAL DETAILS", "NEW EVIDENCE", "UNVERIFIED", "30%", "chain uncertain"} {
+			if strings.Contains(rule.Help.Text, evidence) {
+				t.Fatal("finding evidence leaked into shared rule help", rule.Help.Text)
+			}
 		}
-		if rule.ShortDescription.Text == "Shared" && (!strings.Contains(rule.Help.Text, "UNVERIFIED") || !strings.Contains(rule.Help.Text, "30%") || !strings.Contains(rule.Help.Text, "chain uncertain")) {
-			t.Fatal(rule.Help.Text)
+	}
+	for _, result := range final.Runs[0].Results {
+		message := result.Message.Text
+		if strings.Contains(message, "REMOVE ME") || strings.Contains(message, "OLD DETAILS") {
+			t.Fatal("stale evidence", message)
 		}
-		if rule.ShortDescription.Text == "New issue" && !strings.Contains(rule.Help.Text, "NEW EVIDENCE") {
-			t.Fatal(rule.Help.Text)
+		switch result.Locations[0].PhysicalLocation.ArtifactLocation.URI {
+		case "b.go":
+			for _, evidence := range []string{"FINAL DETAILS", "UNVERIFIED", "30%", "chain uncertain"} {
+				if !strings.Contains(message, evidence) {
+					t.Fatal("lost audit refinement or caveat", message)
+				}
+			}
+			if strings.Contains(message, "NEW EVIDENCE") {
+				t.Fatal("new finding leaked into existing result", message)
+			}
+		case "c.go":
+			if message != "NEW EVIDENCE\n\n[Audit confidence: 90%]" {
+				t.Fatal("incorrect new finding evidence", message)
+			}
+		default:
+			t.Fatal("unexpected surviving result", result)
 		}
 	}
 }
@@ -336,9 +355,9 @@ func TestScanArtifactsIncludeFinalEvidenceAndMetadata(t *testing.T) {
 					http.Error(w, "unsupported model", http.StatusBadRequest)
 					return
 				}
-				content := `{"security_issues":[{"issue":"SQL injection","file_path":"src/main.go","start_line":1,"technical_details":"Initial evidence","severity":8,"cwe_id":"CWE-89"}]}`
+				content := `{"security_issues":[{"issue":"Reflected XSS","file_path":"src/main.go","start_line":1,"technical_details":"Initial evidence: <img src=x onerror=alert(1)> bypasses \\*.","severity":8,"cwe_id":"CWE-79"}]}`
 				if calls > 1 {
-					content = `{"audited_findings":[{"original_issue":"SQL injection","file_path":"src/main.go","start_line":1,"verdict":"refined","confidence":0.9,"refined_technical_details":"Final evidence","justification":"Validated chain"}]}`
+					content = `{"audited_findings":[{"original_issue":"Reflected XSS","file_path":"src/main.go","start_line":1,"verdict":"refined","confidence":0.9,"refined_technical_details":"Final evidence: <script>alert(1)</script> bypasses \\*.","justification":"Validated chain"}]}`
 				}
 				_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": content}, "finish_reason": "stop"}}})
 			}))
@@ -365,6 +384,7 @@ func TestScanArtifactsIncludeFinalEvidenceAndMetadata(t *testing.T) {
 				t.Fatalf("scan error = %v, failAudit = %v", err, failAudit)
 			}
 			var recipeFingerprint string
+			var ruleHelp string
 			for _, stage := range []string{"analysis", "audit", "final"} {
 				path := strings.TrimSuffix(out, ".sarif") + "." + stage + ".sarif"
 				if stage == "final" {
@@ -394,7 +414,7 @@ func TestScanArtifactsIncludeFinalEvidenceAndMetadata(t *testing.T) {
 				if m.Execution.Chunks.Completed != 1 {
 					t.Fatal(m.Execution.Chunks)
 				}
-				want := "Initial evidence"
+				want := `Initial evidence: <img src=x onerror=alert(1)> bypasses \*.`
 				if stage != "analysis" {
 					state := m.Execution.Phases["audit"]
 					if state.Fallback != "analysis client" || state.Actual.Provider != "openai" {
@@ -405,15 +425,25 @@ func TestScanArtifactsIncludeFinalEvidenceAndMetadata(t *testing.T) {
 							t.Fatal(state)
 						}
 					} else {
-						want = "Final evidence"
+						want = "Final evidence: <script>alert(1)</script> bypasses \\*.\n\n[Audit confidence: 90%] Validated chain"
 						if state.Status != "completed" {
 							t.Fatal(state)
 						}
 					}
 				}
 				rule := doc.Runs[0].Tool.Driver.Rules[0]
-				if rule.FullDescription == nil || !strings.Contains(rule.Help.Text, want) || !strings.Contains(rule.Help.Markdown, want) {
+				if rule.FullDescription == nil || rule.FullDescription.Text == "" || rule.Help == nil || rule.Help.Text == "" {
 					t.Fatal("incorrect description", rule)
+				}
+				if stage == "analysis" {
+					ruleHelp = rule.Help.Text
+				}
+				if rule.Help.Text != ruleHelp || strings.Contains(rule.Help.Text, "evidence:") || rule.Help.Markdown != "" {
+					t.Fatal("rule help contains finding-specific evidence or Markdown", rule.Help)
+				}
+				message := doc.Runs[0].Results[0].Message
+				if message.Text != want || message.Markdown != "" {
+					t.Fatalf("%s artifact changed literal evidence: %+v", stage, message)
 				}
 			}
 		})

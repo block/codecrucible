@@ -1,14 +1,16 @@
 package sarif
 
-import (
-	"fmt"
-	"sort"
-	"strings"
-)
+import "strings"
 
-// RefreshDescriptions derives rule help from the current results, including
-// audit refinements. It owns the slices it modifies so older artifact snapshots
-// cannot acquire descriptions from a later pipeline stage.
+const ruleGuidance = "Review the individual finding's message and source location for evidence, " +
+	"audit confidence, and uncertainty markers. Validate the reported input, unsafe operation, " +
+	"and missing control in context before applying a fix."
+
+// RefreshDescriptions fills rule descriptions and empty result messages.
+// Rule help is shared by every result referencing that rule, so it must not
+// contain finding-specific evidence or audit verdicts. Plain text stays plain
+// text: interpreting payloads or code as Markdown can change their meaning.
+// Modified slices and descriptions are owned by the returned snapshot.
 func RefreshDescriptions(doc SARIFDocument) SARIFDocument {
 	doc.Runs = append([]SARIFRun(nil), doc.Runs...)
 	for i := range doc.Runs {
@@ -23,7 +25,6 @@ func RefreshDescriptions(doc SARIFDocument) SARIFDocument {
 			}
 			titles[rule.ID] = title
 		}
-		byRule := make(map[string][]SARIFResult)
 		for j := range run.Results {
 			r := &run.Results[j]
 			if strings.TrimSpace(r.Message.Text) == "" {
@@ -32,7 +33,6 @@ func RefreshDescriptions(doc SARIFDocument) SARIFDocument {
 					r.Message.Text = r.RuleID
 				}
 			}
-			byRule[r.RuleID] = append(byRule[r.RuleID], *r)
 		}
 		for j := range run.Tool.Driver.Rules {
 			rule := &run.Tool.Driver.Rules[j]
@@ -45,59 +45,8 @@ func RefreshDescriptions(doc SARIFDocument) SARIFDocument {
 				summary = string(runes[:1023]) + "…"
 			}
 			rule.FullDescription = &SARIFMessage{Text: summary}
-			results := byRule[rule.ID]
-			sort.SliceStable(results, func(a, b int) bool {
-				ap, al, ae := resultPosition(results[a])
-				bp, bl, be := resultPosition(results[b])
-				if ap != bp {
-					return ap < bp
-				}
-				if al != bl {
-					return al < bl
-				}
-				if ae != be {
-					return ae < be
-				}
-				return results[a].Message.Text < results[b].Message.Text
-			})
-			plain := []string{summary}
-			markdown := []string{"## " + escapeMarkdown(summary)}
-			for _, r := range results {
-				file, start, end := resultPosition(r)
-				label := file
-				if label == "" {
-					label = "Location unavailable"
-				}
-				if start > 0 {
-					label += fmt.Sprintf(":%d", start)
-				}
-				if end > start {
-					label += fmt.Sprintf("-%d", end)
-				}
-				plain = append(plain, label+"\n\n"+r.Message.Text)
-				body := r.Message.Markdown
-				if body == "" {
-					body = r.Message.Text
-				}
-				markdown = append(markdown, "### "+escapeMarkdown(label)+"\n\n"+body)
-			}
-			rule.Help = &SARIFMessage{Text: strings.Join(plain, "\n\n"), Markdown: strings.Join(markdown, "\n\n")}
+			rule.Help = &SARIFMessage{Text: summary + "\n\n" + ruleGuidance}
 		}
 	}
 	return doc
-}
-
-func resultPosition(r SARIFResult) (string, int, int) {
-	if len(r.Locations) == 0 {
-		return "", 0, 0
-	}
-	loc := r.Locations[0].PhysicalLocation
-	if loc.Region == nil {
-		return loc.ArtifactLocation.URI, 0, 0
-	}
-	return loc.ArtifactLocation.URI, loc.Region.StartLine, loc.Region.EndLine
-}
-
-func escapeMarkdown(s string) string {
-	return strings.NewReplacer("\\", "\\\\", "`", "\\`", "*", "\\*", "_", "\\_", "[", "\\[", "]", "\\]", "<", "&lt;", ">", "&gt;", "#", "\\#", "\n", " ", "\r", " ").Replace(s)
 }

@@ -2,6 +2,7 @@ package sarif
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -18,12 +19,17 @@ func TestDescriptionsSharedRuleAndFallback(t *testing.T) {
 		t.Fatal(rule.FullDescription)
 	}
 	for _, help := range []string{rule.Help.Text, rule.Help.Markdown} {
-		if !strings.Contains(help, "[UNVERIFIED]\n\nCheck `sink()`") {
-			t.Fatal("lost caveat or evidence", help)
+		for _, evidence := range []string{"a.go", "z.go", "UNVERIFIED", "sink()", "earlier evidence"} {
+			if strings.Contains(help, evidence) {
+				t.Fatal("finding evidence leaked into shared rule help", help)
+			}
 		}
-		if !(strings.Index(help, "a.go:2") < strings.Index(help, "a.go:10") && strings.Index(help, "a.go:10") < strings.Index(help, "z.go:2")) {
-			t.Fatal("non-deterministic location order", help)
-		}
+	}
+	if rule.Help.Text == "" {
+		t.Fatal("missing rule guidance")
+	}
+	if doc.Runs[0].Results[0].Message.Text != "[UNVERIFIED]\n\nCheck `sink()`" {
+		t.Fatal("lost caveat or evidence")
 	}
 	if doc.Runs[0].Results[1].Message.Text != "SQL injection" {
 		t.Fatal("missing message fallback")
@@ -38,7 +44,7 @@ func TestDescriptionsSharedRuleAndFallback(t *testing.T) {
 	}
 }
 
-func TestDescriptionsRefreshDropsStaleEvidence(t *testing.T) {
+func TestDescriptionsStayStableWhenFindingsChange(t *testing.T) {
 	doc := Build(AnalysisResult{SecurityIssues: []SecurityIssue{
 		{Issue: "Shared rule", FilePath: "a.go", TechnicalDetails: "removed evidence"},
 		{Issue: "Shared rule", FilePath: "b.go", TechnicalDetails: "old evidence"},
@@ -47,13 +53,47 @@ func TestDescriptionsRefreshDropsStaleEvidence(t *testing.T) {
 	changed.Runs = append([]SARIFRun{}, doc.Runs...)
 	changed.Runs[0].Results = []SARIFResult{doc.Runs[0].Results[1]}
 	changed.Runs[0].Results[0].Message.Text = "refined evidence [Audit confidence: 90%]"
+	changed.Runs[0].Results[0].Locations = nil
 	changed = RefreshDescriptions(changed)
-	help := changed.Runs[0].Tool.Driver.Rules[0].Help.Text
-	if strings.Contains(help, "removed evidence") || strings.Contains(help, "old evidence") || !strings.Contains(help, "refined evidence") {
-		t.Fatal(help)
+	if !reflect.DeepEqual(doc.Runs[0].Tool.Driver.Rules, changed.Runs[0].Tool.Driver.Rules) {
+		t.Fatal("finding edits changed shared rule descriptions")
 	}
-	if !strings.Contains(doc.Runs[0].Tool.Driver.Rules[0].Help.Text, "old evidence") {
+	if doc.Runs[0].Results[1].Message.Text != "old evidence" {
 		t.Fatal("refresh mutated previous snapshot")
+	}
+	changed.Runs[0].Tool.Driver.Rules[0].Help.Text = "changed help"
+	if doc.Runs[0].Tool.Driver.Rules[0].Help.Text == "changed help" {
+		t.Fatal("snapshots share mutable help")
+	}
+}
+
+func TestDescriptionsPreserveLiteralEvidence(t *testing.T) {
+	for _, evidence := range []string{
+		"The input <img src=x onerror=alert(1)> is reflected without escaping.",
+		`The literal filter \* misses _admin_ and &lt;script&gt;.`,
+		"[UNVERIFIED]\n\n```html\n<script>alert(1)</script>\n```\n\n[Audit confidence: 30%] Check `sink()`.",
+	} {
+		t.Run(evidence, func(t *testing.T) {
+			doc := Build(AnalysisResult{SecurityIssues: []SecurityIssue{{
+				Issue: "Unsafe <template> & escaping", FilePath: "a.go", TechnicalDetails: evidence,
+			}}}, nil, BuilderConfig{})
+			data, err := json.Marshal(doc)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var decoded SARIFDocument
+			if err := json.Unmarshal(data, &decoded); err != nil {
+				t.Fatal(err)
+			}
+			message := decoded.Runs[0].Results[0].Message
+			if message.Text != evidence || message.Markdown != "" {
+				t.Fatalf("literal evidence changed: %+v", message)
+			}
+			rule := decoded.Runs[0].Tool.Driver.Rules[0]
+			if rule.Help.Markdown != "" || rule.FullDescription.Markdown != "" {
+				t.Fatal("plain text promoted to Markdown")
+			}
+		})
 	}
 }
 

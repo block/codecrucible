@@ -721,12 +721,17 @@ returns exit code 1 so CI does not mistake a failed scan for a clean result.
 
 ## SARIF descriptions and scan comparisons
 
-GitHub alert descriptions include a short rule/CWE summary and detailed help
-in both Markdown and plain text. Help groups findings that share a rule by file
-and line. It is regenerated from each artifact's results, so the final report
-includes audit refinements and uncertainty markers, and excludes rejected
-findings. Each result retains its own location-specific explanation. Existing
-GitHub alerts receive these descriptions on the next SARIF upload.
+GitHub alert descriptions include a short rule/CWE summary and general review
+guidance in plain-text rule help. Each result's `message.text` contains its own
+evidence, audit refinements, confidence, and uncertainty markers. Shared rule
+help stays independent of individual findings, so another location's evidence
+or audit verdict cannot appear there. The final report excludes rejected
+findings.
+
+CodeCrucible does not convert plain-text messages into Markdown. Literal
+payloads, angle brackets, backslashes, and code examples retain their original
+text. Existing GitHub alerts receive the updated descriptions on the next SARIF
+upload.
 
 Every SARIF run includes `properties.codecrucible` with `schemaVersion: 1`:
 
