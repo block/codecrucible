@@ -76,7 +76,8 @@ export GOOGLE_API_KEY=your-google-key
 
 When `--output results.sarif` writes to a file, CodeCrucible also writes
 phase artifacts beside it: `results.feature-detection.json`,
-`results.analysis.sarif`, and `results.audit.sarif` (when audit runs). Use
+`results.analysis.sarif`, `results.audit.sarif` (when audit runs), and
+`results.usage.json`. Use
 `--phase-output-dir DIR` to choose an explicit artifact directory, including
 for stdout workflows.
 
@@ -87,6 +88,46 @@ It displays a 2–3× allowance, not a ceiling. Separate feature detection,
 context compression, retries, and repeated audit batches are excluded.
 The existing preflight budget check uses source-input cost; runtime accounting
 uses reported token usage. All dollar values depend on configured model rates.
+
+### Request usage and cost
+
+The usage artifact contains a versioned report with a unique `run_id`, scan
+duration, totals by phase, and one record per HTTP attempt or Claude CLI
+invocation. It covers feature detection, supplementary-context compression,
+analysis, model repair, retries, context-limit recovery, and audit batches,
+including calls whose output cannot be parsed. Once scan execution begins,
+the report is also written on failure. With `--phase-output-dir`, its filename
+is `usage.json`; stdout scans need that flag to retain a report. Dry runs and
+scans that exit before model execution do not write one.
+
+Each request records its phase, purpose, requested and returned model,
+configured pricing model and rate snapshot/hash, duration, status, and token
+categories. Retries share a request ID with separate attempt numbers. The
+artifact contains no prompt/response bodies, endpoint URLs, or credentials.
+The final `scan usage` log provides the same overall totals.
+
+`known_cost_usd` is calculated from reported tokens and configured rates. It
+is not an invoice total. Check `total.complete` before comparing scan costs:
+
+- `unknown_usage_attempts`: the provider returned no usable token counts.
+- `partial_usage_attempts`: some counts were available, for example before
+  a stream disconnected. Observed counts are retained across retries.
+- `unpriced_attempts`: usage could not be fully priced. Models with both rates
+  set to zero are unpriced, not assumed free. Cache tokens are preserved but
+  their charges are excluded because cache rates are not configured yet.
+
+Reasoning tokens are a subset of completion tokens and are never charged
+twice. Anthropic cache input is separate from ordinary input; OpenAI-compatible
+cached input is a subset of prompt tokens. Unpriced cached input is excluded
+from the ordinary-input calculation. Claude CLI records describe whole CLI
+invocations: internal calls/retries are opaque, and multi-model invocations
+are left unpriced. `complete` describes accounting under the configured
+rates, not confirmation of the provider's billing.
+
+For benchmrk comparisons, retain this report beside each final SARIF and link
+its `run_id` to the imported benchmark run. Use `duration_ms` for scan latency;
+benchmrk import time measures a different operation. `--max-cost` remains a
+source-input preflight check and does not cap billed runtime spend.
 
 ## Installation
 
@@ -216,7 +257,7 @@ Per-phase flags follow the pattern `--{phase}-{flag}` (e.g. `--audit-model`, `--
   --include strings                    glob patterns to force-include
   --include-docs                       include documentation files in analysis
   --include-tests                      include test files in analysis
-  --max-cost float                     maximum cost budget in dollars (default 25)
+  --max-cost float                     source-input cost preflight limit, not a billed ceiling (default 25)
   --max-file-size int                  exclude files larger than this (default 102400)
   --max-output-tokens int              override model max output tokens (0 = model default)
   -o, --output string                  write SARIF to file (default: stdout)

@@ -159,7 +159,11 @@ func TestChatCompletion_AnthropicStream(t *testing.T) {
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
-		json.NewDecoder(r.Body).Decode(&body)
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		gotStream, _ = body["stream"].(bool)
 
 		w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")

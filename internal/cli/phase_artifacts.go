@@ -10,6 +10,7 @@ import (
 
 	"github.com/block/codecrucible/internal/config"
 	"github.com/block/codecrucible/internal/sarif"
+	"github.com/block/codecrucible/internal/usage"
 )
 
 type phaseArtifactWriter struct {
@@ -36,6 +37,7 @@ func newPhaseArtifactWriter(cfg *config.Config) phaseArtifactWriter {
 			"feature-detection": filepath.Join(dir, "feature-detection.json"),
 			"analysis":          filepath.Join(dir, "analysis.sarif"),
 			"audit":             filepath.Join(dir, "audit.sarif"),
+			"usage":             filepath.Join(dir, "usage.json"),
 		}}
 	}
 
@@ -55,6 +57,7 @@ func newPhaseArtifactWriter(cfg *config.Config) phaseArtifactWriter {
 		"feature-detection": filepath.Join(dir, stem+".feature-detection.json"),
 		"analysis":          filepath.Join(dir, stem+".analysis.sarif"),
 		"audit":             filepath.Join(dir, stem+".audit.sarif"),
+		"usage":             filepath.Join(dir, stem+".usage.json"),
 	}}
 }
 
@@ -110,4 +113,8 @@ func writeArtifactFile(path string, data []byte) error {
 		return fmt.Errorf("writing artifact file %q: %w", path, err)
 	}
 	return nil
+}
+
+func (w phaseArtifactWriter) WriteUsage(report usage.Report) error {
+	return w.writeJSON("usage", report)
 }

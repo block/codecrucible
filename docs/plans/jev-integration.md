@@ -1,6 +1,7 @@
 # Jev integration plan
 
-Status: proposed; no runtime integration in this change.
+Status: implementation started. J1 provides request accounting and usage reports;
+Jev decision integration and live efficacy verification remain planned.
 
 Baseline: `main` at `874f99f`, reviewed 2026-09-29.
 
@@ -131,14 +132,17 @@ Implement and review each item separately. Only the foundation, evaluation harne
 | J7 | Shadow audit predicates and experimental retain/escalate cascade | J6 | Independent evidence records; actual batching reduction; benchmrk verification; no silent suppression |
 | J8 | Suppression policy evaluation and promotion decision | J7 | Explicit risk bound, held-out benchmrk and replay results, source-validation gate, rollback decision |
 | J9 | Optional duplicate grouping and source-span selection | J5 | Separate benefit study; preserve original findings/evidence; no blind transitive merging |
+| J10 | Explicit cache-token pricing configuration | J1 | Cache categories and long-context rates priced without double counting; unknown rates remain visible |
 
 J9 is deferred and is not a dependency of the main rollout. Exact duplicate handling and exact source validation remain deterministic. Budget enforcement beyond the existing preflight contract, new vulnerability generators, provider-wide model routing, and general-purpose agent orchestration are outside this plan.
 
-Beads epic: `codecrucible-ngo`. Items J1–J9 correspond to `codecrucible-ngo.1` through `codecrucible-ngo.9`. The [task export](jev-issues.jsonl) includes descriptions, acceptance criteria, and dependencies. The repository ignores `.beads`, so this reviewed export makes the planned work available with the branch. The installed Beads version has no legacy `bd sync`; refresh the export before committing status changes:
+J1 is complete: `*.usage.json` records attempts, phase totals, pricing snapshots, scan duration, and unknown/partial/unpriced usage. Deterministic HTTP/CLI fixtures verify retries, interrupted streams, compression, feature detection, repair, recovery, and failed audit accounting. Live baseline and Jev efficacy runs belong to J3. J10 follows up on cache charges, which remain explicitly unpriced; resolve them before claiming complete savings for cached workloads. It does not block client or benchmark-harness setup.
+
+Beads epic: `codecrucible-ngo`. Items J1–J10 correspond to `codecrucible-ngo.1` through `codecrucible-ngo.10`. The [task export](jev-issues.jsonl) includes descriptions, acceptance criteria, and dependencies. The repository ignores `.beads`, so this reviewed export makes the planned work available with the branch. The installed Beads version has no legacy `bd sync`; refresh the export before committing status changes:
 
 ```sh
 bd --sandbox show codecrucible-ngo.1
 bd --sandbox export --no-memories --output docs/plans/jev-issues.jsonl
 ```
 
-Start with J1 and the baseline measurements; the next concrete implementation PR should establish what today's scans actually spend.
+Next: J2 adds the typed Jev client; J3 uses the accounting report for baseline and capability comparisons with benchmrk.
