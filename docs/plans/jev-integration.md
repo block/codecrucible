@@ -92,6 +92,8 @@ Generative audit continues to own nuanced exploit reasoning and prose refinement
 
 ## Evaluation and promotion
 
+Use [block/benchmrk](https://github.com/block/benchmrk) for end-to-end finding-quality verification. Extend the evaluation task with a reproducible benchmrk workflow and a join to CodeCrucible's usage artifacts. Keep narrow decision-contract and fixed-finding replay tests in CodeCrucible.
+
 Build a versioned corpus of synthetic or suitably licensed source fixtures with human-reviewed true findings, false positives, and unresolved cases. Include multiple languages and prompt sets, single/multiple chunks, missing cross-file evidence, misleading comments, adversarial instructions, mitigation lookalikes, no-match candidates, and conflicting supplementary documents. Hold out repositories, not merely individual findings, from threshold tuning. Existing LLM judgments are comparison data, not ground truth.
 
 Compare baseline, shadow, and each active capability independently, then together. Track end-to-end recall and precision, retained unresolved findings, false suppressions, evidence recall, feature-section omissions, fallback rate, actual audit request count, token usage, total cost, and latency. Separate audit-routing evaluation on fixed findings from full scans so discovery variance does not hide regressions. Repeat stochastic baselines where necessary.
@@ -99,6 +101,18 @@ Compare baseline, shadow, and each active capability independently, then togethe
 Cost comparison: `baseline total - (remaining generative work + Jev + retries/fallbacks)`. Report both absolute savings and percentages, with unknown billing identified. Shadow mode measures quality and overhead; it does not demonstrate realized savings. Reduced finding count only saves whole audit calls when batching changes.
 
 Promotion requires no missed known-positive regression in the held-out release corpus, no unsupported suppression, measured positive net savings for the intended workloads, and recorded uncertainty/sample size. Zero observed misses alone is not proof of a safe rate: choose and document the acceptable risk bound and corpus size before enabling suppression. Keep a per-capability rollback to `off` and rerun evaluations when model, prompt, candidate generation, or policy changes.
+
+### Verification with benchmrk
+
+Plan against benchmrk revision [`0979862`](https://github.com/block/benchmrk/tree/0979862d4281eb9954be51d12a4ccd0cb965bc2e); verify its CLI contract when implementing J3. Its [scanner and scoring documentation](https://github.com/block/benchmrk/blob/0979862d4281eb9954be51d12a4ccd0cb965bc2e/README.md) provides the integration points.
+
+1. Register pinned corpus projects and import reviewed annotations, including valid vulnerabilities and invalid decoys. Tag criticality as `must`, `should`, or `may`. Prefer fresh fixtures for efficacy measurements; use familiar public benchmarks for setup checks. Freeze annotations before held-out evaluation, and retain their hash and the matcher version with results. Review unmatched findings and matching ambiguities before treating every unmatched result as a scanner false positive.
+2. Register distinct scanner variants for Jev off, shadow, each active capability, and the combined configuration. Hold the CodeCrucible build, generative models, prompt set, inputs, and scan settings constant within a comparison. Record the Jev model and policy version separately. Include workloads that exercise conditional feature sections, oversized supplementary context, and multiple audit batches; report skipped capabilities separately.
+3. Initially run CodeCrucible externally and use [`benchmrk import`](https://github.com/block/benchmrk/blob/0979862d4281eb9954be51d12a4ccd0cb965bc2e/cmd/benchmrk/import.go) to associate each final SARIF with an explicit experiment and iteration. Start with at least three independently executed scans per variant/project to expose variance; increase repetitions and corpus size for promotion decisions. Never count a reused SARIF as a fresh scan. benchmrk's [`--reuse` path](https://github.com/block/benchmrk/blob/0979862d4281eb9954be51d12a4ccd0cb965bc2e/internal/experiment/experiment.go) can import an earlier result, so leave it disabled for efficacy and latency measurements. A later local wrapper can automate execution using `TARGET_DIR` and `OUTPUT_DIR/results.sarif`; explicitly supply required credentials at runtime because the runner limits environment inheritance. Its network-disabled Docker mode is unsuitable for direct Jev/API calls.
+4. Produce benchmrk JSON plus a readable comparison report covering TP/FP/FN, precision, recall, F1, and criticality-tier recall. Inspect individual lost vulnerabilities, especially `must` cases; an aggregate F1 improvement cannot offset a known-positive regression. Check that every intended run completed and was scored against the same annotations and matcher. Keep unresolved labels and disputed matches visible.
+5. Join each benchmrk run ID to a manifest containing the variant, iteration, corpus revision, configuration hash, final SARIF hash, and CodeCrucible usage/decision artifact paths. Calculate net savings and actual scan duration from those artifacts: import duration is not scan latency. Include Jev overhead, retries, fallbacks, unknown costs, and audit calls avoided. Record decision-level coverage and false suppression from the replay harness alongside the end-to-end scores; do not assume benchmrk natively measures them.
+
+J3 delivers the registration/import recipe, run manifest, and report join. J4–J8 supply benchmark results for their own capability before promotion. Attach the commands, pinned inputs, score exports, cost/latency comparison, run failures, and reviewed regressions to each verification record. Setup can use saved SARIF fixtures; live efficacy runs require independent scans. This planning change does not execute benchmarks.
 
 Use mock HTTP responses for deterministic contract/failure tests; live paid evaluations are explicit, separate runs. Implementation gates are `make test` and `make lint`, plus targeted CLI compatibility, SARIF contract, fallback, accounting, and fixture evaluations. No live Jev calls or application tests are required for this planning-only change.
 
@@ -110,12 +124,12 @@ Implement and review each item separately. Only the foundation, evaluation harne
 | --- | --- | --- | --- |
 | J1 | Complete request usage and cost accounting | — | All request paths reconcile; unknown usage is visible; baseline report |
 | J2 | Typed Jev client, capability configuration, decision artifacts | J1 | HTTP/schema/failure tests; disabled configuration unchanged; request limits enforced |
-| J3 | Evaluation corpus and replay/comparison harness | J1 | Reviewed labels, repository holdout, repeatable quality/cost report |
-| J4 | Feature detection with shadow and conservative active mode | J2, J3 | Default/custom prompt coverage, tokenizer isolation, fallback tests, measured saving |
-| J5 | Evidence records and extractive supplementary context | J2, J3 | Exact provenance, pinned context, qualification preservation, coverage/cost results |
-| J6 | Audit evidence retrieval and ranking | J5 | Required spans retained; coverage gaps and scope enforced; audit quality/cost results |
-| J7 | Shadow audit predicates and experimental retain/escalate cascade | J6 | Independent evidence records; actual batching reduction; no silent suppression |
-| J8 | Suppression policy evaluation and promotion decision | J7 | Explicit risk bound, sufficient held-out cases, source-validation gate, rollback decision |
+| J3 | Reviewed corpus, benchmrk verification workflow, and decision replay tests | J1 | Pinned annotations/scorer, independent iterations, run manifest, joined quality/cost report |
+| J4 | Feature detection with shadow and conservative active mode | J2, J3 | Default/custom prompt coverage, tokenizer isolation, fallback tests, benchmrk verification and measured saving |
+| J5 | Evidence records and extractive supplementary context | J2, J3 | Exact provenance, pinned context, qualification preservation, benchmrk and coverage/cost results |
+| J6 | Audit evidence retrieval and ranking | J5 | Required spans retained; coverage gaps and scope enforced; benchmrk audit quality/cost results |
+| J7 | Shadow audit predicates and experimental retain/escalate cascade | J6 | Independent evidence records; actual batching reduction; benchmrk verification; no silent suppression |
+| J8 | Suppression policy evaluation and promotion decision | J7 | Explicit risk bound, held-out benchmrk and replay results, source-validation gate, rollback decision |
 | J9 | Optional duplicate grouping and source-span selection | J5 | Separate benefit study; preserve original findings/evidence; no blind transitive merging |
 
 J9 is deferred and is not a dependency of the main rollout. Exact duplicate handling and exact source validation remain deterministic. Budget enforcement beyond the existing preflight contract, new vulnerability generators, provider-wide model routing, and general-purpose agent orchestration are outside this plan.
