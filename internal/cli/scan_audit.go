@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math"
+	"sort"
 	"strings"
 
 	"github.com/block/codecrucible/internal/chunk"
@@ -30,36 +32,41 @@ type AuditResult struct {
 // findings it couldn't fully re-prove in one pass. See the audit prompt's
 // "AUDIT REJECTION DISCIPLINE" section.
 type AuditedFinding struct {
-	OriginalIssue           string  `json:"original_issue"`
-	FilePath                string  `json:"file_path"`
-	StartLine               int     `json:"start_line"`
-	EndLine                 int     `json:"end_line"`
-	Verdict                 string  `json:"verdict"`
-	Confidence              float64 `json:"confidence"`
-	RefinedSeverity         float64 `json:"refined_severity"`
-	RefinedTechnicalDetails string  `json:"refined_technical_details"`
-	RefinedCWEID            string  `json:"refined_cwe_id"`
-	Justification           string  `json:"justification"`
-	BlockingCode            string  `json:"blocking_code"`
+	OriginalIssue           string               `json:"original_issue"`
+	FilePath                string               `json:"file_path"`
+	StartLine               int                  `json:"start_line"`
+	EndLine                 int                  `json:"end_line"`
+	Verdict                 string               `json:"verdict"`
+	Confidence              float64              `json:"confidence"`
+	RefinedSeverity         float64              `json:"refined_severity"`
+	RefinedTechnicalDetails string               `json:"refined_technical_details"`
+	RefinedCWEID            string               `json:"refined_cwe_id"`
+	Justification           string               `json:"justification"`
+	BlockingCode            string               `json:"blocking_code"`
+	Summary                 string               `json:"summary"`
+	Remediation             string               `json:"remediation"`
+	CodePath                []sarif.CodePathStep `json:"code_path"`
 }
 
 // NewFinding is an additional finding discovered during the audit phase.
 type NewFinding struct {
-	Issue            string  `json:"issue"`
-	FilePath         string  `json:"file_path"`
-	StartLine        int     `json:"start_line"`
-	EndLine          int     `json:"end_line"`
-	TechnicalDetails string  `json:"technical_details"`
-	Severity         float64 `json:"severity"`
-	CWEID            string  `json:"cwe_id"`
-	Confidence       float64 `json:"confidence"`
+	Issue            string               `json:"issue"`
+	FilePath         string               `json:"file_path"`
+	StartLine        int                  `json:"start_line"`
+	EndLine          int                  `json:"end_line"`
+	TechnicalDetails string               `json:"technical_details"`
+	Severity         float64              `json:"severity"`
+	CWEID            string               `json:"cwe_id"`
+	Confidence       float64              `json:"confidence"`
+	Summary          string               `json:"summary"`
+	Remediation      string               `json:"remediation"`
+	CodePath         []sarif.CodePathStep `json:"code_path"`
 }
 
 // runAuditPhase performs a CWE-specific scrutiny pass on the initial findings.
 // It sends the findings + relevant code + CWE prompts to the LLM for validation.
 // Returns the audited SARIF document, token usage, and cost.
-// Returns nil doc plus an error if every audit batch fails, allowing the caller
-// to write unaudited SARIF while still failing the pipeline.
+// Returns partial results AND an error if any finding could not be audited.
 func runAuditPhase(
 	ctx context.Context,
 	doc sarif.SARIFDocument,
@@ -78,6 +85,9 @@ func runAuditPhase(
 	counter *chunk.TokenCounter,
 	metadata *sarif.ScanMetadata,
 ) (*sarif.SARIFDocument, llm.TokenUsage, float64, error) {
+	if len(doc.Runs) == 0 || len(doc.Runs[0].Results) == 0 {
+		return &doc, llm.TokenUsage{}, 0, nil
+	}
 	slog.Info("starting audit phase",
 		"findings_to_audit", len(doc.Runs[0].Results),
 		"batch_size", batchSize,
@@ -97,13 +107,14 @@ func runAuditPhase(
 	// audit schema's `original_issue` output field to round-trip back into the
 	// (file, line, issue) match key that applyAuditVerdicts uses.
 	type claimToVerify struct {
-		Issue                   string  `json:"issue"`
-		FilePath                string  `json:"file_path"`
-		StartLine               int     `json:"start_line"`
-		EndLine                 int     `json:"end_line"`
-		UnverifiedExploitSketch string  `json:"unverified_exploit_sketch"`
-		Severity                float64 `json:"severity"`
-		CWEID                   string  `json:"cwe_id"`
+		Issue                   string                `json:"issue"`
+		FilePath                string                `json:"file_path"`
+		StartLine               int                   `json:"start_line"`
+		EndLine                 int                   `json:"end_line"`
+		UnverifiedExploitSketch string                `json:"unverified_exploit_sketch"`
+		Severity                float64               `json:"severity"`
+		CWEID                   string                `json:"cwe_id"`
+		CodeFlows               []sarif.SARIFCodeFlow `json:"code_flows,omitempty"`
 	}
 
 	var findings []claimToVerify
@@ -134,6 +145,7 @@ func runAuditPhase(
 			UnverifiedExploitSketch: result.Message.Text,
 			Severity:                severity,
 			CWEID:                   sarif.CWEForRule(rule),
+			CodeFlows:               result.CodeFlows,
 		})
 	}
 
@@ -161,6 +173,13 @@ func runAuditPhase(
 			if f.FilePath != "" {
 				filesNeeded[f.FilePath] = true
 			}
+			for _, flow := range f.CodeFlows {
+				for _, thread := range flow.ThreadFlows {
+					for _, step := range thread.Locations {
+						filesNeeded[step.Location.PhysicalLocation.ArtifactLocation.URI] = true
+					}
+				}
+			}
 		}
 
 		// Wrap the batch as { "claims_to_verify": [...] } so the prompt can
@@ -174,7 +193,12 @@ func runAuditPhase(
 		}
 
 		var codeCtx strings.Builder
+		paths := make([]string, 0, len(filesNeeded))
 		for path := range filesNeeded {
+			paths = append(paths, path)
+		}
+		sort.Strings(paths)
+		for _, path := range paths {
 			if content, ok := fileMap[path]; ok {
 				fmt.Fprintf(&codeCtx, "<file path=\"%s\">\n%s\n</file>\n\n", path, content)
 			}
@@ -206,7 +230,7 @@ func runAuditPhase(
 			"estimated_input_cost", fmt.Sprintf("$%.4f", modelCfg.EstimateInputCost(estTokens)),
 		)
 
-		resp, err := client.ChatCompletion(ctx, llm.ChatRequest{
+		request := llm.ChatRequest{
 			Label:                  label,
 			Endpoint:               endpoint,
 			Model:                  modelCfg.Name,
@@ -219,33 +243,56 @@ func runAuditPhase(
 			OutputMode:             outputMode,
 			NativeStructuredOutput: modelCfg.NativeStructuredOutput,
 			ModelParams:            modelParams,
-		})
-		if err != nil {
-			return AuditResult{}, llm.TokenUsage{}, 0, fmt.Errorf("LLM call: %w", err)
 		}
-
-		u := resp.Usage
-		c := modelCfg.EstimateCost(u.PromptTokens, u.CompletionTokens)
-		slog.Info("audit batch complete",
-			"label", label,
-			"prompt_tokens", u.PromptTokens,
-			"completion_tokens", u.CompletionTokens,
-			"cost", fmt.Sprintf("$%.4f", c),
-		)
-
-		var r AuditResult
-		if err := json.Unmarshal([]byte(resp.Content), &r); err != nil {
-			// Try local repair (strip markdown fences, extract JSON object)
-			// before giving up — same pattern as the analysis phase.
-			if repaired, changed := llm.RepairJSON(resp.Content); changed {
-				if err2 := json.Unmarshal([]byte(repaired), &r); err2 == nil {
-					slog.Info("recovered malformed audit response via local repair", "label", label)
-					return r, u, c, nil
+		var usage llm.TokenUsage
+		var cost float64
+		var lastErr error
+		// Transport retries belong to the client. One additional generation
+		// recovers malformed, truncated, or incomplete verdicts without
+		// multiplying the HTTP retry budget for permission failures.
+		for attempt := 0; attempt < 2; attempt++ {
+			if err := ctx.Err(); err != nil {
+				return AuditResult{}, usage, cost, err
+			}
+			resp, err := client.ChatCompletion(ctx, request)
+			if err != nil {
+				return AuditResult{}, usage, cost, fmt.Errorf("LLM call: %w", err)
+			}
+			usage.PromptTokens += resp.Usage.PromptTokens
+			usage.CompletionTokens += resp.Usage.CompletionTokens
+			cost += modelCfg.EstimateCost(resp.Usage.PromptTokens, resp.Usage.CompletionTokens)
+			var r AuditResult
+			lastErr = json.Unmarshal([]byte(resp.Content), &r)
+			if lastErr != nil {
+				if content, changed := llm.RepairJSON(resp.Content); changed {
+					r = AuditResult{}
+					lastErr = json.Unmarshal([]byte(content), &r)
 				}
 			}
-			return AuditResult{}, u, c, fmt.Errorf("parse audit response: %w", err)
+			if lastErr == nil && (resp.FinishReason == "length" || resp.FinishReason == "max_tokens") {
+				lastErr = fmt.Errorf("audit response exceeded output token limit")
+			}
+			if lastErr == nil {
+				expected := make(map[auditFindingKey]bool, len(batch))
+				for _, f := range batch {
+					expected[auditFindingKey{f.FilePath, f.StartLine, f.Issue}] = true
+				}
+				lastErr = validateAuditCoverage(r, expected)
+			}
+			if lastErr == nil {
+				slog.Info("audit batch complete",
+					"label", label,
+					"prompt_tokens", usage.PromptTokens,
+					"completion_tokens", usage.CompletionTokens,
+					"cost", fmt.Sprintf("$%.4f", cost),
+				)
+				return r, usage, cost, nil
+			}
+			if attempt == 0 {
+				slog.Warn("invalid audit response; retrying batch", "label", label, "error", lastErr)
+			}
 		}
-		return r, u, c, nil
+		return AuditResult{}, usage, cost, fmt.Errorf("invalid audit response after 2 attempts: %w", lastErr)
 	}
 
 	// Sequential — the point is to keep each request under the server's
@@ -256,6 +303,11 @@ func runAuditPhase(
 	var firstBatchErr error
 	failedBatches := 0
 	for i := 0; i < len(findings); i += batchSize {
+		if err := ctx.Err(); err != nil {
+			firstBatchErr = err
+			failedBatches += (len(findings) - i + batchSize - 1) / batchSize
+			break
+		}
 		end := i + batchSize
 		if end > len(findings) {
 			end = len(findings)
@@ -273,7 +325,7 @@ func runAuditPhase(
 			if firstBatchErr == nil {
 				firstBatchErr = err
 			}
-			slog.Error("audit batch failed; findings in this batch will not be audited",
+			slog.Warn("audit batch unavailable; retaining findings without audit",
 				"label", label, "error", err, "findings", end-i)
 			continue
 		}
@@ -287,13 +339,11 @@ func runAuditPhase(
 		}
 	}
 
-	if len(auditResult.AuditedFindings) == 0 && len(auditResult.NewFindings) == 0 {
-		slog.Error("all audit batches failed")
-		return nil, usage, cost, fmt.Errorf("all audit batches failed: %w", firstBatchErr)
-	}
 	if failedBatches > 0 {
-		setPhaseStatus(metadata, "audit", "failed", "one or more audit batches failed")
-		slog.Warn("some audit batches failed; surviving findings from those batches remain unaudited",
+		if metadata != nil {
+			setPhaseStatus(metadata, "audit", "incomplete", "unaudited findings retained")
+		}
+		slog.Warn("audit coverage incomplete; affected findings require manual review",
 			"failed_batches", failedBatches,
 			"total_batches", numBatches,
 		)
@@ -301,6 +351,12 @@ func runAuditPhase(
 
 	// Apply audit verdicts to produce the final SARIF document.
 	auditedDoc := applyAuditVerdicts(doc, auditResult, fileMap, confidenceThreshold)
+	if err := ctx.Err(); err != nil {
+		return &auditedDoc, usage, cost, fmt.Errorf("audit cancelled: %w", err)
+	}
+	if failedBatches > 0 {
+		return &auditedDoc, usage, cost, fmt.Errorf("audit incomplete: %d of %d batches failed; unaudited findings retained: %w", failedBatches, numBatches, firstBatchErr)
+	}
 
 	slog.Info("audit phase complete",
 		"audited", len(auditResult.AuditedFindings),
@@ -311,6 +367,35 @@ func runAuditPhase(
 	return &auditedDoc, usage, cost, nil
 }
 
+type auditFindingKey struct {
+	filePath  string
+	startLine int
+	issue     string
+}
+
+func validateAuditCoverage(result AuditResult, expected map[auditFindingKey]bool) error {
+	seen := make(map[auditFindingKey]bool, len(expected))
+	for _, finding := range result.AuditedFindings {
+		key := auditFindingKey{finding.FilePath, finding.StartLine, finding.OriginalIssue}
+		if !expected[key] || seen[key] {
+			return fmt.Errorf("audit returned an unknown or duplicate finding")
+		}
+		switch finding.Verdict {
+		case "confirmed", "refined", "rejected", "escalated", "unverified":
+		default:
+			return fmt.Errorf("audit returned invalid verdict %q", finding.Verdict)
+		}
+		if math.IsNaN(finding.Confidence) || finding.Confidence < 0 || finding.Confidence > 1 {
+			return fmt.Errorf("audit returned invalid confidence")
+		}
+		seen[key] = true
+	}
+	if len(seen) != len(expected) {
+		return fmt.Errorf("audit omitted verdicts for %d findings", len(expected)-len(seen))
+	}
+	return nil
+}
+
 // applyAuditVerdicts takes the original SARIF document and the audit results,
 // and produces a new SARIF document with findings filtered, refined, and enriched.
 func applyAuditVerdicts(
@@ -319,6 +404,7 @@ func applyAuditVerdicts(
 	fileMap ingest.FileMap,
 	confidenceThreshold float64,
 ) sarif.SARIFDocument {
+	doc.Runs = append([]sarif.SARIFRun(nil), doc.Runs...)
 	run := doc.Runs[0]
 
 	// Build audit lookup by (file_path, start_line, original_issue).
@@ -339,6 +425,11 @@ func applyAuditVerdicts(
 	var keptResults []sarif.SARIFResult
 	ruleByID := make(map[string]sarif.SARIFRule, len(run.Tool.Driver.Rules))
 	for _, rule := range run.Tool.Driver.Rules {
+		properties := make(map[string]any, len(rule.Properties))
+		for k, v := range rule.Properties {
+			properties[k] = v
+		}
+		rule.Properties = properties
 		ruleByID[rule.ID] = rule
 	}
 
@@ -363,8 +454,13 @@ func applyAuditVerdicts(
 		key := auditKey{filePath: filePath, startLine: startLine, originalIssue: rule.ShortDescription.Text}
 		af, found := auditByKey[key]
 
+		props := sarif.FindingProperties{}
+		if result.Properties != nil {
+			props = *result.Properties
+		}
+		result.Properties = &props
 		if !found {
-			// No audit verdict for this finding — keep as-is.
+			props.AuditStatus = "not_audited"
 			keptResults = append(keptResults, result)
 			continue
 		}
@@ -427,11 +523,23 @@ func applyAuditVerdicts(
 		}
 
 		// Update the result with refined details.
-		if af.RefinedTechnicalDetails != "" {
-			result.Message = sarif.SARIFMessage{
-				Text: fmt.Sprintf("%s\n\n[Audit confidence: %.0f%%] %s",
-					af.RefinedTechnicalDetails, af.Confidence*100, af.Justification),
-			}
+		props.AuditStatus = af.Verdict
+		props.AuditConfidence = &af.Confidence
+		props.Summary = af.Summary // Empty means derive from the final evidence.
+		props.Remediation = af.Remediation
+		props.TechnicalDetails = ""
+		// Audit paths replace analysis paths; an unavailable/unverified path
+		// must not leave an obsolete analysis walkthrough in the final report.
+		result.CodeFlows = sarif.BuildCodeFlows(af.CodePath, sarif.FileMap(fileMap))
+		if af.Verdict == "unverified" {
+			result.CodeFlows = nil
+		}
+		if af.RefinedTechnicalDetails == "" {
+			af.RefinedTechnicalDetails = result.Message.Text
+		}
+		result.Message = sarif.SARIFMessage{
+			Text: fmt.Sprintf("%s\n\n[Audit confidence: %.0f%%] %s",
+				af.RefinedTechnicalDetails, af.Confidence*100, af.Justification),
 		}
 
 		// Update rule severity if refined.
@@ -459,6 +567,9 @@ func applyAuditVerdicts(
 			TechnicalDetails: fmt.Sprintf("%s\n\n[Audit confidence: %.0f%%]", nf.TechnicalDetails, nf.Confidence*100),
 			Severity:         nf.Severity,
 			CWEID:            nf.CWEID,
+			Summary:          nf.Summary,
+			Remediation:      nf.Remediation,
+			CodePath:         nf.CodePath,
 		}
 
 		newDoc := sarif.Build(sarif.AnalysisResult{
@@ -466,6 +577,8 @@ func applyAuditVerdicts(
 		}, sarif.FileMap(fileMap), sarif.BuilderConfig{ToolVersion: version})
 
 		if len(newDoc.Runs) > 0 && len(newDoc.Runs[0].Results) > 0 {
+			newDoc.Runs[0].Results[0].Properties.AuditStatus = "new"
+			newDoc.Runs[0].Results[0].Properties.AuditConfidence = &nf.Confidence
 			keptResults = append(keptResults, newDoc.Runs[0].Results...)
 			for _, rule := range newDoc.Runs[0].Tool.Driver.Rules {
 				ruleByID[rule.ID] = rule

@@ -54,7 +54,7 @@ const securityAnalysisSchemaJSON = `{
         "description": "List of security issues found in the codebase",
         "items": {
           "type": "object",
-          "required": ["issue", "file_path", "start_line", "end_line", "technical_details", "severity", "cwe_id"],
+          "required": ["issue", "file_path", "start_line", "end_line", "technical_details", "summary", "remediation", "code_path", "severity", "cwe_id"],
           "additionalProperties": false,
           "properties": {
             "issue": {
@@ -67,12 +67,13 @@ const securityAnalysisSchemaJSON = `{
             },
             "start_line": {
               "type": "integer",
-              "description": "Starting line number of the vulnerable code"
+              "description": "Starting line of the narrow vulnerable sink or missing protection; do not select the entire function. Use code_path for the broader walkthrough."
             },
             "end_line": {
               "type": "integer",
-              "description": "Ending line number of the vulnerable code"
+              "description": "Ending line of the narrow vulnerable sink or missing protection"
             },
+` + reviewFieldsJSON + `
             "technical_details": {
               "type": "string",
               "description": "Detailed technical explanation of the vulnerability and remediation"
@@ -99,6 +100,34 @@ const securityAnalysisSchemaJSON = `{
     }
   }
 }`
+
+// Shared by analysis, audit verdicts, and audit-discovered findings. Required
+// fields keep strict provider schemas valid; unavailable paths use an empty array.
+const reviewFieldsJSON = `
+            "summary": {
+              "type": "string",
+              "description": "Reviewer-facing summary in 2-4 plain-language sentences (at most 1000 characters): attacker control, missing protection, impact, and material prerequisites or uncertainty. No audit gates, deliberation, or repeated CWE boilerplate. For audit verdicts, replace the initial summary with the audited conclusion."
+            },
+            "remediation": {
+              "type": "string",
+              "description": "Concise actionable fix for a human reviewer. Plain text; empty if no supported recommendation."
+            },
+            "code_path": {
+              "type": "array",
+              "description": "Ordered source-to-sink walkthrough using only exact repository-relative paths and narrow line ranges present in the supplied source. Each message explains that step. Do not invent intermediate steps or infer paths from prose; use [] if a source-backed path cannot be established. For audit verdicts, return the corrected path or [] if unverified.",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["file_path", "start_line", "end_line", "message"],
+                "properties": {
+                  "file_path": {"type": "string"},
+                  "start_line": {"type": "integer"},
+                  "end_line": {"type": "integer"},
+                  "message": {"type": "string"}
+                }
+              }
+            },
+`
 
 // FeatureDetectionSchema returns the JSON Schema for the feature detection response format.
 // This is used in the first pass of a two-pass analysis to detect which security features
@@ -154,7 +183,7 @@ const auditSchemaJSON = `{
         "description": "Audit verdicts for each initial finding",
         "items": {
           "type": "object",
-          "required": ["original_issue", "file_path", "start_line", "end_line", "verdict", "confidence", "refined_severity", "refined_technical_details", "refined_cwe_id", "justification", "blocking_code"],
+          "required": ["original_issue", "file_path", "start_line", "end_line", "verdict", "confidence", "refined_severity", "refined_technical_details", "refined_cwe_id", "justification", "blocking_code", "summary", "remediation", "code_path"],
           "additionalProperties": false,
           "properties": {
             "original_issue": {
@@ -186,6 +215,7 @@ const auditSchemaJSON = `{
               "type": "number",
               "description": "Refined severity score (0-10), adjusted based on deeper analysis"
             },
+` + reviewFieldsJSON + `
             "refined_technical_details": {
               "type": "string",
               "description": "Refined technical details incorporating deep CWE analysis"
@@ -210,7 +240,7 @@ const auditSchemaJSON = `{
         "description": "Additional findings discovered during the deep CWE analysis",
         "items": {
           "type": "object",
-          "required": ["issue", "file_path", "start_line", "end_line", "technical_details", "severity", "cwe_id", "confidence"],
+          "required": ["issue", "file_path", "start_line", "end_line", "technical_details", "summary", "remediation", "code_path", "severity", "cwe_id", "confidence"],
           "additionalProperties": false,
           "properties": {
             "issue": {
@@ -229,6 +259,7 @@ const auditSchemaJSON = `{
               "type": "integer",
               "description": "Ending line number"
             },
+` + reviewFieldsJSON + `
             "technical_details": {
               "type": "string",
               "description": "Detailed technical explanation"

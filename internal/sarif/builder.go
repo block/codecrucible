@@ -106,9 +106,11 @@ func Build(result AnalysisResult, fileMap FileMap, cfg BuilderConfig) SARIFDocum
 		}
 
 		r := SARIFResult{
-			RuleID:  ruleID,
-			Level:   severityLevel(issue.Severity),
-			Message: SARIFMessage{Text: issue.TechnicalDetails},
+			RuleID:     ruleID,
+			Level:      severityLevel(issue.Severity),
+			Message:    SARIFMessage{Text: issue.TechnicalDetails},
+			Properties: &FindingProperties{Summary: issue.Summary, Remediation: issue.Remediation},
+			CodeFlows:  BuildCodeFlows(issue.CodePath, fileMap),
 		}
 
 		if issue.FilePath != "" {

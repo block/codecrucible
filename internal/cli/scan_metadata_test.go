@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/block/codecrucible/internal/chunk"
 	"github.com/block/codecrucible/internal/config"
@@ -314,19 +315,25 @@ func TestAuditDescriptionsFollowFinalVerdicts(t *testing.T) {
 		t.Fatal("wrong final finding count")
 	}
 	for _, rule := range final.Runs[0].Tool.Driver.Rules {
-		for _, evidence := range []string{"REMOVE ME", "OLD DETAILS", "FINAL DETAILS", "NEW EVIDENCE", "UNVERIFIED", "30%", "chain uncertain"} {
-			if strings.Contains(rule.Help.Text, evidence) {
-				t.Fatal("finding evidence leaked into shared rule help", rule.Help.Text)
+		for _, evidence := range []string{"REMOVE ME", "OLD DETAILS"} {
+			if strings.Contains(rule.Help.Text+rule.Help.Markdown, evidence) {
+				t.Fatal("stale evidence in issue help", rule.Help)
 			}
 		}
 	}
 	for _, result := range final.Runs[0].Results {
-		message := result.Message.Text
+		message := result.Properties.TechnicalDetails
+		if strings.Contains(result.Message.Text, "DETAILS") || strings.Contains(result.Message.Text, "EVIDENCE") {
+			t.Fatal("verbose evidence in inline annotation", result.Message)
+		}
 		if strings.Contains(message, "REMOVE ME") || strings.Contains(message, "OLD DETAILS") {
 			t.Fatal("stale evidence", message)
 		}
 		switch result.Locations[0].PhysicalLocation.ArtifactLocation.URI {
 		case "b.go":
+			if !strings.Contains(result.Message.Text, "Unverified") {
+				t.Fatal("uncertainty missing from annotation", result.Message)
+			}
 			for _, evidence := range []string{"FINAL DETAILS", "UNVERIFIED", "30%", "chain uncertain"} {
 				if !strings.Contains(message, evidence) {
 					t.Fatal("lost audit refinement or caveat", message)
@@ -346,12 +353,20 @@ func TestAuditDescriptionsFollowFinalVerdicts(t *testing.T) {
 }
 
 func TestScanArtifactsIncludeFinalEvidenceAndMetadata(t *testing.T) {
-	for _, failAudit := range []bool{false, true} {
-		t.Run(map[bool]string{false: "audited", true: "audit-failed"}[failAudit], func(t *testing.T) {
+	for _, mode := range []string{"audited", "audit-failed", "audit-timeout"} {
+		t.Run(mode, func(t *testing.T) {
+			failAudit := mode != "audited"
 			calls := 0
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				calls++
 				if calls > 1 && failAudit {
+					if mode == "audit-timeout" {
+						select {
+						case <-r.Context().Done():
+						case <-time.After(2 * time.Second):
+						}
+						return
+					}
 					http.Error(w, "unsupported model", http.StatusBadRequest)
 					return
 				}
@@ -375,16 +390,18 @@ func TestScanArtifactsIncludeFinalEvidenceAndMetadata(t *testing.T) {
 			v.Set("prompts-dir", "../../prompts/default")
 			v.Set("skip-feature-detection", true)
 			v.Set("output", out)
+			if mode == "audit-timeout" {
+				v.Set("request-timeout", 1)
+			}
 			// Invalid audit client triggers the existing analysis-client fallback.
 			v.Set("phases.audit.provider", "unknown-provider")
 			cmd := &cobra.Command{}
 			cmd.SetContext(context.Background())
 			err := runScan(cmd, []string{dir})
-			if (err != nil) != failAudit {
+			if err != nil {
 				t.Fatalf("scan error = %v, failAudit = %v", err, failAudit)
 			}
 			var recipeFingerprint string
-			var ruleHelp string
 			for _, stage := range []string{"analysis", "audit", "final"} {
 				path := strings.TrimSuffix(out, ".sarif") + "." + stage + ".sarif"
 				if stage == "final" {
@@ -421,8 +438,15 @@ func TestScanArtifactsIncludeFinalEvidenceAndMetadata(t *testing.T) {
 						t.Fatal(state)
 					}
 					if failAudit {
-						if state.Status != "failed" {
+						if state.Status != "incomplete" {
 							t.Fatal(state)
+						}
+						inv := doc.Runs[0].Invocations[0]
+						if !inv.ExecutionSuccessful || len(inv.ToolExecutionNotifications) != 1 || inv.ToolExecutionNotifications[0].Level != "warning" {
+							t.Fatal("incomplete audit must warn without failing CI", inv)
+						}
+						if doc.Runs[0].Results[0].Properties.AuditStatus != "not_audited" {
+							t.Fatal("unaudited finding is not marked")
 						}
 					} else {
 						want = "Final evidence: <script>alert(1)</script> bypasses \\*.\n\n[Audit confidence: 90%] Validated chain"
@@ -435,15 +459,12 @@ func TestScanArtifactsIncludeFinalEvidenceAndMetadata(t *testing.T) {
 				if rule.FullDescription == nil || rule.FullDescription.Text == "" || rule.Help == nil || rule.Help.Text == "" {
 					t.Fatal("incorrect description", rule)
 				}
-				if stage == "analysis" {
-					ruleHelp = rule.Help.Text
+				if !strings.Contains(rule.Help.Text, "evidence:") || !strings.Contains(rule.Help.Markdown, "<details>") || strings.Contains(rule.Help.Markdown, "<script>") {
+					t.Fatal("issue help missing readable summary or escaped details", rule.Help)
 				}
-				if rule.Help.Text != ruleHelp || strings.Contains(rule.Help.Text, "evidence:") || rule.Help.Markdown != "" {
-					t.Fatal("rule help contains finding-specific evidence or Markdown", rule.Help)
-				}
-				message := doc.Runs[0].Results[0].Message
-				if message.Text != want || message.Markdown != "" {
-					t.Fatalf("%s artifact changed literal evidence: %+v", stage, message)
+				result := doc.Runs[0].Results[0]
+				if result.Properties.TechnicalDetails != want || strings.Contains(result.Message.Text, "evidence:") {
+					t.Fatalf("%s artifact lost evidence or retained a verbose annotation: %+v", stage, result)
 				}
 			}
 		})

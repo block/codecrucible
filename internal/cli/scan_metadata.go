@@ -213,7 +213,7 @@ func recordActualPhase(m *sarif.ScanMetadata, phase string, pc config.PhaseConfi
 // prepareSARIF is the output boundary shared by final and intermediate files.
 // Deep-copy metadata: audit changes must not retroactively alter analysis.
 func prepareSARIF(doc sarif.SARIFDocument, metadata *sarif.ScanMetadata, stage string) (sarif.SARIFDocument, error) {
-	doc = sarif.RefreshDescriptions(doc)
+	doc = sarif.ReviewPresentation(doc)
 	if metadata == nil {
 		return doc, nil
 	}

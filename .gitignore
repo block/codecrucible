@@ -43,4 +43,5 @@ output/
 .claude/
 .amp/
 .perles*
+# Keep the beads database, Dolt storage, and local exports out of Git.
 .beads*

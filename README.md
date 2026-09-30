@@ -710,28 +710,54 @@ testdata/fixtures/      LLM response fixtures for contract tests
 
 | Code | Meaning |
 |------|---------|
-| 0 | Success (no findings above threshold) |
-| 1 | Error (pipeline failure, provider rejection, or SARIF invocation failure) |
+| 0 | Analysis completed, possibly with audit warnings (no findings above threshold) |
+| 1 | Error (analysis/pipeline failure, cancellation, or SARIF invocation failure) |
 | 2 | Findings exceed `--fail-on-severity` threshold |
 
-When an LLM phase fails after analysis has started, CodeCrucible still writes
-SARIF when possible. Check `runs[0].invocations[0].executionSuccessful` and
-`toolExecutionNotifications` for the embedded failure details; the CLI also
-returns exit code 1 so CI does not mistake a failed scan for a clean result.
+Analysis failures still write partial SARIF when possible and return exit code 1.
+Check `runs[0].invocations[0].executionSuccessful` and
+`toolExecutionNotifications` for failure details.
+
+Audit is best effort. If any audit batch remains unavailable, completed audit
+verdicts are preserved and the remaining findings are retained with
+`properties.auditStatus: "not_audited"` and a visible review warning. The run
+contains a warning notification and its audit phase metadata has status
+`incomplete`. This does not fail CI, even when all audit batches are unavailable.
+It does not turn an analysis failure or cancellation into a successful scan.
+The `--fail-on-severity` threshold still applies to retained findings.
+
+HTTP requests use up to three retries for network/read failures, request
+timeouts, HTTP 408/429, and all 5xx responses. Retries use exponential backoff
+with jitter and respect `Retry-After`. HTML 403 responses from intermediaries
+use the same policy; JSON/plain-text permission errors and HTTP 401 fail
+immediately. Cancellation stops retries. Audit additionally retries malformed,
+truncated, or incomplete verdict output once after attempting local JSON repair.
+Both generations count toward reported token usage and cost. Transport retry
+exhaustion does not start a second audit-level HTTP retry cycle.
 
 ## SARIF descriptions and scan comparisons
 
-GitHub alert descriptions include a short rule/CWE summary and general review
-guidance in plain-text rule help. Each result's `message.text` contains its own
-evidence, audit refinements, confidence, and uncertainty markers. Shared rule
-help stays independent of individual findings, so another location's evidence
-or audit verdict cannot appear there. The final report excludes rejected
-findings.
+GitHub's issue panel shows a concise description of attacker control, impact,
+prerequisites, and remediation in `rule.help`. Inline `result.message.text`
+annotations contain the issue title and audit status. Findings that share a
+rule have separate, location-labelled sections in its help. Rejected findings
+are excluded before these sections are built. Existing rule IDs stay unchanged.
 
-CodeCrucible does not convert plain-text messages into Markdown. Literal
-payloads, angle brackets, backslashes, and code examples retain their original
-text. Existing GitHub alerts receive the updated descriptions on the next SARIF
-upload.
+Full evidence and audit justification are available under the help's
+**Technical details** disclosure and verbatim in
+`result.properties.technicalDetails`. Markdown help escapes source text so
+payloads remain literal. Viewers without disclosure support can read the SARIF
+property. Older/custom prompts without a reviewer summary use the first
+narrative paragraph, limited to 1000 characters, before audit justification.
+
+Analysis and audit schemas request an ordered `code_path` of exact files,
+line ranges, and step explanations. Valid paths become
+`codeFlows[].threadFlows[].locations[]`, which GitHub uses for expandable source
+walkthroughs. Every step must refer to source present in the scan with a valid
+range; an invalid step omits the whole path rather than inventing a connection.
+Audit receives the path's source files and replaces the analysis path with its
+reviewed path. Unverified findings have no final code flow. These fields describe
+model-reported evidence, not a proven execution trace.
 
 Every SARIF run includes `properties.codecrucible` with `schemaVersion: 1`:
 

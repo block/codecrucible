@@ -229,6 +229,9 @@ func (c *httpClient) ChatCompletion(ctx context.Context, req ChatRequest) (*Chat
 	useMaxCompletionTokens := c.provider == "cerebras" || c.useMaxCompletionTokens.Load() || req.UseMaxCompletionTokens
 
 	for attempt := 0; attempt <= c.maxRetries; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return nil, fmt.Errorf("llm: context cancelled: %w", err)
+		}
 		if attempt > 0 {
 			c.logger.Info("retrying LLM request",
 				"label", req.Label,
@@ -660,8 +663,12 @@ func (c *httpClient) handleResponse(resp *http.Response) (*ChatResponse, time.Du
 	// Parse Retry-After header for rate-limited responses.
 	retryAfter := parseRetryAfter(resp.Header.Get("Retry-After"))
 
-	// Retryable: 429 (rate limit) and 5xx (server errors).
-	if resp.StatusCode == http.StatusTooManyRequests || (resp.StatusCode >= 500 && resp.StatusCode < 600) {
+	// HTML 403s can come from a transient gateway/WAF failure, rather than
+	// the provider's JSON permission errors. Retry within the normal budget;
+	// permanent JSON/plain-text authentication and authorization failures
+	// still fail immediately, even when a proxy adds Cloudflare headers.
+	htmlForbidden := resp.StatusCode == http.StatusForbidden && isHTMLResponse(resp.Header, respBody)
+	if htmlForbidden || resp.StatusCode == http.StatusRequestTimeout || resp.StatusCode == http.StatusTooManyRequests || (resp.StatusCode >= 500 && resp.StatusCode < 600) {
 		return nil, retryAfter, fmt.Errorf("llm: retryable error (status %d): %s", resp.StatusCode, truncate(string(respBody), 200))
 	}
 
@@ -729,6 +736,17 @@ func (c *httpClient) handleResponse(resp *http.Response) (*ChatResponse, time.Du
 		FinishReason: choice.FinishReason,
 		Model:        apiResp.Model,
 	}, 0, nil
+}
+
+func isHTMLResponse(header http.Header, body []byte) bool {
+	trimmed := strings.TrimSpace(strings.ToLower(string(body)))
+	// A JSON API error must never become retryable just because a gateway
+	// supplied an incorrect Content-Type.
+	if json.Valid(body) {
+		return false
+	}
+	return strings.HasPrefix(trimmed, "<!doctype html") || strings.HasPrefix(trimmed, "<html") ||
+		strings.HasPrefix(strings.ToLower(header.Get("Content-Type")), "text/html")
 }
 
 // anthropicRequest is the Anthropic Messages API request body.
