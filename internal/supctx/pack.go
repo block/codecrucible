@@ -64,7 +64,6 @@ func Pack(loaded []Loaded, budget int, counter TokenCounter) PackResult {
 			marker := fmt.Sprintf("\n[... ~%d tokens truncated ...]", l.Tokens-counter.Count(truncated))
 			b.WriteString(wrapSource(l.Name, truncated+marker))
 			res.Truncated = l.Name
-			remaining = 0
 		} else {
 			res.Dropped = append(res.Dropped, l.Name)
 		}

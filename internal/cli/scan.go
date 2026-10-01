@@ -568,10 +568,6 @@ func runScan(cmd *cobra.Command, args []string) error {
 	metadata.Execution.DetectedFeatures = append([]string{}, detectedFeatures...)
 	metadata.Execution.TokenCorrection = tokenCorrection
 
-	// Release SourceFile slice — FileMap retains the content strings via
-	// shared Go string backing bytes; the slice of structs is no longer needed.
-	filtered = nil
-
 	// Measure actual prompt token overhead with the resolved features.
 	// If features are nil (same as worst-case), reuse the already-computed value
 	// to avoid a redundant BPE encoding pass.
@@ -830,24 +826,28 @@ func runScan(cmd *cobra.Command, args []string) error {
 			auditOutputMode, flatResult.FileMap, cfg.AuditConfidenceThreshold, audit.ModelParams, auditCtx.Rendered,
 			cfg.AuditBatchSize, !cfg.IncludeTests, counter, metadata,
 		)
-		if auditErr != nil {
-			setPhaseStatus(metadata, "audit", "failed", "audit failed")
-			merged = markInvocationFailed(merged, "audit phase failed: "+auditErr.Error())
-			if err := artifacts.WriteSARIF("audit", merged); err != nil {
-				return fmt.Errorf("writing audit artifact: %w", err)
-			}
-		}
+		totalUsage.PromptTokens += auditUsage.PromptTokens
+		totalUsage.CompletionTokens += auditUsage.CompletionTokens
+		totalCost += auditCost
 		if auditedDoc != nil {
-			if auditErr == nil && metadata.Execution.Phases["audit"].Status != "failed" {
-				setPhaseStatus(metadata, "audit", "completed", "")
-			}
 			merged = *auditedDoc
-			totalUsage.PromptTokens += auditUsage.PromptTokens
-			totalUsage.CompletionTokens += auditUsage.CompletionTokens
-			totalCost += auditCost
-			if err := artifacts.WriteSARIF("audit", merged); err != nil {
-				return fmt.Errorf("writing audit artifact: %w", err)
+		}
+		if auditErr != nil {
+			// A provider request can time out while the scan context is still
+			// healthy. Only cancellation of the scan itself should fail CI.
+			if cmd.Context().Err() != nil {
+				setPhaseStatus(metadata, "audit", "failed", "audit cancelled")
+				merged = markInvocationFailed(merged, "audit cancelled: "+auditErr.Error())
+			} else {
+				setPhaseStatus(metadata, "audit", "incomplete", "unaudited findings retained")
+				merged = markAuditIncomplete(merged, auditErr.Error())
+				slog.Warn("audit incomplete; continuing with unaudited findings", "error", auditErr)
 			}
+		} else {
+			setPhaseStatus(metadata, "audit", "completed", "")
+		}
+		if err := artifacts.WriteSARIF("audit", merged); err != nil {
+			return fmt.Errorf("writing audit artifact: %w", err)
 		}
 	} else if cfg.SkipAudit {
 		slog.Info("audit phase skipped (--skip-audit)")
@@ -915,4 +915,21 @@ func runScan(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+func markAuditIncomplete(doc sarif.SARIFDocument, message string) sarif.SARIFDocument {
+	if len(doc.Runs) == 0 {
+		return doc
+	}
+	doc.Runs = append([]sarif.SARIFRun(nil), doc.Runs...)
+	run := &doc.Runs[0]
+	run.Invocations = append([]sarif.SARIFInvocation(nil), run.Invocations...)
+	if len(run.Invocations) == 0 {
+		run.Invocations = []sarif.SARIFInvocation{{ExecutionSuccessful: true}}
+	}
+	inv := &run.Invocations[0]
+	inv.ToolExecutionNotifications = append(append([]sarif.SARIFNotification(nil), inv.ToolExecutionNotifications...), sarif.SARIFNotification{
+		Level: "warning", Message: sarif.SARIFMessage{Text: message},
+	})
+	return doc
 }

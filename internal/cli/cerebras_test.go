@@ -105,7 +105,9 @@ func TestCerebrasScanProducesSARIF(t *testing.T) {
 			t.Error("wrong path")
 		}
 		content := `{"repo_name":"fixture","description":"fixture","public_api_routes":[],"security_issues":[],"security_risk":0,"risk_justification":"No issues"}`
-		json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": content}, "finish_reason": "stop"}}, "usage": map[string]int{"prompt_tokens": 100, "completion_tokens": 20}})
+		if err := json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": content}, "finish_reason": "stop"}}, "usage": map[string]int{"prompt_tokens": 100, "completion_tokens": 20}}); err != nil {
+			t.Error(err)
+		}
 	}))
 	defer server.Close()
 	dir := createTestRepo(t)

@@ -18,13 +18,24 @@ type APIRoute struct {
 
 // SecurityIssue describes a single finding from the LLM analysis.
 type SecurityIssue struct {
-	Issue            string  `json:"issue"`
-	FilePath         string  `json:"file_path"`
-	StartLine        int     `json:"start_line"`
-	EndLine          int     `json:"end_line"`
-	TechnicalDetails string  `json:"technical_details"`
-	Severity         float64 `json:"severity"`
-	CWEID            string  `json:"cwe_id"`
+	Issue            string         `json:"issue"`
+	FilePath         string         `json:"file_path"`
+	StartLine        int            `json:"start_line"`
+	EndLine          int            `json:"end_line"`
+	TechnicalDetails string         `json:"technical_details"`
+	Severity         float64        `json:"severity"`
+	CWEID            string         `json:"cwe_id"`
+	Summary          string         `json:"summary"`
+	Remediation      string         `json:"remediation"`
+	CodePath         []CodePathStep `json:"code_path"`
+}
+
+// CodePathStep is a source-backed step in the reported exploit path.
+type CodePathStep struct {
+	FilePath  string `json:"file_path"`
+	StartLine int    `json:"start_line"`
+	EndLine   int    `json:"end_line"`
+	Message   string `json:"message"`
 }
 
 // ---------------------------------------------------------------------------
@@ -111,15 +122,40 @@ type SARIFMessage struct {
 
 // SARIFResult is a single finding referencing a rule.
 type SARIFResult struct {
-	RuleID    string          `json:"ruleId"`
-	Level     string          `json:"level"`
-	Message   SARIFMessage    `json:"message"`
-	Locations []SARIFLocation `json:"locations,omitempty"`
+	RuleID     string             `json:"ruleId"`
+	Level      string             `json:"level"`
+	Message    SARIFMessage       `json:"message"`
+	Locations  []SARIFLocation    `json:"locations,omitempty"`
+	CodeFlows  []SARIFCodeFlow    `json:"codeFlows,omitempty"`
+	Properties *FindingProperties `json:"properties,omitempty"`
+}
+
+// FindingProperties keeps full evidence available outside the inline annotation.
+type FindingProperties struct {
+	Summary          string   `json:"summary,omitempty"`
+	Remediation      string   `json:"remediation,omitempty"`
+	TechnicalDetails string   `json:"technicalDetails,omitempty"`
+	AuditStatus      string   `json:"auditStatus,omitempty"`
+	AuditConfidence  *float64 `json:"auditConfidence,omitempty"`
+}
+
+type SARIFCodeFlow struct {
+	ThreadFlows []SARIFThreadFlow `json:"threadFlows"`
+}
+
+type SARIFThreadFlow struct {
+	Locations []SARIFThreadFlowLocation `json:"locations"`
+}
+
+type SARIFThreadFlowLocation struct {
+	Location       SARIFLocation `json:"location"`
+	ExecutionOrder int           `json:"executionOrder"`
 }
 
 // SARIFLocation wraps a physical location.
 type SARIFLocation struct {
 	PhysicalLocation SARIFPhysicalLocation `json:"physicalLocation"`
+	Message          *SARIFMessage         `json:"message,omitempty"`
 }
 
 // SARIFPhysicalLocation points to a file and optional region.
