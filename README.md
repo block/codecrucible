@@ -151,7 +151,7 @@ codecrucible scan ./my-repo --jev-audit shadow --jev-review active
 | Flag | Active behavior | Uncertainty or failure |
 | --- | --- | --- |
 | `--jev-feature-detection` | Selects conditional analysis sections for scans that need multiple chunks. A section is omitted only when complete supplied source supports absence. | Includes all sections. Shadow mode runs the existing feature detector. |
-| `--jev-smart-chunking` | Adds bounded semantic grouping hints to local import/dependency edges before the existing chunker packs files. | Uses the original grouping. File boundaries and token limits remain enforced. |
+| `--jev-smart-chunking` | Adds bounded semantic grouping hints to local import/dependency edges before the existing chunker packs files. | Keeps successful grouping hints and uses existing dependencies for failed batches. File boundaries and token limits remain enforced. |
 | `--jev-audit` | Resolves sufficiently supported findings without a generative audit; rejects only after an exact blocking span passes a second verification request. | Sends unresolved findings to the existing auditor. Exhausted audit retries retain unaudited findings with a warning. |
 | `--jev-review` | Checks retained findings against source and records support or a manual-validation requirement. | Retains findings and marks review as unavailable or incomplete. |
 
@@ -184,14 +184,25 @@ Flags include `--jev-model`, `--jev-base-url` (the full evaluation endpoint),
 `DECISIONS_…`, such as `DECISIONS_AUDIT=shadow`; the credential is
 `TYPESAFE_API_KEY`. Dry runs show enabled stages and request caps without
 requiring that credential or calling Jev. HTTP 408/429/5xx and transport failures
-have bounded retries; authentication errors fall back without a retry loop.
+and malformed successful responses share the bounded retry budget; authentication
+errors fall back without a retry loop. Validation failures record fixed categories
+such as `invalid_response_probability_sum`, without response bodies.
 
 Enabled scans write `results.decisions.json` with evidence references, coverage,
-returned model, policy version, typed answers, and routing actions. It excludes
+returned model, policy version, typed answers, and routing actions. Per-finding
+records include an immutable subject ID and categorical coverage gaps. It excludes
 source text and credentials. Review also writes `results.review.sarif`.
 `--phase-output-dir` puts these alongside the other phase artifacts; stdout scans
 need that flag to retain them. The usage report includes every Jev attempt under
 `decision.<stage>`, including retries and unknown usage from failed requests.
+
+Audit and review prioritize cited Go functions, their enclosing guards, referenced
+local declarations and callers. The source index is built once per scan. Other
+languages and files that cannot be parsed use full-file evidence. Required scopes
+that cannot fit, missing source and invalid locations cause conservative fallback;
+unrelated Go declarations do not consume the evidence budget. Records marked
+`coverage_scope: "claim_context"` describe the selected context, not repository-wide
+coverage. Jev still has to establish the claim's material prerequisites and controls.
 
 This integration uses an experimental evidence policy. Its routing thresholds
 are not calibrated vulnerability probabilities and never replace SARIF audit
@@ -314,6 +325,7 @@ Per-phase flags follow the pattern `--{phase}-{flag}` (e.g. `--audit-model`, `--
 
 ```
   --audit-batch-size int               split audit into N-finding batches (default 25)
+  --audit-concurrency int              max parallel audit batches, 1-32 (default 1)
   --audit-confidence-threshold float   reject findings below this confidence (default 0.3)
   --base-url string                    override default provider URL
   --compress                           compress whitespace in source files to save tokens
@@ -439,6 +451,7 @@ model-params:
   output_config:
     effort: high
 skip-audit: false
+audit-concurrency: 1
 audit-confidence-threshold: 0.3
 exclude:
   - "*.generated.go"
@@ -831,6 +844,12 @@ Analysis failures still write partial SARIF when possible and return exit code 1
 Check `runs[0].invocations[0].executionSuccessful` and
 `toolExecutionNotifications` for failure details.
 
+Audit batches run sequentially by default. Set `--audit-concurrency 2` (or
+`audit-concurrency: 2` / `AUDIT_CONCURRENCY=2`) to run two batches concurrently.
+This is independent of analysis `--concurrency`, is bounded to 1-32 workers,
+and preserves output order. Choose concurrency to fit provider rate limits;
+each worker retains the same request timeout and retry bounds.
+
 Audit is best effort. If any audit batch remains unavailable, completed audit
 verdicts are preserved and the remaining findings are retained with
 `properties.auditStatus: "not_audited"` and a visible review warning. The run
@@ -845,7 +864,12 @@ with jitter and respect `Retry-After`. HTML 403 responses from intermediaries
 use the same policy; JSON/plain-text permission errors and HTTP 401 fail
 immediately. Cancellation stops retries. Audit additionally retries malformed,
 truncated, or incomplete verdict output once after attempting local JSON repair.
-Both generations count toward reported token usage and cost. Transport retry
+Every input carries an immutable `finding_id`, echoed by its verdict and preserved
+as SARIF `properties.findingId`. Proposed title or source-location changes do not
+change identity; location refinements must refer to admitted source. Valid verdicts
+are preserved and only unresolved IDs are retried. Duplicate IDs are ambiguous;
+unknown IDs cannot affect findings. Both generations count toward reported token
+usage and cost. Transport retry
 exhaustion does not start a second audit-level HTTP retry cycle.
 
 ## SARIF descriptions and scan comparisons
@@ -878,7 +902,7 @@ Every SARIF run includes `properties.codecrucible` with `schemaVersion: 1`:
 |-------|----------|
 | `recipe` | Scanner version/commit, resolved phase configurations, scan controls, prompt identity, custom-requirement and supplementary-source fingerprints |
 | `recipe.phases` | Analysis, feature detection, audit, and context compression: provider/model, sanitized base URL/endpoint, transport, model parameters, context/output limits, temperature settings, output mode, timeout, tokenizer, and pricing assumptions |
-| `recipe.controls` | Scope filters, test/document inclusion, file-size limit, compression, concurrency, cost limit, severity gate, phase toggles, audit confidence/batch size, and context budget |
+| `recipe.controls` | Scope filters, test/document inclusion, file-size limit, compression, concurrency, cost limit, severity gate, phase toggles, audit confidence/batch size/concurrency, and context budget |
 | `recipeFingerprint` | SHA-256 of the canonical JSON recipe (sorted object keys, preserved array order); excludes output paths, credentials, timestamps, and execution outcomes |
 | `execution` | Artifact stage, phase statuses and actual phase configurations, fallbacks, detected features, token correction, chunk/recovery counts, source loading/compression outcomes, and packed-context fingerprints/truncation |
 

@@ -22,8 +22,13 @@ func (d *scanDecisions) smartGrouping(ctx context.Context, baseline map[string][
 	}
 	mode := d.cfg.SmartChunking
 	graph := map[string][]string{}
-	for p, imports := range d.graph {
+	for p, imports := range baseline {
 		graph[p] = append([]string{}, imports...)
+	}
+	for p, imports := range d.graph {
+		for _, dep := range imports {
+			graph[p] = appendUnique(graph[p], dep)
+		}
 	}
 	paths := make([]string, 0, len(d.files))
 	for p := range d.files {
@@ -111,8 +116,8 @@ func (d *scanDecisions) smartGrouping(ctx context.Context, baseline map[string][
 			return baseline, ctx.Err()
 		}
 		if err != nil {
-			d.recorder.Action("existing_chunking")
-			return baseline, nil
+			d.recorder.Action("existing_chunking_for_batch")
+			continue
 		}
 		present := map[string]bool{}
 		for _, e := range evidence {
@@ -137,6 +142,9 @@ func (d *scanDecisions) smartGrouping(ctx context.Context, baseline map[string][
 	}
 	if mode == "shadow" {
 		return baseline, nil
+	}
+	for p := range graph {
+		sort.Strings(graph[p])
 	}
 	return graph, nil
 }

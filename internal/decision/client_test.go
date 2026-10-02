@@ -235,3 +235,57 @@ func TestEvidenceCoverageAndNoSourceInReport(t *testing.T) {
 		t.Fatal("truncated evidence called complete")
 	}
 }
+
+func TestInvalidResponseRetriesAndSafeDiagnostics(t *testing.T) {
+	for _, recover := range []bool{false, true} {
+		t.Run(fmt.Sprint(recover), func(t *testing.T) {
+			calls := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				response := testResponse()
+				if !recover || calls == 1 {
+					a := response.Answers["check"]
+					a.Probabilities["yes"] = .4
+					response.Answers["check"] = a
+				}
+				_ = json.NewEncoder(w).Encode(response)
+			}))
+			defer srv.Close()
+			client, _ := New(testOptions(srv.URL))
+			ledger := usage.New()
+			recorder := Recorder{Client: client}
+			req := testRequest()
+			_, err := recorder.Evaluate(usage.WithLedger(context.Background(), ledger), "review", "active", "finding", req.State, req.Questions, nil, false)
+			expected := 3
+			if recover {
+				expected = 2
+			}
+			if calls != expected || (err == nil) != recover {
+				t.Fatalf("calls=%d err=%v", calls, err)
+			}
+			report := ledger.Snapshot("")
+			if report.Total.Attempts != expected || report.Total.Tokens.PromptTokens != expected*10 {
+				t.Fatalf("lost invalid-response usage: %+v", report.Total)
+			}
+			if report.Requests[0].Reason != "invalid_response_probability_sum" {
+				t.Fatalf("missing validation cause: %+v", report.Requests[0])
+			}
+			if !recover && recorder.Records[0].Fallback != "invalid_response_probability_sum" {
+				t.Fatal("lost safe fallback cause")
+			}
+		})
+	}
+	// Arbitrary evaluator errors may echo source or credentials; never record them.
+	recorder := Recorder{Client: errorEvaluator{}}
+	_, _ = recorder.Evaluate(context.Background(), "review", "active", "finding", "source", testRequest().Questions, nil, false)
+	data, _ := json.Marshal(recorder.Report())
+	if strings.Contains(string(data), "private-test-key") {
+		t.Fatal("raw evaluator error leaked")
+	}
+}
+
+type errorEvaluator struct{}
+
+func (errorEvaluator) Evaluate(context.Context, Request) (Response, error) {
+	return Response{}, errors.New("private-test-key")
+}

@@ -299,7 +299,8 @@ func TestOptionalJevCLIUsesOriginalPipelineUnlessEnabled(t *testing.T) {
 					return
 				}
 				var req struct {
-					Model string `json:"model"`
+					Model    string        `json:"model"`
+					Messages []llm.Message `json:"messages"`
 				}
 				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 					t.Error(err)
@@ -308,7 +309,7 @@ func TestOptionalJevCLIUsesOriginalPipelineUnlessEnabled(t *testing.T) {
 				content := `{"security_issues":[{"issue":"Missing authorization","file_path":"src/main.go","start_line":3,"end_line":3,"severity":8,"cwe_id":"CWE-862","technical_details":"The handler accesses a resource without checking ownership."}],"public_api_routes":[]}`
 				if req.Model == "jev-test-audit" {
 					auditCalls++
-					content = `{"audited_findings":[{"original_issue":"Missing authorization","file_path":"src/main.go","start_line":3,"end_line":3,"verdict":"confirmed","confidence":0.9,"refined_severity":8,"refined_technical_details":"Missing ownership check.","justification":"Visible source evidence.","blocking_code":""}],"new_findings":[],"audit_summary":"checked"}`
+					content = `{"audited_findings":[{"finding_id":"` + requestedClaims(t, llm.ChatRequest{Messages: req.Messages})[0].FindingID + `","original_issue":"Missing authorization","file_path":"src/main.go","start_line":3,"end_line":3,"verdict":"confirmed","confidence":0.9,"refined_severity":8,"refined_technical_details":"Missing ownership check.","justification":"Visible source evidence.","blocking_code":""}],"new_findings":[],"audit_summary":"checked"}`
 				} else {
 					analysisCalls++
 				}
@@ -387,5 +388,63 @@ func TestJevPreservesCustomAuditPolicy(t *testing.T) {
 	queue, routed, err := d.routeAudit(context.Background(), doc)
 	if err != nil || !reflect.DeepEqual(queue, doc) || routed.OriginalCount != 0 {
 		t.Fatal("custom audit changed")
+	}
+}
+
+func TestJevGroupingKeepsSuccessfulBatchesAfterFailure(t *testing.T) {
+	for _, mode := range []string{"active", "shadow"} {
+		t.Run(mode, func(t *testing.T) {
+			d, _ := decisionFixture(t)
+			d.cfg.SmartChunking = mode
+			d.files = map[string]string{}
+			for i := 0; i < 8; i++ {
+				d.files[fmt.Sprintf("file%d.go", i)] = "package app\nfunc customerHandler() { customerService() }\n"
+			}
+			baseline := map[string][]string{"baseline.go": {"required.go"}}
+			original, _ := json.Marshal(baseline)
+			calls := 0
+			accepted := map[string][]string{}
+			d.recorder.Client = evaluateFunc(func(_ context.Context, req decision.Request) (decision.Response, error) {
+				calls++
+				if calls == 2 {
+					return decision.Response{}, errors.New("unavailable")
+				}
+				choices := map[string]string{}
+				for id, q := range req.Questions {
+					choices[id] = "related"
+					// The pair's paths are part of the question, not inferred from samples.
+					text := q.Instructions.(string)
+					a := strings.Index(text, "Should ") + len("Should ")
+					names := strings.SplitN(text[a:], " share an analysis chunk", 2)[0]
+					pair := strings.SplitN(names, " and ", 2)
+					accepted[pair[0]] = append(accepted[pair[0]], pair[1])
+				}
+				return answersFor(req, choices), nil
+			})
+			graph, err := d.smartGrouping(context.Background(), baseline)
+			if err != nil || calls < 3 {
+				t.Fatalf("stopped after failed batch: calls=%d err=%v", calls, err)
+			}
+			if mode == "shadow" {
+				if !reflect.DeepEqual(graph, baseline) {
+					t.Fatal("shadow mutated grouping")
+				}
+				return
+			}
+			for path, deps := range accepted {
+				for _, dep := range deps {
+					if !strings.Contains(strings.Join(graph[path], ","), dep) {
+						t.Fatalf("lost successful hint %s -> %s", path, dep)
+					}
+				}
+			}
+			if len(graph["baseline.go"]) != 1 {
+				t.Fatal("lost baseline dependency")
+			}
+			after, _ := json.Marshal(baseline)
+			if string(original) != string(after) {
+				t.Fatal("mutated baseline")
+			}
+		})
 	}
 }

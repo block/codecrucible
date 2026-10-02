@@ -38,15 +38,18 @@ func (d *scanDecisions) routeAudit(ctx context.Context, doc sarif.SARIFDocument)
 	}
 	queue := []sarif.SARIFResult{}
 	for _, finding := range run.Results {
-		evidence, complete := d.findingEvidence(finding)
+		selection := d.findingEvidence(finding)
+		evidence, complete := selection.Evidence, selection.Complete()
 		if !complete {
 			d.recorder.Skip("audit", mode, "incomplete_source_coverage")
+			d.recorder.FindingCoverage(decisionSubject(finding), selection)
 			queue = append(queue, finding)
 			continue
 		}
 		claim := decisionClaim(finding, titles[finding.RuleID])
 		if len(claim) > 6000 {
 			d.recorder.Skip("audit", mode, "claim_exceeds_budget")
+			d.recorder.FindingCoverage(decisionSubject(finding), selection)
 			queue = append(queue, finding)
 			continue
 		}
@@ -55,6 +58,8 @@ func (d *scanDecisions) routeAudit(ctx context.Context, doc sarif.SARIFDocument)
 			choices[e.ID] = fmt.Sprintf("Exact supplied source at %s:%d-%d", e.Path, e.Start, e.End)
 		}
 		if len(choices) < 2 || len(choices) > 255 {
+			d.recorder.Skip("audit", mode, "evidence_choice_limit")
+			d.recorder.FindingCoverage(decisionSubject(finding), selection)
 			queue = append(queue, finding)
 			continue
 		}
@@ -63,8 +68,9 @@ func (d *scanDecisions) routeAudit(ctx context.Context, doc sarif.SARIFDocument)
 			"verdict":           decision.Choice("Decide the specific security claim from the source: supported requires attacker reachability, absence of an effective mitigation, and material impact. Blocked requires an effective source-level guard that actually prevents this exact issue. Do not reject on low confidence, missing context, or narrative assertions.", map[string]string{"supported": "The complete claim is supported by source", "blocked": "An exact source-level control disproves the claim", "insufficient_evidence": "Cannot settle the claim from supplied evidence"}),
 			"blocking_evidence": decision.Choice("Which single supplied evidence span contains the effective blocking control for this exact claim? Select none unless the control prevents the claimed attacker action. An unrelated check or a comment is not a blocking control.", choices),
 		}
-		state := map[string]any{"claim": claim, "source": evidence, "dependency_graph_coverage": "known local imports only", "supplementary_context": d.supplementary, "custom_requirements": d.requirements, "production_only": d.productionOnly}
+		state := map[string]any{"claim": claim, "source": evidence, "dependency_graph_coverage": "claim-focused local declarations and callers; symbol matching and local imports are best effort. Unrelated file contents are omitted; coverage is not repository-wide", "supplementary_context": d.supplementary, "custom_requirements": d.requirements, "production_only": d.productionOnly}
 		response, err := d.recorder.Evaluate(ctx, "audit", mode, decisionSubject(finding), state, questions, evidence, complete)
+		d.recorder.FindingCoverage(decisionSubject(finding), selection)
 		verdictRecord := len(d.recorder.Records) - 1
 		if ctx.Err() != nil {
 			return doc, routed, ctx.Err()
@@ -129,6 +135,7 @@ func (d *scanDecisions) verifyBlock(ctx context.Context, mode, subject, claim st
 	}
 	q := decision.Choice("Independently test the claim against the proposed blocking span. Does executable code in this exact span prevent the specific attacker action on every relevant path shown? Verify guard ordering, attacker control, bypasses, and material prerequisites. Comments, defensive-sounding names, unrelated checks, and missing context cannot justify rejection.", map[string]string{"blocked": "This exact executable control conclusively prevents the specific claim", "not_blocked": "The control does not prevent this claim", "insufficient_evidence": "Coverage or semantics cannot establish prevention"})
 	response, err := d.recorder.Evaluate(ctx, "audit", mode, subject+":blocking-validation", map[string]any{"claim": claim, "proposed_blocking_span": block, "source": evidence, "supplementary_context": d.supplementary, "custom_requirements": d.requirements, "production_only": d.productionOnly}, map[string]decision.Question{"blocking_validation": q}, evidence, true)
+	d.recorder.FindingCoverage(subject+":blocking-validation", decision.EvidenceSelection{Evidence: evidence})
 	return err == nil && decision.Strong(response.Answers["blocking_validation"], "blocked"), err
 }
 func restoreRoutedAudit(doc sarif.SARIFDocument, r routedAudit) sarif.SARIFDocument {

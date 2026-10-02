@@ -447,3 +447,29 @@ func TestLoad_ContextSourcesRaw(t *testing.T) {
 		t.Errorf("sources parsed wrong: %+v", cfg.ContextSources)
 	}
 }
+
+func TestAuditConcurrencyConfiguration(t *testing.T) {
+	v := viper.New()
+	SetDefaults(v)
+	BindEnvVars(v)
+	cfg, err := Load(v)
+	if err != nil || cfg.AuditConcurrency != 1 {
+		t.Fatalf("default: cfg=%+v err=%v", cfg, err)
+	}
+	t.Setenv("AUDIT_CONCURRENCY", "3")
+	cfg, err = Load(v)
+	if err != nil || cfg.AuditConcurrency != 3 {
+		t.Fatalf("environment: cfg=%+v err=%v", cfg, err)
+	}
+	v.Set("audit-concurrency", 2)
+	cfg, err = Load(v)
+	if err != nil || cfg.AuditConcurrency != 2 {
+		t.Fatalf("override: cfg=%+v err=%v", cfg, err)
+	}
+	for _, bad := range []int{-1, 0, 33} {
+		v.Set("audit-concurrency", bad)
+		if _, err := Load(v); err == nil {
+			t.Fatalf("accepted invalid concurrency %d", bad)
+		}
+	}
+}

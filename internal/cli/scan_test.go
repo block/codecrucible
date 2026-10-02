@@ -860,7 +860,7 @@ func TestApplyAuditVerdicts_RejectsAndConfirms(t *testing.T) {
 		},
 	}
 
-	out := applyAuditVerdicts(doc, audit, ingest.FileMap{}, 0.5)
+	out := applyFixtureAuditVerdicts(doc, audit, ingest.FileMap{}, 0.5)
 
 	if len(out.Runs[0].Results) != 1 {
 		t.Fatalf("expected 1 kept result, got %d", len(out.Runs[0].Results))
@@ -901,7 +901,7 @@ func TestApplyAuditVerdicts_RejectedWithoutBlockingCode_CoercedToUnverified(t *t
 		},
 	}
 
-	out := applyAuditVerdicts(doc, audit, ingest.FileMap{}, 0.3)
+	out := applyFixtureAuditVerdicts(doc, audit, ingest.FileMap{}, 0.3)
 
 	if len(out.Runs[0].Results) != 1 {
 		t.Fatalf("expected 1 retained (unverified) result, got %d", len(out.Runs[0].Results))
@@ -932,7 +932,7 @@ func TestApplyAuditVerdicts_UnverifiedRetainedAboveThreshold(t *testing.T) {
 		},
 	}
 
-	out := applyAuditVerdicts(doc, audit, ingest.FileMap{}, 0.3)
+	out := applyFixtureAuditVerdicts(doc, audit, ingest.FileMap{}, 0.3)
 
 	if len(out.Runs[0].Results) != 1 {
 		t.Fatalf("expected 1 retained unverified result, got %d", len(out.Runs[0].Results))
@@ -964,7 +964,7 @@ func TestApplyAuditVerdicts_ConfidenceThreshold(t *testing.T) {
 		},
 	}
 
-	out := applyAuditVerdicts(doc, audit, ingest.FileMap{}, 0.7)
+	out := applyFixtureAuditVerdicts(doc, audit, ingest.FileMap{}, 0.7)
 
 	if len(out.Runs[0].Results) != 0 {
 		t.Fatalf("expected 0 results after confidence cutoff, got %d", len(out.Runs[0].Results))
@@ -994,7 +994,7 @@ func TestApplyAuditVerdicts_RefinesSeverityAndMessage(t *testing.T) {
 		}},
 	}
 
-	out := applyAuditVerdicts(doc, audit, ingest.FileMap{}, 0.5)
+	out := applyFixtureAuditVerdicts(doc, audit, ingest.FileMap{}, 0.5)
 
 	if len(out.Runs[0].Results) != 1 {
 		t.Fatalf("expected 1 result, got %d", len(out.Runs[0].Results))
@@ -1027,7 +1027,7 @@ func TestApplyAuditVerdicts_UnauditedKeptAsIs(t *testing.T) {
 		}},
 	}
 
-	out := applyAuditVerdicts(doc, AuditResult{}, ingest.FileMap{}, 0.5)
+	out := applyFixtureAuditVerdicts(doc, AuditResult{}, ingest.FileMap{}, 0.5)
 
 	if len(out.Runs[0].Results) != 1 {
 		t.Fatalf("expected 1 kept result, got %d", len(out.Runs[0].Results))
@@ -1066,7 +1066,7 @@ func TestApplyAuditVerdicts_NewFindings(t *testing.T) {
 		},
 	}
 
-	out := applyAuditVerdicts(doc, audit, ingest.FileMap{}, 0.5)
+	out := applyFixtureAuditVerdicts(doc, audit, ingest.FileMap{}, 0.5)
 
 	if len(out.Runs[0].Results) != 1 {
 		t.Fatalf("expected 1 new result, got %d", len(out.Runs[0].Results))

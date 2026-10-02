@@ -140,6 +140,7 @@ type DecisionAssessment struct {
 
 // FindingProperties keeps full evidence available outside the inline annotation.
 type FindingProperties struct {
+	FindingID        string              `json:"findingId,omitempty"`
 	DecisionAudit    *DecisionAssessment `json:"decisionAudit,omitempty"`
 	DecisionReview   *DecisionAssessment `json:"decisionReview,omitempty"`
 	Summary          string              `json:"summary,omitempty"`

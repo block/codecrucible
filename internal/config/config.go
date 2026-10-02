@@ -46,6 +46,7 @@ type Config struct {
 	AuditModel               string  `mapstructure:"audit-model"`
 	AuditConfidenceThreshold float64 `mapstructure:"audit-confidence-threshold"`
 	AuditBatchSize           int     `mapstructure:"audit-batch-size"`
+	AuditConcurrency         int     `mapstructure:"audit-concurrency"`
 
 	// Supplementary context: reference material injected into analysis and
 	// audit prompts. See internal/supctx.
@@ -130,6 +131,13 @@ func Load(v *viper.Viper) (*Config, error) {
 		return nil, fmt.Errorf("registering models from config: %w", err)
 	}
 
+	if !v.IsSet("audit-concurrency") {
+		cfg.AuditConcurrency = 1
+	}
+	if cfg.AuditConcurrency < 1 || cfg.AuditConcurrency > 32 {
+		return nil, fmt.Errorf("audit-concurrency must be between 1 and 32")
+	}
+
 	if err := validateDecisions(v, &cfg.Decisions); err != nil {
 		return nil, err
 	}
@@ -167,6 +175,7 @@ func SetDefaults(v *viper.Viper) {
 	v.SetDefault("audit-model", "")
 	v.SetDefault("audit-confidence-threshold", 0.3)
 	v.SetDefault("audit-batch-size", 25)
+	v.SetDefault("audit-concurrency", 1)
 	v.SetDefault("context-budget-pct", 15)
 	v.SetDefault("context-sources-raw", []string{})
 }

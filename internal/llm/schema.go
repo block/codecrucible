@@ -183,16 +183,20 @@ const auditSchemaJSON = `{
         "description": "Audit verdicts for each initial finding",
         "items": {
           "type": "object",
-          "required": ["original_issue", "file_path", "start_line", "end_line", "verdict", "confidence", "refined_severity", "refined_technical_details", "refined_cwe_id", "justification", "blocking_code", "summary", "remediation", "code_path"],
+          "required": ["finding_id", "original_issue", "file_path", "start_line", "end_line", "verdict", "confidence", "refined_severity", "refined_technical_details", "refined_cwe_id", "justification", "blocking_code", "summary", "remediation", "code_path"],
           "additionalProperties": false,
           "properties": {
+            "finding_id": {
+              "type": "string",
+              "description": "Exact immutable finding_id copied from the input claim. Return exactly one verdict per supplied ID, without inventing or modifying IDs."
+            },
             "original_issue": {
               "type": "string",
               "description": "The original issue title from the initial finding"
             },
             "file_path": {
               "type": "string",
-              "description": "File path of the finding"
+              "description": "Proposed source path of the finding; location changes do not change finding_id"
             },
             "start_line": {
               "type": "integer",

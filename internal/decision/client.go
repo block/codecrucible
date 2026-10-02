@@ -24,7 +24,7 @@ import (
 
 const Model = "jev-1.13.0"
 const InputPricePerMillion = 0.042
-const PolicyVersion = "jev-decisions-v1"
+const PolicyVersion = "jev-decisions-v2"
 
 var ErrLimit = errors.New("decision request limit reached")
 
@@ -184,7 +184,8 @@ func (c *Client) Evaluate(ctx context.Context, req Request) (Response, error) {
 					delay = d
 				}
 			} else {
-				retry = false
+				// A malformed successful response consumes the same bounded
+				// retry budget as transient transport failures.
 				result.Reason = "invalid_response"
 				decodeErr := json.Unmarshal(raw, &decoded)
 				if decoded.Usage.Input != nil && *decoded.Usage.Input >= 0 {
@@ -201,9 +202,12 @@ func (c *Client) Evaluate(ctx context.Context, req Request) (Response, error) {
 				result.Model = decoded.Model
 				result.Unpriced = decoded.Model != "" && decoded.Model != c.opts.Model
 				if decodeErr != nil {
-					last = errors.New("invalid decision response JSON")
+					last = responseError("invalid_json")
 				} else {
 					last = ValidateResponse(req, decoded)
+				}
+				if last != nil {
+					result.Reason = FailureReason(last)
 				}
 				if last == nil {
 					result.Status = "completed"
@@ -270,27 +274,27 @@ func validateRequest(req Request, size int, opts Options) error {
 // request failure. A plausible subset must not masquerade as complete evidence.
 func ValidateResponse(req Request, resp Response) error {
 	if resp.Model == "" || len(resp.Answers) != len(req.Questions) {
-		return errors.New("incomplete decision response")
+		return responseError("incomplete_response")
 	}
 	for id, q := range req.Questions {
 		a, ok := resp.Answers[id]
 		if !ok || a.Type != q.Type {
-			return errors.New("missing or mismatched decision answer")
+			return responseError("answer_id_or_type")
 		}
 		if q.Type == "noul" {
 			if a.Choice != "" || a.Score != nil || a.Confidence != nil || len(a.Probabilities) > 0 || len(a.Legend) > 0 {
-				return errors.New("mixed noul answer shape")
+				return responseError("mixed_noul_shape")
 			}
 			if a.Noul == nil || !probability(*a.Noul) {
-				return errors.New("invalid noul answer")
+				return responseError("noul_range")
 			}
 			continue
 		}
 		if a.Noul != nil || (q.Type == "choice" && (a.Score != nil || len(a.Legend) > 0)) || (q.Type == "score" && a.Choice != "") {
-			return errors.New("mixed decision answer shape")
+			return responseError("mixed_answer_shape")
 		}
 		if a.Confidence == nil || !probability(*a.Confidence) {
-			return errors.New("missing or invalid decision confidence")
+			return responseError("confidence")
 		}
 		expected := map[string]string{}
 		if q.Type == "choice" {
@@ -301,22 +305,22 @@ func ValidateResponse(req Request, resp Response) error {
 				expected[strconv.Itoa(i)] = level
 			}
 			if len(a.Legend) != len(expected) {
-				return errors.New("invalid score legend")
+				return responseError("legend_size")
 			}
 			for k, v := range expected {
 				if a.Legend[k] != v {
-					return errors.New("mismatched score legend")
+					return responseError("legend_values")
 				}
 			}
 		}
 		if len(a.Probabilities) != len(expected) {
-			return errors.New("incomplete decision probabilities")
+			return responseError("probability_count")
 		}
 		sum, weighted, highest := 0.0, 0.0, 0.0
 		for k := range expected {
 			p, ok := a.Probabilities[k]
 			if !ok || !probability(p) {
-				return errors.New("invalid decision probabilities")
+				return responseError("probability_range")
 			}
 			sum += p
 			highest = math.Max(highest, p)
@@ -324,14 +328,14 @@ func ValidateResponse(req Request, resp Response) error {
 			weighted += float64(level) * p
 		}
 		if math.Abs(sum-1) > 0.001 {
-			return errors.New("decision probabilities do not sum to one")
+			return responseError("probability_sum")
 		}
 		if q.Type == "choice" {
 			if _, ok := expected[a.Choice]; !ok || a.Probabilities[a.Choice]+0.000001 < highest {
-				return errors.New("invalid decision choice")
+				return responseError("choice")
 			}
 		} else if a.Score == nil || math.IsNaN(*a.Score) || math.Abs(*a.Score-weighted) > 0.001 {
-			return errors.New("invalid weighted decision score")
+			return responseError("weighted_score")
 		}
 	}
 	return nil
@@ -345,4 +349,23 @@ func retryAfter(value string) time.Duration {
 		return min(max(time.Until(t), 0), 120*time.Second)
 	}
 	return 0
+}
+
+// responseError is constructed exclusively from fixed validation codes. Never
+// wrap provider errors or include model-selected IDs, text, or response bodies.
+type responseError string
+
+func (e responseError) Error() string { return "invalid decision response: " + string(e) }
+func FailureReason(err error) string {
+	var invalid responseError
+	if errors.As(err, &invalid) {
+		return "invalid_response_" + string(invalid)
+	}
+	if errors.Is(err, ErrLimit) {
+		return "decision_limit"
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return "context_cancelled"
+	}
+	return "decision_unavailable"
 }

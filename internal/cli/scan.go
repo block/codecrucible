@@ -87,6 +87,7 @@ pipeline and produces SARIF output suitable for GitHub Code Scanning integration
 	cmd.Flags().Bool("skip-feature-detection", false, "skip the feature detection pre-pass (faster for small repos)")
 	cmd.Flags().Bool("skip-audit", false, "skip the CWE-specific audit phase (faster but less accurate)")
 	cmd.Flags().Float64("audit-confidence-threshold", 0.3, "reject findings below this confidence score (0.0-1.0)")
+	cmd.Flags().Int("audit-concurrency", 1, "max parallel audit batches (1-32); independent of analysis concurrency")
 	cmd.Flags().Int("audit-batch-size", 25, "split audit into batches of N findings (0 = single call). Default keeps each call under typical server connection-age limits (~10-12min)")
 	cmd.Flags().Int("concurrency", 3, "max number of chunks to analyze in parallel")
 
@@ -152,7 +153,7 @@ func bindScanFlags(cmd *cobra.Command) {
 		"output", "phase-output-dir", "prompts-dir", "include", "exclude", "custom-headers",
 		"skip-feature-detection", "concurrency", "max-file-size",
 		"context-limit", "max-output-tokens", "request-timeout",
-		"skip-audit", "audit-confidence-threshold", "audit-batch-size",
+		"skip-audit", "audit-confidence-threshold", "audit-batch-size", "audit-concurrency",
 		"context-budget-pct",
 	}
 	for _, f := range flags {
@@ -849,7 +850,7 @@ func runScan(cmd *cobra.Command, args []string) (scanErr error) {
 	merged := sarif.Merge(sarifDocs)
 
 	// --- Stage 6.5: Post-process (dedup + deprioritize non-source) ---
-	merged = sarif.PostProcess(merged)
+	merged = sarif.WithFindingIDs(sarif.PostProcess(merged))
 
 	slog.Info("initial analysis complete",
 		"total_findings", len(merged.Runs[0].Results),
@@ -893,7 +894,7 @@ func runScan(cmd *cobra.Command, args []string) (scanErr error) {
 				phaseUsageContext(scanCtx, "audit", *audit, auditFallback), merged, repoName,
 				auditClient, auditEndpoint, audit.ModelCfg, promptLoader,
 				auditOutputMode, flatResult.FileMap, cfg.AuditConfidenceThreshold, audit.ModelParams, auditCtx.Rendered,
-				cfg.AuditBatchSize, !cfg.IncludeTests, counter, metadata,
+				cfg.AuditBatchSize, cfg.AuditConcurrency, !cfg.IncludeTests, counter, metadata,
 			)
 			if auditedDoc != nil {
 				merged = *auditedDoc
@@ -945,7 +946,7 @@ func runScan(cmd *cobra.Command, args []string) (scanErr error) {
 	)
 
 	// --- Stage 7: Output ---
-	merged, err = prepareSARIF(merged, metadata, "final")
+	merged, err = prepareSARIF(sarif.WithFindingIDs(merged), metadata, "final")
 	if err != nil {
 		return err
 	}

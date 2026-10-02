@@ -76,6 +76,7 @@ type ScanControls struct {
 	SkipAudit                bool     `json:"skipAudit"`
 	AuditConfidenceThreshold float64  `json:"auditConfidenceThreshold"`
 	AuditBatchSize           int      `json:"auditBatchSize"`
+	AuditConcurrency         int      `json:"auditConcurrency"`
 	ContextBudgetPct         int      `json:"contextBudgetPct"`
 }
 

@@ -522,6 +522,8 @@ func (l *PromptLoader) AssembleAuditMessages(params AuditParams) ([]Message, err
 
 	system := strings.ReplaceAll(ap.SystemMessage, "{production_only_gate}", prodGate)
 
+	userContent += "\nAUDIT IDENTITY CONTRACT: Return exactly one verdict for each supplied finding_id, copied verbatim. Never identify a finding by its title or source location. You may refine file_path, start_line and end_line while retaining finding_id. Do not repeat already-resolved findings absent from this request.\n"
+
 	// Append JSON formatting rules with schema.
 	jsonRules := strings.ReplaceAll(ap.JSONFormattingRules, "{schema}", params.Schema)
 	userContent += "\n" + jsonRules

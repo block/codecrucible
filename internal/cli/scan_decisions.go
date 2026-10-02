@@ -16,6 +16,7 @@ import (
 )
 
 type scanDecisions struct {
+	evidenceIndex        *decision.EvidenceIndex
 	auditPolicySupported bool
 	supplementary        string
 	requirements         string
@@ -34,7 +35,12 @@ func newScanDecisions(cfg config.Decisions, files ingest.FileMap, sources []inge
 	if err != nil {
 		return nil, err
 	}
-	return &scanDecisions{cfg: cfg, recorder: &decision.Recorder{Client: client}, files: map[string]string(files), graph: ingest.ResolveDependencies(sources)}, nil
+	graph := ingest.ResolveDependencies(sources)
+	var index *decision.EvidenceIndex
+	if cfg.Audit != "off" || cfg.Review != "off" {
+		index = decision.NewEvidenceIndex(map[string]string(files), graph)
+	}
+	return &scanDecisions{evidenceIndex: index, cfg: cfg, recorder: &decision.Recorder{Client: client}, files: map[string]string(files), graph: graph}, nil
 }
 func (d *scanDecisions) enabled(stage string) bool { return d != nil && d.cfg.Modes()[stage] != "off" }
 func (d *scanDecisions) featureDetection(ctx context.Context, loader *llm.PromptLoader) ([]string, bool, error) {
@@ -102,25 +108,16 @@ func (d *scanDecisions) featureDetection(ctx context.Context, loader *llm.Prompt
 	return retained, true, nil
 }
 
-func (d *scanDecisions) findingEvidence(result sarif.SARIFResult) ([]decision.Evidence, bool) {
-	paths := []string{}
-	valid := true
+func (d *scanDecisions) findingEvidence(result sarif.SARIFResult) decision.EvidenceSelection {
+	cited := []decision.SourceRange{}
 	add := func(location sarif.SARIFLocation) {
-		p := location.PhysicalLocation
-		if p.Region == nil {
-			valid = false
-			return
+		physical := location.PhysicalLocation
+		span := decision.SourceRange{Path: physical.ArtifactLocation.URI}
+		if physical.Region != nil {
+			span.Start = physical.Region.StartLine
+			span.End = physical.Region.EndLine
 		}
-		end := p.Region.EndLine
-		if end == 0 {
-			end = p.Region.StartLine
-		}
-		source, ok := d.files[p.ArtifactLocation.URI]
-		_, rangeOK := decision.SourceEvidence(p.ArtifactLocation.URI, source, p.Region.StartLine, end)
-		if !ok || !rangeOK {
-			valid = false
-		}
-		paths = append(paths, p.ArtifactLocation.URI)
+		cited = append(cited, span)
 	}
 	for _, location := range result.Locations {
 		add(location)
@@ -132,34 +129,16 @@ func (d *scanDecisions) findingEvidence(result sarif.SARIFResult) ([]decision.Ev
 			}
 		}
 	}
-	if len(paths) == 0 {
-		valid = false
+	index := d.evidenceIndex
+	if index == nil {
+		index = decision.NewEvidenceIndex(d.files, d.graph)
 	}
-	// Traverse known local imports, retaining explicit incompleteness when bounded.
-	seen := map[string]bool{}
-	for i := 0; i < len(paths); i++ {
-		p := paths[i]
-		if seen[p] {
-			continue
-		}
-		seen[p] = true
-		if len(seen) > 32 {
-			valid = false
-			break
-		}
-		for _, dep := range d.graph[p] {
-			if !seen[dep] {
-				paths = append(paths, dep)
-			}
-		}
-	}
-	if len(seen) > 32 {
-		paths = paths[:min(len(paths), 32)]
-	}
-	evidence, complete := decision.CollectEvidence(d.files, paths, 18000)
-	return evidence, valid && complete
+	return index.Select(cited, 18000)
 }
 func decisionSubject(result sarif.SARIFResult) string {
+	if result.Properties != nil && result.Properties.FindingID != "" {
+		return result.Properties.FindingID
+	}
 	location := ""
 	if len(result.Locations) > 0 {
 		p := result.Locations[0].PhysicalLocation

@@ -16,6 +16,7 @@ import (
 	"github.com/block/codecrucible/internal/chunk"
 	"github.com/block/codecrucible/internal/config"
 	"github.com/block/codecrucible/internal/ingest"
+	"github.com/block/codecrucible/internal/llm"
 	"github.com/block/codecrucible/internal/sarif"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -307,7 +308,7 @@ func TestAuditDescriptionsFollowFinalVerdicts(t *testing.T) {
 		},
 		NewFindings: []NewFinding{{Issue: "New issue", FilePath: "c.go", StartLine: 1, TechnicalDetails: "NEW EVIDENCE", Severity: 9, Confidence: .9}},
 	}
-	final, err := prepareSARIF(applyAuditVerdicts(doc, audit, ingest.FileMap{}, .3), nil, "final")
+	final, err := prepareSARIF(applyFixtureAuditVerdicts(doc, audit, ingest.FileMap{}, .3), nil, "final")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -372,7 +373,12 @@ func TestScanArtifactsIncludeFinalEvidenceAndMetadata(t *testing.T) {
 				}
 				content := `{"security_issues":[{"issue":"Reflected XSS","file_path":"src/main.go","start_line":1,"technical_details":"Initial evidence: <img src=x onerror=alert(1)> bypasses \\*.","severity":8,"cwe_id":"CWE-79"}]}`
 				if calls > 1 {
-					content = `{"audited_findings":[{"original_issue":"Reflected XSS","file_path":"src/main.go","start_line":1,"verdict":"refined","confidence":0.9,"refined_technical_details":"Final evidence: <script>alert(1)</script> bypasses \\*.","justification":"Validated chain"}]}`
+					var request llm.ChatRequest
+					if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+						t.Error(err)
+						return
+					}
+					content = `{"audited_findings":[{"finding_id":"` + requestedClaims(t, request)[0].FindingID + `","original_issue":"Reflected XSS","file_path":"src/main.go","start_line":1,"verdict":"refined","confidence":0.9,"refined_technical_details":"Final evidence: <script>alert(1)</script> bypasses \\*.","justification":"Validated chain"}]}`
 				}
 				_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": content}, "finish_reason": "stop"}}})
 			}))

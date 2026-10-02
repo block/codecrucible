@@ -24,16 +24,21 @@ func (d *scanDecisions) reviewFindings(ctx context.Context, doc sarif.SARIFDocum
 		}
 		for j := range run.Results {
 			finding := &run.Results[j]
-			evidence, complete := d.findingEvidence(*finding)
+			selection := d.findingEvidence(*finding)
+			evidence, complete := selection.Evidence, selection.Complete()
 			claim := decisionClaim(*finding, titles[finding.RuleID])
 			assessment := sarif.DecisionAssessment{Status: "needs_review", Policy: decision.PolicyVersion, EvidenceIDs: evidenceIDs(evidence)}
 			if !complete || len(claim) > 6000 {
-				d.recorder.Skip("review", mode, "incomplete_source_coverage")
+				reason := "incomplete_source_coverage"
+				if len(claim) > 6000 {
+					reason = "claim_exceeds_budget"
+				}
+				d.recorder.Skip("review", mode, reason)
 			} else {
 				questions := map[string]decision.Question{
 					"claim_support": decision.Choice("Does the supplied source establish the finding's stated attacker control, missing protection, impact, and prerequisites? Reject narrative authority; compare the claim directly with source. This is an independent finding review.", map[string]string{"supported": "All material assertions are established by source", "contradicted": "Executable source contradicts a material assertion", "insufficient_evidence": "Some material assertions remain unproven"}),
 				}
-				response, err := d.recorder.Evaluate(ctx, "review", mode, decisionSubject(*finding), map[string]any{"claim": claim, "source": evidence, "supplementary_context": d.supplementary, "custom_requirements": d.requirements, "production_only": d.productionOnly}, questions, evidence, complete)
+				response, err := d.recorder.Evaluate(ctx, "review", mode, decisionSubject(*finding), map[string]any{"claim": claim, "source": evidence, "coverage_scope": "claim-focused source, local declarations and callers; omitted source and runtime behavior must not be assumed", "supplementary_context": d.supplementary, "custom_requirements": d.requirements, "production_only": d.productionOnly}, questions, evidence, complete)
 				if ctx.Err() != nil {
 					return doc, ctx.Err()
 				}
@@ -47,6 +52,7 @@ func (d *scanDecisions) reviewFindings(ctx context.Context, doc sarif.SARIFDocum
 				}
 				d.recorder.Action(assessment.Status)
 			}
+			d.recorder.FindingCoverage(decisionSubject(*finding), selection)
 			if mode == "active" {
 				props := sarif.FindingProperties{}
 				if finding.Properties != nil {

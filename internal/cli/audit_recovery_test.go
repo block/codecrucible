@@ -29,9 +29,9 @@ func auditFixture() sarif.SARIFDocument {
 	}}, nil, sarif.BuilderConfig{})
 }
 
-func auditReply(issue, path string) *llm.ChatResponse {
+func auditReply(t *testing.T, req llm.ChatRequest, issue, path string) *llm.ChatResponse {
 	data, _ := json.Marshal(AuditResult{AuditedFindings: []AuditedFinding{{
-		OriginalIssue: issue, FilePath: path, StartLine: 1, Verdict: "confirmed", Confidence: .9,
+		FindingID: requestedClaims(t, req)[0].FindingID, OriginalIssue: issue, FilePath: path, StartLine: 1, Verdict: "confirmed", Confidence: .9,
 		RefinedTechnicalDetails: "Audited " + issue, Summary: "Reviewed " + issue, Remediation: "Validate the input",
 		CodePath: []sarif.CodePathStep{{FilePath: path, StartLine: 1, EndLine: 1, Message: "Unsafe operation"}},
 	}}})
@@ -41,7 +41,7 @@ func auditReply(issue, path string) *llm.ChatResponse {
 func runFixtureAudit(ctx context.Context, doc sarif.SARIFDocument, client llm.Client) (*sarif.SARIFDocument, llm.TokenUsage, float64, error) {
 	return runAuditPhase(ctx, doc, "fixture", client, "", config.ModelConfig{Name: "test", InputPricePerM: 1, OutputPricePerM: 2},
 		llm.NewPromptLoader(os.DirFS("../../prompts/default")), llm.OutputModeNone,
-		ingest.FileMap{"a.go": "sink()", "b.go": "sink()"}, .3, nil, "", 1, true, chunk.NewTokenCounter("", nil), nil)
+		ingest.FileMap{"a.go": "sink()", "b.go": "sink()"}, .3, nil, "", 1, 1, true, chunk.NewTokenCounter("", nil), nil)
 }
 
 func TestAuditPartialFailureRetainsFindingsAndCompletedWork(t *testing.T) {
@@ -53,7 +53,7 @@ func TestAuditPartialFailureRetainsFindingsAndCompletedWork(t *testing.T) {
 		if req.Label == "audit 2/2" {
 			return nil, errors.New("provider permission denied")
 		}
-		return auditReply("First", "a.go"), nil
+		return auditReply(t, req, "First", "a.go"), nil
 	})
 	got, usage, cost, err := runFixtureAudit(context.Background(), doc, client)
 	if err == nil || !strings.Contains(err.Error(), "1 of 2 batches") || calls != 2 || got == nil {
@@ -101,10 +101,10 @@ func TestAuditResponseRecoveryAndExhaustion(t *testing.T) {
 			doc := auditFixture()
 			doc.Runs[0].Results = doc.Runs[0].Results[:1]
 			calls := 0
-			client := auditClientFunc(func(context.Context, llm.ChatRequest) (*llm.ChatResponse, error) {
+			client := auditClientFunc(func(_ context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
 				calls++
 				if calls == 2 && tc.recover {
-					return auditReply("First", "a.go"), nil
+					return auditReply(t, req, "First", "a.go"), nil
 				}
 				return &llm.ChatResponse{Content: tc.bad, FinishReason: tc.finish, Usage: llm.TokenUsage{PromptTokens: 10, CompletionTokens: 5}}, nil
 			})
@@ -128,7 +128,7 @@ func TestAuditTotalTransportFailureAndCancellation(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			calls := 0
-			client := auditClientFunc(func(context.Context, llm.ChatRequest) (*llm.ChatResponse, error) {
+			client := auditClientFunc(func(_ context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
 				calls++
 				if cancelScan {
 					cancel()
@@ -157,12 +157,12 @@ func TestAuditTotalTransportFailureAndCancellation(t *testing.T) {
 }
 
 func TestAuditRejectsDuplicateOrForeignVerdicts(t *testing.T) {
-	expected := map[auditFindingKey]bool{{"a.go", 1, "First"}: true}
-	valid := AuditedFinding{OriginalIssue: "First", FilePath: "a.go", StartLine: 1, Verdict: "confirmed", Confidence: .9}
+	expected := map[string]bool{"first": true}
+	valid := AuditedFinding{FindingID: "first", OriginalIssue: "First", FilePath: "a.go", StartLine: 1, Verdict: "confirmed", Confidence: .9}
 	foreign := valid
-	foreign.FilePath = "b.go"
+	foreign.FindingID = "foreign"
 	for _, verdicts := range [][]AuditedFinding{{valid, valid}, {foreign}} {
-		if validateAuditCoverage(AuditResult{AuditedFindings: verdicts}, expected) == nil {
+		if _, err := partitionAuditVerdicts(AuditResult{AuditedFindings: verdicts}, expected); err == nil {
 			t.Fatal("invalid verdict coverage accepted")
 		}
 	}
@@ -180,11 +180,11 @@ func TestAuditIncludesCodePathFilesAndReplacesPath(t *testing.T) {
 		if !strings.Contains(prompt, `<file path="b.go">`) || !strings.Contains(prompt, "request()") {
 			t.Fatal("audit omitted cross-file path evidence")
 		}
-		return auditReply("First", "a.go"), nil
+		return auditReply(t, req, "First", "a.go"), nil
 	})
 	got, _, _, err := runAuditPhase(context.Background(), doc, "fixture", client, "", config.ModelConfig{Name: "test"},
 		llm.NewPromptLoader(os.DirFS("../../prompts/default")), llm.OutputModeNone,
-		ingest.FileMap(files), .3, nil, "", 1, true, chunk.NewTokenCounter("", nil), nil)
+		ingest.FileMap(files), .3, nil, "", 1, 1, true, chunk.NewTokenCounter("", nil), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,7 +192,7 @@ func TestAuditIncludesCodePathFilesAndReplacesPath(t *testing.T) {
 	if len(steps) != 1 || steps[0].Location.PhysicalLocation.ArtifactLocation.URI != "a.go" {
 		t.Fatal("audit failed to replace analysis path", steps)
 	}
-	uncertain := applyAuditVerdicts(doc, AuditResult{AuditedFindings: []AuditedFinding{{OriginalIssue: "First", FilePath: "a.go", StartLine: 1, Verdict: "unverified", CodePath: path}}}, ingest.FileMap(files), .3)
+	uncertain := applyFixtureAuditVerdicts(doc, AuditResult{AuditedFindings: []AuditedFinding{{OriginalIssue: "First", FilePath: "a.go", StartLine: 1, Verdict: "unverified", CodePath: path}}}, ingest.FileMap(files), .3)
 	if len(uncertain.Runs[0].Results[0].CodeFlows) != 0 {
 		t.Fatal("unverified finding retains asserted code flow")
 	}
