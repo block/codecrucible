@@ -135,6 +135,8 @@ phases:
 #   smart-chunking: active
 #   audit: shadow               # unresolved findings use the configured auditor
 #   review: active              # uncertain findings are retained for review
+#   cwe-mapping: shadow         # --jev defaults these new stages to shadow
+#   deduplication: shadow       # explicit active applies conservative merges
 #   model: jev-1.13.0
 #   request-timeout: 30
 #   max-calls: 128               # includes independent rejection verification

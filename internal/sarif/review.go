@@ -125,8 +125,17 @@ func ReviewPresentation(doc SARIFDocument) SARIFDocument {
 						fmt.Fprintf(&markdown, "\n\nEvidence check (%s): %s", escapeMarkdown(check.Status), escapeMarkdown(text))
 					}
 				}
-				// Full evidence is also retained verbatim on the result, including
-				// when a SARIF viewer does not support Markdown details elements.
+				if p.DecisionCWE != nil && p.DecisionCWE.Proposed != "" {
+					text := fmt.Sprintf("CWE classification: %s (%s). Classification does not validate the finding.", p.DecisionCWE.Proposed, p.DecisionCWE.Status)
+					fmt.Fprintf(&plain, "\n\n%s", text)
+					fmt.Fprintf(&markdown, "\n\n%s", escapeMarkdown(text))
+				}
+				for _, duplicate := range p.Deduplicated {
+					text := fmt.Sprintf("Consolidated finding: %s at %s. Original evidence and assessment remain in result.properties.deduplicatedFindings.", duplicate.Rule.ShortDescription.Text, reviewLocation(duplicate.Result))
+					fmt.Fprintf(&plain, "\n\n%s", text)
+					fmt.Fprintf(&markdown, "\n\n%s", escapeMarkdown(text))
+				}
+				// Full evidence is retained even without Markdown details support.
 				plain.WriteString("\n\nFull technical details: result.properties.technicalDetails in the SARIF artifact.")
 				fmt.Fprintf(&markdown, "\n\n<details>\n<summary>Technical details</summary>\n\n<pre>%s</pre>\n</details>", html.EscapeString(p.TechnicalDetails))
 			}

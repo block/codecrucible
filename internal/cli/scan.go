@@ -959,6 +959,26 @@ func runScan(cmd *cobra.Command, args []string) (scanErr error) {
 			return err
 		}
 	}
+	merged, err = decisions.mapCWEs(scanCtx, merged)
+	if err != nil {
+		return err
+	}
+	if decisions.enabled("cwe-mapping") {
+		decisions.recordClassificationPhase(metadata, "cwe-mapping")
+		if err := artifacts.WriteSARIF("cwe-mapping", merged); err != nil {
+			return err
+		}
+	}
+	merged, err = decisions.deduplicateFindings(scanCtx, merged)
+	if err != nil {
+		return err
+	}
+	if decisions.enabled("deduplication") {
+		decisions.recordClassificationPhase(metadata, "deduplication")
+		if err := artifacts.WriteSARIF("deduplication", merged); err != nil {
+			return err
+		}
+	}
 
 	slog.Info("analysis complete",
 		"total_findings", len(merged.Runs[0].Results),

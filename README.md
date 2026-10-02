@@ -133,7 +133,8 @@ source-input preflight check and does not cap billed runtime spend.
 
 Jev is disabled by default. Existing scans use their configured feature detector,
 chunker, and auditor; setting `TYPESAFE_API_KEY` alone does not enable it.
-Enable all four decision stages with:
+Enable feature detection, chunking, audit and review, and observe proposed CWE
+mapping and deduplication decisions, with:
 
 ```bash
 # Set TYPESAFE_API_KEY in your environment, alongside your usual LLM credentials.
@@ -146,6 +147,10 @@ precedence over `--jev`. Individual stages can also be enabled without that flag
 ```bash
 codecrucible scan ./my-repo --jev --jev-audit off
 codecrucible scan ./my-repo --jev-audit shadow --jev-review active
+# Evaluate the new stages without enabling the other Jev stages:
+codecrucible scan ./my-repo --jev-cwe-mapping shadow --jev-deduplication shadow
+# Explicitly apply their decisions:
+codecrucible scan ./my-repo --jev-cwe-mapping active --jev-deduplication active
 ```
 
 | Flag | Active behavior | Uncertainty or failure |
@@ -154,10 +159,14 @@ codecrucible scan ./my-repo --jev-audit shadow --jev-review active
 | `--jev-smart-chunking` | Scores the additional context of candidate source scopes, then adds accepted grouping hints to the existing import graph. | Missing scopes skip the request. Failed batches keep earlier hints. File boundaries and token limits remain enforced. |
 | `--jev-audit` | Checks reachability, attacker control, operation, impact, and mitigation separately. Rejection still requires an exact blocking span and a second verification request. | Sends unresolved findings to the existing auditor. Exhausted audit retries retain unaudited findings with a warning. |
 | `--jev-review` | Checks individual report assertions and identifies supported, contradicted, unsupported, or unresolved statements. Identical claim/evidence checks are reused within the phase. | Preserves every finding, with the specific disagreement or missing context available in SARIF. |
+| `--jev-cwe-mapping` | Classifies final findings against a bounded shortlist from the pinned CWE 4.20 catalog. Records original and proposed labels and updates each affected SARIF rule independently. | Uncertain, outside-candidate, and MITRE review-required mappings preserve the original label. Classification never removes findings or certifies their validity. |
+| `--jev-deduplication` | Compares findings sharing a cited source scope. Strong duplicate and shared-root answers consolidate display entries into the highest-severity representative. | Uncertain pairs remain separate. Every merge preserves the full original result and rule, locations, code flows, and decision provenance. No transitive merges are inferred. |
 
 Shadow mode makes Jev requests and records proposed decisions without changing
 findings or grouping. `--skip-feature-detection` and `--skip-audit` still apply;
-final review is independent of audit. Feature detection and smart chunking are
+final review, CWE mapping and deduplication are independent of audit. CWE mapping
+and deduplication default to **shadow** under `--jev`; explicit `active` is required
+to apply their decisions. Feature detection and smart chunking are
 skipped when their existing single-chunk conditions do not require them.
 
 `--dependency-grouping` independently enables enhanced local dependency grouping
@@ -174,12 +183,14 @@ original finding prose and does not generate refined descriptions or new finding
 
 ```yaml
 decisions:
-  enabled: false                 # true enables unspecified stages
+  enabled: false                 # new mapping/deduplication stages start in shadow
   dependency-grouping: false     # deterministic; independent of Jev
   # feature-detection: active    # off | shadow | active
   # smart-chunking: active
   # audit: shadow
   # review: active
+  # cwe-mapping: shadow
+  # deduplication: shadow
   model: jev-1.13.0
   request-timeout: 30             # seconds per HTTP attempt
   max-calls: 128                  # logical requests, including verification
@@ -206,7 +217,12 @@ Shadow outcomes are proposed decisions. Per-finding records include an immutable
 source text and credentials. Feature artifacts distinguish `detected_features`
 from `retained_features` and record unknown or unavailable observations. Review
 also writes `results.review.sarif`, with assertion statuses and explicit reuse
-provenance in finding properties.
+provenance in finding properties. The new stages write `results.cwe-mapping.sarif`
+and `results.deduplication.sarif`. Mapping records the candidate IDs and catalog
+version; merged findings retain their original records in
+`properties.deduplicatedFindings`. CWE mapping does not rerun the earlier
+CWE-dependent deduplication. These policies require evaluation on human-reviewed
+findings before their accuracy or savings can be claimed.
 `--phase-output-dir` puts these alongside the other phase artifacts; stdout scans
 need that flag to retain them. The usage report includes every Jev attempt under
 `decision.<stage>`, including retries and unknown usage from failed requests.

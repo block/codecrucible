@@ -305,11 +305,13 @@ func TestOptionalJevCLIUsesOriginalPipelineUnlessEnabled(t *testing.T) {
 	}{
 		{name: "disabled", auditCalls: 1},
 		{name: "dependency control without key", flags: []string{"--dependency-grouping"}, auditCalls: 1},
-		{name: "enabled", flags: []string{"--jev"}, decisionCalls: 2, jevAudit: true},
-		{name: "per-stage overrides", flags: []string{"--jev", "--jev-audit", "off", "--jev-review", "off"}, auditCalls: 1},
-		{name: "skip audit", flags: []string{"--jev", "--skip-audit"}, decisionCalls: 1},
+		{name: "enabled", flags: []string{"--jev"}, decisionCalls: 3, jevAudit: true},
+		{name: "per-stage overrides", flags: []string{"--jev", "--jev-audit", "off", "--jev-review", "off", "--jev-cwe-mapping", "off", "--jev-deduplication", "off"}, auditCalls: 1},
+		{name: "skip audit", flags: []string{"--jev", "--skip-audit"}, decisionCalls: 2},
 		{name: "review only", flags: []string{"--jev-review", "active"}, auditCalls: 1, decisionCalls: 1},
-		{name: "unavailable", flags: []string{"--jev"}, auditCalls: 1, decisionCalls: 2, failure: true},
+		{name: "CWE mapping only", flags: []string{"--jev-cwe-mapping", "shadow"}, auditCalls: 1, decisionCalls: 1},
+		{name: "deduplication only", flags: []string{"--jev-deduplication", "active"}, auditCalls: 1},
+		{name: "unavailable", flags: []string{"--jev"}, auditCalls: 1, decisionCalls: 3, failure: true},
 		{name: "dry run without key", flags: []string{"--jev", "--dry-run"}, dryRun: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

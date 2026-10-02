@@ -1,0 +1,18 @@
+Copyright © 2006–2026, The MITRE Corporation.
+CWE is a trademark of The MITRE Corporation.
+
+CWE™ is free to use by any organization or individual for any research,
+development, and/or commercial purposes, per these CWE Terms of Use.
+Accordingly, The MITRE Corporation hereby grants you a non-exclusive,
+royalty-free license to use CWE for research, development, and commercial
+purposes. Any copy you make for such purposes is authorized on the condition
+that you reproduce MITRE’s copyright designation and this license in any
+such copy. CWE is a trademark of The MITRE Corporation.
+
+Source: https://cwe.mitre.org/about/termsofuse.html
+Catalog: https://cwe.mitre.org/data/xml/cwec_v4.20.xml.zip
+XML SHA-256: 1f5a78bd62e00f86436b4fe32d5034a57e8f0da88e4063b2072b664ae510912e
+
+catalog.json contains extracted names, descriptions, mapping notes and
+relationships from CWE 4.20. The extraction script is generate.py.
+No endorsement by MITRE is implied.

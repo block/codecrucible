@@ -27,6 +27,26 @@ func TestJevConfigurationIsOptIn(t *testing.T) {
 	if cfg.Decisions.Audit != "off" || cfg.Decisions.FeatureDetection != "active" || cfg.Decisions.Review != "active" || cfg.Decisions.SmartChunking != "active" {
 		t.Fatalf("modes: %+v", cfg.Decisions.Modes())
 	}
+	if cfg.Decisions.CWEMapping != "shadow" || cfg.Decisions.Deduplication != "shadow" {
+		t.Fatal("new stages must start in shadow mode under --jev")
+	}
+}
+
+func TestClassificationStageConfiguration(t *testing.T) {
+	t.Setenv("TYPESAFE_API_KEY", "test")
+	t.Setenv("DECISIONS_CWE_MAPPING", "active")
+	t.Setenv("DECISIONS_DEDUPLICATION", "shadow")
+	v := viper.New()
+	SetDefaults(v)
+	BindEnvVars(v)
+	cfg, err := Load(v)
+	if err != nil || cfg.Decisions.CWEMapping != "active" || cfg.Decisions.Deduplication != "shadow" || cfg.Decisions.Audit != "off" {
+		t.Fatalf("config %+v: %v", cfg, err)
+	}
+	v.Set("decisions.deduplication", "merge")
+	if _, err := Load(v); err == nil {
+		t.Fatal("accepted invalid mode")
+	}
 }
 func TestJevConfigurationRejectsUnknownAndBadModes(t *testing.T) {
 	for _, setting := range []struct {

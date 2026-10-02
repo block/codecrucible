@@ -18,6 +18,8 @@ type Decisions struct {
 	SmartChunking      string  `mapstructure:"smart-chunking"`
 	Audit              string  `mapstructure:"audit"`
 	Review             string  `mapstructure:"review"`
+	CWEMapping         string  `mapstructure:"cwe-mapping"`
+	Deduplication      string  `mapstructure:"deduplication"`
 	Model              string  `mapstructure:"model"`
 	URL                string  `mapstructure:"base-url"`
 	APIKey             string  `mapstructure:"api-key" json:"-"`
@@ -28,7 +30,7 @@ type Decisions struct {
 }
 
 func (d Decisions) Modes() map[string]string {
-	return map[string]string{"feature-detection": d.FeatureDetection, "smart-chunking": d.SmartChunking, "audit": d.Audit, "review": d.Review}
+	return map[string]string{"feature-detection": d.FeatureDetection, "smart-chunking": d.SmartChunking, "audit": d.Audit, "review": d.Review, "cwe-mapping": d.CWEMapping, "deduplication": d.Deduplication}
 }
 func (d Decisions) AnyEnabled() bool {
 	for _, mode := range d.Modes() {
@@ -39,19 +41,21 @@ func (d Decisions) AnyEnabled() bool {
 	return false
 }
 func decisionDefaults(v *viper.Viper) {
+	v.SetDefault("decisions.cwe-mapping", "")
+	v.SetDefault("decisions.deduplication", "")
 	for k, val := range map[string]any{"enabled": false, "dependency-grouping": false, "feature-detection": "", "smart-chunking": "", "audit": "", "review": "", "model": decision.Model, "base-url": "https://api.typesafe.ai/v1/systemone", "request-timeout": 30, "max-calls": 128, "retries": 2, "input-price-per-million": decision.InputPricePerMillion} {
 		v.SetDefault("decisions."+k, val)
 	}
 }
 func decisionEnv(v *viper.Viper) {
-	for _, key := range []string{"enabled", "dependency-grouping", "feature-detection", "smart-chunking", "audit", "review", "model", "base-url", "request-timeout", "max-calls", "retries", "input-price-per-million"} {
+	for _, key := range []string{"enabled", "dependency-grouping", "feature-detection", "smart-chunking", "audit", "review", "cwe-mapping", "deduplication", "model", "base-url", "request-timeout", "max-calls", "retries", "input-price-per-million"} {
 		_ = v.BindEnv("decisions." + key)
 	}
 	_ = v.BindEnv("decisions.api-key", "TYPESAFE_API_KEY")
 }
 func validateDecisions(v *viper.Viper, d *Decisions) error {
 	allowed := map[string]bool{}
-	for _, key := range []string{"enabled", "dependency-grouping", "feature-detection", "smart-chunking", "audit", "review", "model", "base-url", "api-key", "request-timeout", "max-calls", "retries", "input-price-per-million"} {
+	for _, key := range []string{"enabled", "dependency-grouping", "feature-detection", "smart-chunking", "audit", "review", "cwe-mapping", "deduplication", "model", "base-url", "api-key", "request-timeout", "max-calls", "retries", "input-price-per-million"} {
 		allowed[key] = true
 	}
 	for key := range v.GetStringMap("decisions") {
@@ -59,11 +63,16 @@ func validateDecisions(v *viper.Viper, d *Decisions) error {
 			return fmt.Errorf("unknown decisions setting %q", key)
 		}
 	}
-	for _, mode := range []*string{&d.FeatureDetection, &d.SmartChunking, &d.Audit, &d.Review} {
+	for _, mode := range []*string{&d.FeatureDetection, &d.SmartChunking, &d.Audit, &d.Review, &d.CWEMapping, &d.Deduplication} {
 		if *mode == "" {
 			*mode = "off"
 			if d.Enabled {
 				*mode = "active"
+				// New classification/merge policies begin observationally. Applying
+				// them requires an explicit per-stage active setting.
+				if mode == &d.CWEMapping || mode == &d.Deduplication {
+					*mode = "shadow"
+				}
 			}
 		}
 		if *mode != "off" && *mode != "shadow" && *mode != "active" {

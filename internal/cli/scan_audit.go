@@ -484,6 +484,7 @@ func applyAuditVerdicts(
 	confirmed := 0
 	unverified := 0
 	coerced := 0
+	cweAssignments := map[string]sarif.CWEAssignment{}
 
 	for _, result := range run.Results {
 
@@ -561,6 +562,9 @@ func applyAuditVerdicts(
 		}
 
 		// Apply refinements.
+		if af.RefinedCWEID != "" {
+			cweAssignments[props.FindingID] = sarif.CWEAssignment{ID: af.RefinedCWEID, Source: "generative_audit"}
+		}
 		switch af.Verdict {
 		case "refined":
 			refined++
@@ -670,6 +674,9 @@ func applyAuditVerdicts(
 	run.Tool.Driver.Rules = rules
 	doc.Runs[0] = run
 
+	if len(cweAssignments) > 0 {
+		return sarif.ApplyCWEAssignments(doc, cweAssignments)
+	}
 	return doc
 }
 

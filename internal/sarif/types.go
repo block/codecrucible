@@ -148,14 +148,47 @@ type DecisionCheck struct {
 
 // FindingProperties keeps full evidence available outside the inline annotation.
 type FindingProperties struct {
-	FindingID        string              `json:"findingId,omitempty"`
-	DecisionAudit    *DecisionAssessment `json:"decisionAudit,omitempty"`
-	DecisionReview   *DecisionAssessment `json:"decisionReview,omitempty"`
-	Summary          string              `json:"summary,omitempty"`
-	Remediation      string              `json:"remediation,omitempty"`
-	TechnicalDetails string              `json:"technicalDetails,omitempty"`
-	AuditStatus      string              `json:"auditStatus,omitempty"`
-	AuditConfidence  *float64            `json:"auditConfidence,omitempty"`
+	FindingID        string                `json:"findingId,omitempty"`
+	CWEChanges       []CWEChange           `json:"cweChanges,omitempty"`
+	DecisionCWE      *CWEAssessment        `json:"decisionCWE,omitempty"`
+	Deduplicated     []DeduplicatedFinding `json:"deduplicatedFindings,omitempty"`
+	DecisionAudit    *DecisionAssessment   `json:"decisionAudit,omitempty"`
+	DecisionReview   *DecisionAssessment   `json:"decisionReview,omitempty"`
+	Summary          string                `json:"summary,omitempty"`
+	Remediation      string                `json:"remediation,omitempty"`
+	TechnicalDetails string                `json:"technicalDetails,omitempty"`
+	AuditStatus      string                `json:"auditStatus,omitempty"`
+	AuditConfidence  *float64              `json:"auditConfidence,omitempty"`
+}
+
+type CWEChange struct {
+	Original string `json:"original"`
+	Assigned string `json:"assigned"`
+	Source   string `json:"source"`
+}
+
+type CWEAssessment struct {
+	Status         string   `json:"status"`
+	Original       string   `json:"original,omitempty"`
+	Proposed       string   `json:"proposed,omitempty"`
+	Applied        bool     `json:"applied"`
+	CatalogVersion string   `json:"catalogVersion"`
+	Candidates     []string `json:"candidates,omitempty"`
+	Model          string   `json:"model,omitempty"`
+	Policy         string   `json:"policy"`
+	Probability    float64  `json:"probability,omitempty"`
+	Confidence     *float64 `json:"confidence,omitempty"`
+	EvidenceIDs    []string `json:"evidenceIds,omitempty"`
+}
+
+// DeduplicatedFinding preserves the complete original record and its rule.
+// Merging display entries must never destroy source evidence or audit provenance.
+type DeduplicatedFinding struct {
+	Result      SARIFResult `json:"result"`
+	Rule        SARIFRule   `json:"rule"`
+	Model       string      `json:"model"`
+	Policy      string      `json:"policy"`
+	EvidenceIDs []string    `json:"evidenceIds"`
 }
 
 type SARIFCodeFlow struct {

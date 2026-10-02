@@ -1,13 +1,15 @@
 # Optional Jev integration
 
 The runtime integration covers feature detection, smart chunking, audit, and
-finding review. All stages default to off. `--jev` enables unspecified stages;
+finding review, CWE mapping, and semantic deduplication. All stages default to off.
+`--jev` enables the original four unspecified stages in active mode and the new
+mapping/deduplication stages in shadow mode;
 individual `--jev-<stage> off|shadow|active` settings override it. A credential
 alone never enables requests. Generative analysis remains the discovery pass.
 
 ## Phase contracts
 
-Policy `jev-decisions-v3` uses different question shapes for different actions.
+Policy `jev-decisions-v4` uses different question shapes for different actions.
 Choice describes categorical evidence, Noul tests a scoped yes/no proposition,
 and Score ranks optional context. Question builders preserve the untrusted-source
 boundary without instructing a Noul or Score to return a Choice category.
@@ -18,6 +20,8 @@ boundary without instructing a Noul or Score to return a Choice category.
 | Smart chunking | A bounded identifier shortlist selects pairs not already connected by the grouping graph. Score compares no demonstrated benefit, supporting context, and directly connected operations. | Accepted pairs add optional edges. The existing chunker still controls file accounting and token packing. |
 | Audit | Separate Choice checks for reachability, attacker control, operation, impact, and mitigation. Noul checks for relevant control evidence; Choice locates a candidate blocking span. | All support prerequisites must pass to avoid generative audit. Rejection requires an exact blocking span and a second source-grounded verification. Everything unresolved goes to the existing auditor. |
 | Review | Choice for each sentence-sized assertion, using the original claim and exact source as shared state. | Record supported, contradicted, unsupported, insufficient context, unavailable, or nonfactual status. Keep every finding. Reuse only identical claim/evidence/context checks within this phase. |
+| CWE mapping | Choice among at most 16 retrieved CWE definitions, plus outside-candidate and insufficient-evidence options. | Explicit active mode applies strong Allowed mappings. Review-required and uncertain suggestions preserve the original label. |
+| Deduplication | Separate Choice questions for complete root-cause identity and an exact shared source scope. | Explicit active mode consolidates strongly supported duplicates and preserves the full original records. Every duplicate is compared directly with its representative. |
 
 Feature observations separate `observed_present`, `absent`, `unknown`, and
 `unavailable` from `retained_for_analysis`. A low Noul value is not proof of
@@ -89,6 +93,41 @@ ordering from the evidence. Uncertainty routes to the generative auditor.
 
 ## Bounds, policies, and accounting
 
+CWE mapping runs after audit and review, followed by semantic deduplication. Each
+has independent `off|shadow|active` controls and its own SARIF phase artifact.
+The original location/CWE deduplication still runs before audit; remapping does
+not rerun it. Generative audit CWE refinements now update the individual finding's
+rule and taxonomy as well, without changing its finding ID or other users of a
+shared rule. Classification history records both assignments.
+
+The offline CWE 4.20 catalog includes official definitions and mapping notes with
+the MITRE license and source hash in `internal/cwe/NOTICE`. Candidate retrieval is
+lexical and bounded, so candidate coverage must be evaluated separately from
+classification accuracy. Deprecated, Prohibited and Discouraged entries are not
+offered. Allowed-with-Review entries can be proposed but are never automatically
+applied by Jev. A classification is about the reported source mechanism and does
+not establish exploitability. No network catalog download happens during a scan.
+
+The new stages select complete cited Go declarations, or full files for other
+languages, without recursively requiring caller coverage. Their scope is
+classification, not reachability proof. Invalid citations, oversized claims, or
+incomplete cited scopes retain the original result. Mapping supplies at most 9K
+serialized evidence bytes and 10K definition bytes; deduplication supplies at most
+7.5K evidence bytes and 4.5K claim bytes per finding. The client still enforces the
+complete serialized request limits. Shared scopes shortlist deduplication pairs;
+matching prose, CWE, or a common file alone cannot authorize a merge. At most 128
+pairs and the stage's allocated request quota are considered. Unexamined findings
+are retained. Already consolidated inputs are not merged again.
+
+Deduplication chooses the highest-severity representative, breaking ties by stable
+finding ID, and compares every member directly to that unchanged representative.
+It never uses a transitive closure of pairwise answers. Active merges retain all
+locations and code flows, and archive each complete original result and rule in
+`properties.deduplicatedFindings`. SARIF help identifies the consolidated entries.
+Input/output finding counters reconcile every merge. Shadow mode records proposed
+merges with unchanged SARIF findings. Independent human evaluation remains
+necessary before treating these policies or thresholds as effective.
+
 The client uses the [TypeSafe API](https://docs.typesafe.ai/api), pins
 `jev-1.13.0`, and records the returned model. The configured input rate is $0.042
 per million tokens with free output, from the
@@ -97,7 +136,8 @@ accounting estimates, not invoices.
 
 Default bounds are 128 logical requests, two retries, and a 30-second timeout
 per attempt. The logical cap is divided equally among enabled stages, including
-shadow stages. Remainders go in feature detection, grouping, audit, review order.
+shadow stages. Remainders go in feature detection, grouping, audit, review, CWE
+mapping, deduplication order.
 Disabled stages reserve nothing. Unused capacity is not borrowed. Verification
 requests consume the audit quota. Quotas are recorded in the scan recipe.
 

@@ -44,6 +44,8 @@ func newPhaseArtifactWriter(cfg *config.Config) phaseArtifactWriter {
 			"usage":             filepath.Join(dir, "usage.json"),
 			"decisions":         filepath.Join(dir, "decisions.json"),
 			"review":            filepath.Join(dir, "review.sarif"),
+			"cwe-mapping":       filepath.Join(dir, "cwe-mapping.sarif"),
+			"deduplication":     filepath.Join(dir, "deduplication.sarif"),
 		}}
 	}
 
@@ -66,6 +68,8 @@ func newPhaseArtifactWriter(cfg *config.Config) phaseArtifactWriter {
 		"usage":             filepath.Join(dir, stem+".usage.json"),
 		"decisions":         filepath.Join(dir, stem+".decisions.json"),
 		"review":            filepath.Join(dir, stem+".review.sarif"),
+		"cwe-mapping":       filepath.Join(dir, stem+".cwe-mapping.sarif"),
+		"deduplication":     filepath.Join(dir, stem+".deduplication.sarif"),
 	}}
 }
 
