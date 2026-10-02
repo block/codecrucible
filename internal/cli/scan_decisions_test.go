@@ -42,6 +42,53 @@ func answersFor(req decision.Request, choices map[string]string) decision.Respon
 	for id, q := range req.Questions {
 		choice := choices[id]
 		if choice == "" {
+			switch id {
+			case "reachability", "attacker_control":
+				if choices["coverage"] == "sufficient" {
+					choice = "established"
+				}
+			case "operation", "impact":
+				if choices["coverage"] == "sufficient" {
+					choice = "supported"
+				}
+			case "mitigation":
+				if choices["verdict"] == "supported" {
+					choice = "ineffective"
+				}
+				if choices["verdict"] == "blocked" {
+					choice = "effective"
+				}
+			default:
+				if strings.HasPrefix(id, "assertion_") {
+					choice = choices["claim_support"]
+				}
+			}
+		}
+		if q.Type == "noul" {
+			value := 0.0
+			if id == "blocking_present" && choices["verdict"] == "blocked" {
+				value = 1
+			}
+			if choices[strings.TrimSuffix(id, "_signal")] == "present" {
+				value = 1
+			}
+			if choice == "yes" {
+				value = 1
+			}
+			out.Answers[id] = decision.Answer{Type: "noul", Noul: &value}
+			continue
+		}
+		if q.Type == "score" {
+			value, confidence := 0.0, 1.0
+			probabilities := map[string]float64{"0": 1, "1": 0, "2": 0}
+			if choice == "related" {
+				value = 2
+				probabilities = map[string]float64{"0": 0, "1": 0, "2": 1}
+			}
+			out.Answers[id] = decision.Answer{Type: "score", Score: &value, Confidence: &confidence, Probabilities: probabilities}
+			continue
+		}
+		if choice == "" {
 			choice = "insufficient_evidence"
 		}
 		out.Answers[id] = strongAnswer(q, choice)
@@ -89,7 +136,7 @@ func TestJevAuditRoutesOnlySufficientFindings(t *testing.T) {
 		t.Fatal("mutated original analysis")
 	}
 }
-func TestJevRejectionRequiresIndependentExactEvidenceValidation(t *testing.T) {
+func TestJevRejectionRequiresSecondExactEvidenceValidation(t *testing.T) {
 	for _, verification := range []string{"blocked", "not_blocked", "insufficient_evidence", "error"} {
 		t.Run(verification, func(t *testing.T) {
 			d, doc := decisionFixture(t)
@@ -165,7 +212,7 @@ func TestJevReviewRetainsUncertainFindingsAndEvidenceProvenance(t *testing.T) {
 		t.Fatal("review silently suppressed a finding")
 	}
 	for _, r := range reviewed.Runs[0].Results {
-		if r.Properties.DecisionReview.Status != "needs_review" || len(r.Properties.DecisionReview.EvidenceIDs) == 0 {
+		if r.Properties.DecisionReview.Status != "contradicted" || len(r.Properties.DecisionReview.EvidenceIDs) == 0 {
 			t.Fatal("missing explicit validation requirement")
 		}
 	}
@@ -203,6 +250,7 @@ func TestJevFeatureSelectionRequiresCompleteCoverage(t *testing.T) {
 func TestJevGroupingPreservesDependenciesAndFileCoverage(t *testing.T) {
 	d, _ := decisionFixture(t)
 	d.cfg.SmartChunking = "active"
+	d.cfg.DependencyGrouping = true
 	d.files = map[string]string{"route/a.go": "package a\nfunc customerHandler() { customerService() }\n" + strings.Repeat("// route behavior\n", 20), "storage/b.go": "package b\nfunc customerService() { customerHandler() }\n" + strings.Repeat("// storage behavior\n", 20), "unrelated/c.go": "package c\n" + strings.Repeat("// unrelated behavior\n", 20)}
 	d.graph = map[string][]string{"route/a.go": {"unrelated/c.go"}}
 	d.recorder.Client = evaluateFunc(func(_ context.Context, req decision.Request) (decision.Response, error) {
@@ -240,6 +288,7 @@ func TestJevGroupingPreservesDependenciesAndFileCoverage(t *testing.T) {
 		t.Fatalf("lost files: %v", seen)
 	}
 	d.cfg.SmartChunking = "shadow"
+	d.cfg.DependencyGrouping = false
 	baseline := map[string][]string{"one": {"two"}}
 	got, err := d.smartGrouping(context.Background(), baseline)
 	if err != nil || !reflect.DeepEqual(got, baseline) {
@@ -255,6 +304,7 @@ func TestOptionalJevCLIUsesOriginalPipelineUnlessEnabled(t *testing.T) {
 		jevAudit, failure, dryRun bool
 	}{
 		{name: "disabled", auditCalls: 1},
+		{name: "dependency control without key", flags: []string{"--dependency-grouping"}, auditCalls: 1},
 		{name: "enabled", flags: []string{"--jev"}, decisionCalls: 2, jevAudit: true},
 		{name: "per-stage overrides", flags: []string{"--jev", "--jev-audit", "off", "--jev-review", "off"}, auditCalls: 1},
 		{name: "skip audit", flags: []string{"--jev", "--skip-audit"}, decisionCalls: 1},
@@ -266,7 +316,7 @@ func TestOptionalJevCLIUsesOriginalPipelineUnlessEnabled(t *testing.T) {
 			oldV := v
 			t.Cleanup(func() { v = oldV })
 			t.Setenv("TYPESAFE_API_KEY", "test-jev-key")
-			if tc.dryRun {
+			if tc.dryRun || tc.name == "dependency control without key" {
 				t.Setenv("TYPESAFE_API_KEY", "")
 			}
 			analysisCalls, auditCalls, decisionCalls := 0, 0, 0
@@ -284,6 +334,9 @@ func TestOptionalJevCLIUsesOriginalPipelineUnlessEnabled(t *testing.T) {
 					}
 					// Decode criteria into typed questions as the real client sends JSON maps.
 					for id, q := range req.Questions {
+						if q.Type != "choice" {
+							continue
+						}
 						raw := q.Criteria.(map[string]any)
 						typed := map[string]string{}
 						for k, value := range raw {

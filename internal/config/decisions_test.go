@@ -63,3 +63,15 @@ func TestJevEnvironmentAndDryRun(t *testing.T) {
 		t.Fatalf("bad modes: %+v", cfg.Decisions.Modes())
 	}
 }
+
+func TestDependencyGroupingDoesNotEnableJevOrRequireCredential(t *testing.T) {
+	t.Setenv("TYPESAFE_API_KEY", "")
+	v := viper.New()
+	SetDefaults(v)
+	BindEnvVars(v)
+	v.Set("decisions.dependency-grouping", true)
+	cfg, err := Load(v)
+	if err != nil || !cfg.Decisions.DependencyGrouping || cfg.Decisions.AnyEnabled() {
+		t.Fatalf("dependency control enabled model: %+v %v", cfg, err)
+	}
+}

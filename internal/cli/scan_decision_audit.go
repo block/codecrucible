@@ -25,8 +25,14 @@ func (d *scanDecisions) routeAudit(ctx context.Context, doc sarif.SARIFDocument)
 		return doc, routed, nil
 	}
 	mode := d.cfg.Audit
+	outcomePrefix := ""
+	if mode == "shadow" {
+		outcomePrefix = "proposed_"
+	}
 	if !d.auditPolicySupported {
 		d.recorder.Skip("audit", mode, "prompt_set_requires_generative_audit")
+		d.recorder.Action("existing_audit")
+		d.recorder.Outcome(outcomePrefix+"escalate", len(doc.Runs[0].Results))
 		return doc, routed, nil
 	}
 	run := doc.Runs[0]
@@ -43,6 +49,7 @@ func (d *scanDecisions) routeAudit(ctx context.Context, doc sarif.SARIFDocument)
 		if !complete {
 			d.recorder.Skip("audit", mode, "incomplete_source_coverage")
 			d.recorder.FindingCoverage(decisionSubject(finding), selection)
+			d.recorder.Outcome(outcomePrefix+"escalate", 1)
 			queue = append(queue, finding)
 			continue
 		}
@@ -50,6 +57,7 @@ func (d *scanDecisions) routeAudit(ctx context.Context, doc sarif.SARIFDocument)
 		if len(claim) > 6000 {
 			d.recorder.Skip("audit", mode, "claim_exceeds_budget")
 			d.recorder.FindingCoverage(decisionSubject(finding), selection)
+			d.recorder.Outcome(outcomePrefix+"escalate", 1)
 			queue = append(queue, finding)
 			continue
 		}
@@ -60,13 +68,18 @@ func (d *scanDecisions) routeAudit(ctx context.Context, doc sarif.SARIFDocument)
 		if len(choices) < 2 || len(choices) > 255 {
 			d.recorder.Skip("audit", mode, "evidence_choice_limit")
 			d.recorder.FindingCoverage(decisionSubject(finding), selection)
+			d.recorder.Outcome(outcomePrefix+"escalate", 1)
 			queue = append(queue, finding)
 			continue
 		}
 		questions := map[string]decision.Question{
-			"coverage":          decision.Choice("Is the supplied evidence sufficient to settle this specific claim under custom_requirements and supplementary_context? When production_only is true, production reachability must be shown and test/demo-only paths cannot support a vulnerability. Choose insufficient_evidence if reachability, trusted identity, cross-file behavior, framework defaults, runtime configuration, or mitigation ordering requires unshown code. The local import graph is best effort, not proof of complete coverage.", map[string]string{"sufficient": "Every material precondition and relevant control for this claim is visible", "insufficient_evidence": "A material part of the claim remains uncertain"}),
-			"verdict":           decision.Choice("Decide the specific security claim from the source: supported requires attacker reachability, absence of an effective mitigation, and material impact. Blocked requires an effective source-level guard that actually prevents this exact issue. Do not reject on low confidence, missing context, or narrative assertions.", map[string]string{"supported": "The complete claim is supported by source", "blocked": "An exact source-level control disproves the claim", "insufficient_evidence": "Cannot settle the claim from supplied evidence"}),
-			"blocking_evidence": decision.Choice("Which single supplied evidence span contains the effective blocking control for this exact claim? Select none unless the control prevents the claimed attacker action. An unrelated check or a comment is not a blocking control.", choices),
+			"reachability":      decision.Choice("Does the supplied route/caller evidence establish attacker reachability of the claimed operation? Apply production_only, custom_requirements and supplementary_context. Missing registration or deployment prerequisites are insufficient_evidence.", map[string]string{"established": "The claimed attacker can reach the operation under the required scope", "refuted": "Source disproves the claimed reachability", "insufficient_evidence": "A necessary caller or deployment fact is missing"}),
+			"attacker_control":  decision.Choice("Does the supplied source establish attacker control over the specific value or identity asserted in the claim? Distinguish trusted identity from caller-supplied values.", map[string]string{"established": "The claimed attacker controls the specified input", "refuted": "Source establishes the input is not controlled as claimed", "insufficient_evidence": "The input origin cannot be established"}),
+			"operation":         decision.Choice("Does executable source demonstrate the harmful operation described in the claim? Judge this operation alone, without assuming the claimed input origin or impact.", map[string]string{"supported": "The specified operation is visible in source", "contradicted": "Executable source contradicts the claimed operation", "insufficient_evidence": "The operation or required library behavior is unshown"}),
+			"impact":            decision.Choice("Does the supplied source establish the specific security consequence asserted in the claim? Unshown configuration, library behavior, or narrative authority cannot establish impact.", map[string]string{"supported": "The claimed material consequence is established", "contradicted": "Source contradicts the claimed consequence", "insufficient_evidence": "The consequence remains unproven"}),
+			"mitigation":        decision.Choice("Does an executable protection prevent the claimed operation on the relevant shown paths? Check its semantics and ordering. Missing guards or paths are insufficient evidence, not proof of their absence.", map[string]string{"effective": "A visible control prevents this exact claimed operation", "ineffective": "The relevant path is shown and its protections do not prevent the claimed operation", "insufficient_evidence": "The relevant protection or path semantics are uncertain"}),
+			"blocking_present":  decision.Noul("Does the supplied source contain an executable control that addresses the exact attacker action asserted in the claim? This asks whether relevant control evidence exists, not whether it proves the finding false."),
+			"blocking_evidence": decision.Choice("Which single supplied span contains an effective blocking control for this exact claim? Select none if no supplied span establishes such a control. A comment or unrelated check is not a blocking control.", choices),
 		}
 		state := map[string]any{"claim": claim, "source": evidence, "dependency_graph_coverage": "claim-focused local declarations and callers; symbol matching and local imports are best effort. Unrelated file contents are omitted; coverage is not repository-wide", "supplementary_context": d.supplementary, "custom_requirements": d.requirements, "production_only": d.productionOnly}
 		response, err := d.recorder.Evaluate(ctx, "audit", mode, decisionSubject(finding), state, questions, evidence, complete)
@@ -76,14 +89,13 @@ func (d *scanDecisions) routeAudit(ctx context.Context, doc sarif.SARIFDocument)
 			return doc, routed, ctx.Err()
 		}
 		action := "escalate"
-		if err == nil && decision.Strong(response.Answers["coverage"], "sufficient") {
-			if decision.Strong(response.Answers["verdict"], "supported") && decision.Strong(response.Answers["blocking_evidence"], "none") {
+		if err == nil {
+			a := response.Answers
+			if decision.Strong(a["reachability"], "established") && decision.Strong(a["attacker_control"], "established") && decision.Strong(a["operation"], "supported") && decision.Strong(a["impact"], "supported") && decision.Strong(a["mitigation"], "ineffective") && decision.Strong(a["blocking_evidence"], "none") {
 				action = "retain"
 			}
-			blocking := response.Answers["blocking_evidence"]
-			if decision.Strong(response.Answers["verdict"], "blocked") && blocking.Choice != "none" && decision.Strong(blocking, blocking.Choice) {
-				// Resolve the model's ID to exact source, then ask a fresh, unanchored
-				// verification question. An unknown span or conflicting check escalates.
+			blocking := a["blocking_evidence"]
+			if decision.Strong(a["reachability"], "established") && decision.Strong(a["operation"], "supported") && decision.Strong(a["mitigation"], "effective") && decision.StrongYes(a["blocking_present"]) && blocking.Choice != "none" && decision.Strong(blocking, blocking.Choice) {
 				for _, e := range evidence {
 					if e.ID != blocking.Choice {
 						continue
@@ -98,6 +110,8 @@ func (d *scanDecisions) routeAudit(ctx context.Context, doc sarif.SARIFDocument)
 				}
 			}
 		}
+		outcome := outcomePrefix + action
+		d.recorder.Records[verdictRecord].Outcomes = map[string]int{outcome: 1}
 		if mode == "shadow" {
 			d.recorder.Records[verdictRecord].Action = "shadow_proposed_" + action
 			d.recorder.Action("shadow_proposed_" + action)
@@ -133,7 +147,7 @@ func (d *scanDecisions) verifyBlock(ctx context.Context, mode, subject, claim st
 	if !ok || !valid || exact.ID != block.ID || strings.TrimSpace(block.Text) == "" {
 		return false, nil
 	}
-	q := decision.Choice("Independently test the claim against the proposed blocking span. Does executable code in this exact span prevent the specific attacker action on every relevant path shown? Verify guard ordering, attacker control, bypasses, and material prerequisites. Comments, defensive-sounding names, unrelated checks, and missing context cannot justify rejection.", map[string]string{"blocked": "This exact executable control conclusively prevents the specific claim", "not_blocked": "The control does not prevent this claim", "insufficient_evidence": "Coverage or semantics cannot establish prevention"})
+	q := decision.Choice("Recheck the claim against the proposed blocking span. Does executable code in this exact span prevent the specific attacker action on every relevant path shown? Verify guard ordering, attacker control, bypasses, and material prerequisites. Comments, defensive-sounding names, unrelated checks, and missing context cannot justify rejection.", map[string]string{"blocked": "This exact executable control conclusively prevents the specific claim", "not_blocked": "The control does not prevent this claim", "insufficient_evidence": "Coverage or semantics cannot establish prevention"})
 	response, err := d.recorder.Evaluate(ctx, "audit", mode, subject+":blocking-validation", map[string]any{"claim": claim, "proposed_blocking_span": block, "source": evidence, "supplementary_context": d.supplementary, "custom_requirements": d.requirements, "production_only": d.productionOnly}, map[string]decision.Question{"blocking_validation": q}, evidence, true)
 	d.recorder.FindingCoverage(subject+":blocking-validation", decision.EvidenceSelection{Evidence: evidence})
 	return err == nil && decision.Strong(response.Answers["blocking_validation"], "blocked"), err

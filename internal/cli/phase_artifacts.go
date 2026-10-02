@@ -20,16 +20,18 @@ type phaseArtifactWriter struct {
 }
 
 type featureDetectionArtifact struct {
-	Phase            string   `json:"phase"`
-	Status           string   `json:"status"`
-	Repo             string   `json:"repo,omitempty"`
-	Provider         string   `json:"provider,omitempty"`
-	Model            string   `json:"model,omitempty"`
-	DetectedFeatures []string `json:"detected_features"`
-	TokenCorrection  float64  `json:"token_correction,omitempty"`
-	Reason           string   `json:"reason,omitempty"`
-	Error            string   `json:"error,omitempty"`
-	Fallback         string   `json:"fallback,omitempty"`
+	Phase               string                        `json:"phase"`
+	Status              string                        `json:"status"`
+	Repo                string                        `json:"repo,omitempty"`
+	Provider            string                        `json:"provider,omitempty"`
+	Model               string                        `json:"model,omitempty"`
+	DetectedFeatures    []string                      `json:"detected_features"`
+	RetainedFeatures    []string                      `json:"retained_features,omitempty"`
+	FeatureObservations []decision.FeatureObservation `json:"feature_observations,omitempty"`
+	TokenCorrection     float64                       `json:"token_correction,omitempty"`
+	Reason              string                        `json:"reason,omitempty"`
+	Error               string                        `json:"error,omitempty"`
+	Fallback            string                        `json:"fallback,omitempty"`
 }
 
 func newPhaseArtifactWriter(cfg *config.Config) phaseArtifactWriter {

@@ -91,3 +91,46 @@ func TestClaimEvidenceMissingDependencyCannotBecomeComplete(t *testing.T) {
 		t.Fatal("missing safe per-finding coverage diagnostics")
 	}
 }
+
+func TestCallbackEvidenceIncludesRegistrationWithoutUnrelatedHandlerExpansion(t *testing.T) {
+	files := map[string]string{
+		"handler.go": "package app\nfunc Handle() { Shared(); Sink() }\n",
+		"shared.go":  "package app\nfunc Shared() {}\n",
+		"auth.go":    "package app\nfunc Auth() { if !Trusted() { return } }\n",
+		"other.go":   "package app\nfunc Other() { Shared()\n" + strings.Repeat(" println(\"unrelated\")\n", 300) + "}\n",
+		"router.go":  "package app\nfunc Routes() { Use(Auth); Get(\"/one\", Handle); Get(\"/two\", Other) }\n",
+		"main.go":    "package app\nfunc main() { Routes() }\n",
+	}
+	graph := map[string][]string{"handler.go": {"shared.go"}, "other.go": {"shared.go"}, "router.go": {"handler.go", "other.go", "auth.go"}, "main.go": {"router.go"}}
+	got := NewEvidenceIndex(files, graph).Select([]SourceRange{{Path: "handler.go", Start: 2}}, 4000)
+	if !got.Complete() {
+		t.Fatalf("unrelated handler consumed evidence: %+v", got.Gaps)
+	}
+	text := ""
+	for _, e := range got.Evidence {
+		text += e.Text + "\n"
+	}
+	for _, want := range []string{"func Handle", "func Shared", "Get(\"/one\", Handle)", "Use(Auth)", "func Auth", "func main"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("missing callback context %s", want)
+		}
+	}
+	if strings.Contains(text, "func Other") {
+		t.Fatal("expanded unrelated sibling handler")
+	}
+}
+
+func TestGroupingEvidenceFindsRelevantDefinitionsBelowHeaders(t *testing.T) {
+	file := "package app\n" + strings.Repeat("// License\n", 300) + "func Customer() { QueryCustomer() }\n"
+	index := NewEvidenceIndex(map[string]string{"a.go": file}, nil)
+	evidence := index.RelevantEvidence("a.go", map[string]bool{"QueryCustomer": true}, 2000)
+	if len(evidence) != 1 || strings.Contains(evidence[0].Text, "License") {
+		t.Fatal("license text displaced the relevant declaration")
+	}
+	file = "package app\n" + strings.Repeat("\n", 300) + "func Customer() { QueryCustomer() }\n"
+	index = NewEvidenceIndex(map[string]string{"a.go": file}, nil)
+	evidence = index.RelevantEvidence("a.go", map[string]bool{"QueryCustomer": true}, 2000)
+	if len(evidence) != 1 || !strings.Contains(evidence[0].Text, "QueryCustomer()") || evidence[0].Start < 300 {
+		t.Fatalf("missing relevant body: %+v", evidence)
+	}
+}

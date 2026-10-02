@@ -132,10 +132,18 @@ type SARIFResult struct {
 
 // DecisionAssessment records bounded evidence checks separately from audit confidence.
 type DecisionAssessment struct {
-	Status      string   `json:"status"`
-	Model       string   `json:"model,omitempty"`
-	Policy      string   `json:"policy"`
-	EvidenceIDs []string `json:"evidenceIds,omitempty"`
+	Status      string          `json:"status"`
+	Model       string          `json:"model,omitempty"`
+	Policy      string          `json:"policy"`
+	EvidenceIDs []string        `json:"evidenceIds,omitempty"`
+	Checks      []DecisionCheck `json:"checks,omitempty"`
+	ReusedFrom  string          `json:"reusedFrom,omitempty"`
+}
+
+type DecisionCheck struct {
+	ID        string `json:"id"`
+	Assertion string `json:"assertion"`
+	Status    string `json:"status"`
 }
 
 // FindingProperties keeps full evidence available outside the inline annotation.

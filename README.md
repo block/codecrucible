@@ -150,15 +150,21 @@ codecrucible scan ./my-repo --jev-audit shadow --jev-review active
 
 | Flag | Active behavior | Uncertainty or failure |
 | --- | --- | --- |
-| `--jev-feature-detection` | Selects conditional analysis sections for scans that need multiple chunks. A section is omitted only when complete supplied source supports absence. | Includes all sections. Shadow mode runs the existing feature detector. |
-| `--jev-smart-chunking` | Adds bounded semantic grouping hints to local import/dependency edges before the existing chunker packs files. | Keeps successful grouping hints and uses existing dependencies for failed batches. File boundaries and token limits remain enforced. |
-| `--jev-audit` | Resolves sufficiently supported findings without a generative audit; rejects only after an exact blocking span passes a second verification request. | Sends unresolved findings to the existing auditor. Exhausted audit retries retain unaudited findings with a warning. |
-| `--jev-review` | Checks retained findings against source and records support or a manual-validation requirement. | Retains findings and marks review as unavailable or incomplete. |
+| `--jev-feature-detection` | Uses Noul for positive feature evidence and Choice for presence/absence. Only complete supplied source can authorize omission. | Incomplete coverage retains all sections without an active Jev request. Shadow mode runs the existing detector. |
+| `--jev-smart-chunking` | Scores the additional context of candidate source scopes, then adds accepted grouping hints to the existing import graph. | Missing scopes skip the request. Failed batches keep earlier hints. File boundaries and token limits remain enforced. |
+| `--jev-audit` | Checks reachability, attacker control, operation, impact, and mitigation separately. Rejection still requires an exact blocking span and a second verification request. | Sends unresolved findings to the existing auditor. Exhausted audit retries retain unaudited findings with a warning. |
+| `--jev-review` | Checks individual report assertions and identifies supported, contradicted, unsupported, or unresolved statements. Identical claim/evidence checks are reused within the phase. | Preserves every finding, with the specific disagreement or missing context available in SARIF. |
 
 Shadow mode makes Jev requests and records proposed decisions without changing
 findings or grouping. `--skip-feature-detection` and `--skip-audit` still apply;
 final review is independent of audit. Feature detection and smart chunking are
 skipped when their existing single-chunk conditions do not require them.
+
+`--dependency-grouping` independently enables enhanced local dependency grouping
+without Jev or a TypeSafe credential. It is no longer implicit in `--jev`. Use
+`--dependency-grouping --jev-smart-chunking active` to combine deterministic
+dependencies with semantic hints. This separation lets you measure whether Jev
+adds value beyond the dependency graph.
 
 The bundled `default` audit prompt opts into the fixed Jev evidence policy with
 `decision_audit: true` in `audit.yaml`. Other prompt sets keep their generative
@@ -169,6 +175,7 @@ original finding prose and does not generate refined descriptions or new finding
 ```yaml
 decisions:
   enabled: false                 # true enables unspecified stages
+  dependency-grouping: false     # deterministic; independent of Jev
   # feature-detection: active    # off | shadow | active
   # smart-chunking: active
   # audit: shadow
@@ -185,19 +192,30 @@ Flags include `--jev-model`, `--jev-base-url` (the full evaluation endpoint),
 `TYPESAFE_API_KEY`. Dry runs show enabled stages and request caps without
 requiring that credential or calling Jev. HTTP 408/429/5xx and transport failures
 and malformed successful responses share the bounded retry budget; authentication
-errors fall back without a retry loop. Validation failures record fixed categories
+errors fall back without a retry loop. The logical call cap is split equally among
+enabled stages, with any remainder assigned in pipeline order. Unused reservations
+are not borrowed, so early stages cannot exhaust later stages. Blocking verification
+uses the audit reservation. Validation failures record fixed categories
 such as `invalid_response_probability_sum`, without response bodies.
 
 Enabled scans write `results.decisions.json` with evidence references, coverage,
-returned model, policy version, typed answers, and routing actions. Per-finding
-records include an immutable subject ID and categorical coverage gaps. It excludes
-source text and credentials. Review also writes `results.review.sarif`.
+returned model, policy version, typed answers, routing actions, and outcome totals
+by stage. Outcomes distinguish retained categories from omissions, accepted edges
+from measured chunk-placement changes, audit routing, and assertion review results.
+Shadow outcomes are proposed decisions. Per-finding records include an immutable subject ID and categorical coverage gaps. It excludes
+source text and credentials. Feature artifacts distinguish `detected_features`
+from `retained_features` and record unknown or unavailable observations. Review
+also writes `results.review.sarif`, with assertion statuses and explicit reuse
+provenance in finding properties.
 `--phase-output-dir` puts these alongside the other phase artifacts; stdout scans
 need that flag to retain them. The usage report includes every Jev attempt under
 `decision.<stage>`, including retries and unknown usage from failed requests.
 
 Audit and review prioritize cited Go functions, their enclosing guards, referenced
-local declarations and callers. The source index is built once per scan. Other
+local declarations, incoming calls, and handler registrations. Ancestor scopes
+preserve guard ordering and conventional middleware context, while unrelated
+handlers reached through shared helpers do not expand the selection. The source
+index is built once for audit and review. Other
 languages and files that cannot be parsed use full-file evidence. Required scopes
 that cannot fit, missing source and invalid locations cause conservative fallback;
 unrelated Go declarations do not consume the evidence budget. Records marked
@@ -207,9 +225,9 @@ coverage. Jev still has to establish the claim's material prerequisites and cont
 This integration uses an experimental evidence policy. Its routing thresholds
 are not calibrated vulnerability probabilities and never replace SARIF audit
 confidence. Local dependency resolution is best effort. Missing or oversized
-evidence falls back conservatively. Live finding quality and net savings have
-not yet been benchmarked; the [implementation and evaluation notes](docs/plans/jev-integration.md)
-describe the remaining work. Jev spend is additional to the existing `--max-cost`
+evidence falls back conservatively. These policies still need human-reviewed
+efficacy evaluation; the [implementation and evaluation notes](docs/plans/jev-integration.md)
+describe the comparisons and remaining work. Jev spend is additional to the existing `--max-cost`
 source-input preflight estimate.
 
 ## Installation

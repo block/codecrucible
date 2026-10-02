@@ -93,6 +93,7 @@ func ReviewPresentation(doc SARIFDocument) SARIFDocument {
 				if status := reviewStatus(*p); status != "" {
 					text = status + " " + text
 				}
+
 				rule.FullDescription = &SARIFMessage{Text: limitReviewText(text, 1024)}
 			}
 			sort.SliceStable(findings, func(a, b int) bool { return reviewLocation(findings[a]) < reviewLocation(findings[b]) })
@@ -113,6 +114,16 @@ func ReviewPresentation(doc SARIFDocument) SARIFDocument {
 				if status := reviewStatus(*p); status != "" {
 					fmt.Fprintf(&plain, "\n\n%s", status)
 					fmt.Fprintf(&markdown, "\n\n**%s**", escapeMarkdown(status))
+				}
+				if p.DecisionReview != nil {
+					for _, check := range p.DecisionReview.Checks {
+						if check.Status == "supported" || check.Status == "not_applicable" {
+							continue
+						}
+						text := limitReviewText(check.Assertion, 600)
+						fmt.Fprintf(&plain, "\n\nEvidence check (%s): %s", check.Status, text)
+						fmt.Fprintf(&markdown, "\n\nEvidence check (%s): %s", escapeMarkdown(check.Status), escapeMarkdown(text))
+					}
 				}
 				// Full evidence is also retained verbatim on the result, including
 				// when a SARIF viewer does not support Markdown details elements.
@@ -142,7 +153,18 @@ func reviewStatus(p FindingProperties) string {
 		if status != "" {
 			status += " "
 		}
-		status += "Evidence review requires manual validation."
+		switch p.DecisionReview.Status {
+		case "contradicted":
+			status += "Evidence review found a source contradiction; manual validation is required."
+		case "unsupported":
+			status += "Evidence review found an unsupported assertion; manual validation is required."
+		case "insufficient_context":
+			status += "Evidence review has insufficient context; manual validation is required."
+		case "unavailable":
+			status += "Evidence review was unavailable; manual validation is required."
+		default:
+			status += "Evidence review requires manual validation."
+		}
 	}
 	return status
 }

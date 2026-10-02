@@ -12,18 +12,19 @@ import (
 // Decisions is separate from generative phases. Credentials never appear in
 // scan recipes or decision artifacts, and a key alone never enables Jev.
 type Decisions struct {
-	Enabled          bool    `mapstructure:"enabled"`
-	FeatureDetection string  `mapstructure:"feature-detection"`
-	SmartChunking    string  `mapstructure:"smart-chunking"`
-	Audit            string  `mapstructure:"audit"`
-	Review           string  `mapstructure:"review"`
-	Model            string  `mapstructure:"model"`
-	URL              string  `mapstructure:"base-url"`
-	APIKey           string  `mapstructure:"api-key" json:"-"`
-	Timeout          int     `mapstructure:"request-timeout"`
-	MaxCalls         int     `mapstructure:"max-calls"`
-	Retries          int     `mapstructure:"retries"`
-	InputPrice       float64 `mapstructure:"input-price-per-million"`
+	Enabled            bool    `mapstructure:"enabled"`
+	DependencyGrouping bool    `mapstructure:"dependency-grouping"`
+	FeatureDetection   string  `mapstructure:"feature-detection"`
+	SmartChunking      string  `mapstructure:"smart-chunking"`
+	Audit              string  `mapstructure:"audit"`
+	Review             string  `mapstructure:"review"`
+	Model              string  `mapstructure:"model"`
+	URL                string  `mapstructure:"base-url"`
+	APIKey             string  `mapstructure:"api-key" json:"-"`
+	Timeout            int     `mapstructure:"request-timeout"`
+	MaxCalls           int     `mapstructure:"max-calls"`
+	Retries            int     `mapstructure:"retries"`
+	InputPrice         float64 `mapstructure:"input-price-per-million"`
 }
 
 func (d Decisions) Modes() map[string]string {
@@ -38,19 +39,19 @@ func (d Decisions) AnyEnabled() bool {
 	return false
 }
 func decisionDefaults(v *viper.Viper) {
-	for k, val := range map[string]any{"enabled": false, "feature-detection": "", "smart-chunking": "", "audit": "", "review": "", "model": decision.Model, "base-url": "https://api.typesafe.ai/v1/systemone", "request-timeout": 30, "max-calls": 128, "retries": 2, "input-price-per-million": decision.InputPricePerMillion} {
+	for k, val := range map[string]any{"enabled": false, "dependency-grouping": false, "feature-detection": "", "smart-chunking": "", "audit": "", "review": "", "model": decision.Model, "base-url": "https://api.typesafe.ai/v1/systemone", "request-timeout": 30, "max-calls": 128, "retries": 2, "input-price-per-million": decision.InputPricePerMillion} {
 		v.SetDefault("decisions."+k, val)
 	}
 }
 func decisionEnv(v *viper.Viper) {
-	for _, key := range []string{"enabled", "feature-detection", "smart-chunking", "audit", "review", "model", "base-url", "request-timeout", "max-calls", "retries", "input-price-per-million"} {
+	for _, key := range []string{"enabled", "dependency-grouping", "feature-detection", "smart-chunking", "audit", "review", "model", "base-url", "request-timeout", "max-calls", "retries", "input-price-per-million"} {
 		_ = v.BindEnv("decisions." + key)
 	}
 	_ = v.BindEnv("decisions.api-key", "TYPESAFE_API_KEY")
 }
 func validateDecisions(v *viper.Viper, d *Decisions) error {
 	allowed := map[string]bool{}
-	for _, key := range []string{"enabled", "feature-detection", "smart-chunking", "audit", "review", "model", "base-url", "api-key", "request-timeout", "max-calls", "retries", "input-price-per-million"} {
+	for _, key := range []string{"enabled", "dependency-grouping", "feature-detection", "smart-chunking", "audit", "review", "model", "base-url", "api-key", "request-timeout", "max-calls", "retries", "input-price-per-million"} {
 		allowed[key] = true
 	}
 	for key := range v.GetStringMap("decisions") {

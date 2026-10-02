@@ -84,9 +84,9 @@ func newScanMetadata(cfg *config.Config) *sarif.ScanMetadata {
 		})
 		m.Execution.ContextSources = append(m.Execution.ContextSources, sarif.ContextExecution{SourceIndex: i, Status: "not_loaded", Compression: "not_requested"})
 	}
-	if cfg.Decisions.AnyEnabled() {
+	if cfg.Decisions.AnyEnabled() || cfg.Decisions.DependencyGrouping {
 		d := cfg.Decisions
-		m.Recipe.Decisions = &sarif.DecisionRecipe{Modes: d.Modes(), Model: d.Model, Endpoint: safeURL(d.URL), Policy: decision.PolicyVersion, Timeout: d.Timeout, MaxCalls: d.MaxCalls, Retries: d.Retries, InputPrice: d.InputPrice}
+		m.Recipe.Decisions = &sarif.DecisionRecipe{DependencyGrouping: d.DependencyGrouping, StageCallLimits: decisionStageLimits(d), Modes: d.Modes(), Model: d.Model, Endpoint: safeURL(d.URL), Policy: decision.PolicyVersion, Timeout: d.Timeout, MaxCalls: d.MaxCalls, Retries: d.Retries, InputPrice: d.InputPrice}
 	}
 	return m
 }

@@ -30,9 +30,11 @@ func (s EvidenceSelection) Complete() bool { return len(s.Evidence) > 0 && len(s
 
 type sourceUnit struct {
 	SourceRange
-	names, refs, calls map[string]bool
-	function           bool
-	header             bool
+	names, refs map[string]bool
+	controls    map[string]bool
+	function    bool
+	header      bool
+	codeStart   int
 }
 type indexedSource struct {
 	units  []*sourceUnit
@@ -63,7 +65,17 @@ func NewEvidenceIndex(files map[string]string, graph map[string][]string) *Evide
 			if err == nil {
 				source.parsed = true
 				for _, decl := range file.Decls {
-					unit := &sourceUnit{SourceRange: SourceRange{path, positions.Position(decl.Pos()).Line, positions.Position(decl.End()).Line}, names: map[string]bool{}, refs: map[string]bool{}, calls: map[string]bool{}}
+					unit := &sourceUnit{SourceRange: SourceRange{path, positions.Position(decl.Pos()).Line, positions.Position(decl.End()).Line}, names: map[string]bool{}, refs: map[string]bool{}}
+					unit.codeStart = unit.Start
+					unit.controls = map[string]bool{}
+					controlRefs := func(node ast.Node) {
+						ast.Inspect(node, func(n ast.Node) bool {
+							if id, ok := n.(*ast.Ident); ok {
+								unit.controls[id.Name] = true
+							}
+							return true
+						})
+					}
 					switch d := decl.(type) {
 					case *ast.FuncDecl:
 						unit.names[d.Name.Name] = true
@@ -88,15 +100,26 @@ func NewEvidenceIndex(files map[string]string, graph map[string][]string) *Evide
 						}
 					}
 					ast.Inspect(decl, func(node ast.Node) bool {
+						if conditional, ok := node.(*ast.IfStmt); ok {
+							controlRefs(conditional.Cond)
+						}
 						if id, ok := node.(*ast.Ident); ok {
 							unit.refs[id.Name] = true
 						}
 						if call, ok := node.(*ast.CallExpr); ok {
+							name := ""
 							switch fun := call.Fun.(type) {
 							case *ast.Ident:
-								unit.calls[fun.Name] = true
+								name = fun.Name
 							case *ast.SelectorExpr:
-								unit.calls[fun.Sel.Name] = true
+								name = fun.Sel.Name
+							}
+							// Conventional middleware registration is extra context,
+							// never proof that a guard applies to a particular route.
+							if name == "Use" || name == "With" {
+								for _, arg := range call.Args {
+									controlRefs(arg)
+								}
 							}
 						}
 						return true
@@ -120,6 +143,8 @@ func (index *EvidenceIndex) Select(cited []SourceRange, budget int) EvidenceSele
 	out := EvidenceSelection{}
 	queue := []*sourceUnit{}
 	seen := map[*sourceUnit]bool{}
+	followCallers := map[*sourceUnit]bool{}
+	callerContext := map[*sourceUnit]bool{}
 	gapSeen := map[CoverageGap]bool{}
 	gap := func(span SourceRange, reason string) {
 		g := CoverageGap{span, reason}
@@ -150,6 +175,7 @@ func (index *EvidenceIndex) Select(cited []SourceRange, budget int) EvidenceSele
 		covered := false
 		for _, unit := range index.sources[span.Path].units {
 			if unit.Start <= span.Start && unit.End >= span.End {
+				followCallers[unit] = true
 				add(unit)
 				covered = true
 				break
@@ -157,7 +183,9 @@ func (index *EvidenceIndex) Select(cited []SourceRange, budget int) EvidenceSele
 		}
 		if !covered {
 			// Package-level or multi-declaration spans require the full file.
-			add(&sourceUnit{SourceRange: SourceRange{span.Path, 1, len(strings.Split(strings.TrimSuffix(content, "\n"), "\n"))}})
+			unit := &sourceUnit{SourceRange: SourceRange{span.Path, 1, len(strings.Split(strings.TrimSuffix(content, "\n"), "\n"))}}
+			followCallers[unit] = true
+			add(unit)
 		}
 	}
 	if len(cited) == 0 {
@@ -201,26 +229,43 @@ func (index *EvidenceIndex) Select(cited []SourceRange, budget int) EvidenceSele
 				add(header)
 			}
 		}
-		paths := append([]string{unit.Path}, index.graph[unit.Path]...)
-		sort.Strings(paths)
-		for _, path := range paths {
-			dependency, ok := index.sources[path]
-			if !ok {
-				gap(SourceRange{Path: path}, "missing_source")
-				continue
-			}
-			for _, candidate := range dependency.units {
-				if !source.parsed || !dependency.parsed || intersects(unit.refs, candidate.names) {
-					add(candidate)
+		// Ancestor scopes preserve registration and guard ordering. Following all
+		// their outgoing handlers would turn one route into the whole application.
+		{
+			paths := append([]string{unit.Path}, index.graph[unit.Path]...)
+			sort.Strings(paths)
+			for _, path := range paths {
+				dependency, ok := index.sources[path]
+				if !ok {
+					gap(SourceRange{Path: path}, "missing_source")
+					continue
+				}
+				for _, candidate := range dependency.units {
+					references := unit.refs
+					if callerContext[unit] {
+						references = unit.controls
+					}
+					if !source.parsed || !dependency.parsed || intersects(references, candidate.names) {
+						add(candidate)
+					}
 				}
 			}
 		}
-		if unit.function {
+		if unit.function && followCallers[unit] {
 			callers := append([]string{unit.Path}, index.reverse[unit.Path]...)
 			sort.Strings(callers)
 			for _, path := range callers {
 				for _, caller := range index.sources[path].units {
-					if intersects(unit.names, caller.calls) {
+					// Function values passed to routers/middleware are incoming uses
+					// even though the callback itself is not the CallExpr target.
+					if caller != unit && caller.function && intersects(unit.names, caller.refs) {
+						if seen[caller] && !followCallers[caller] {
+							queue = append(queue, caller)
+						}
+						followCallers[caller] = true
+						if !seen[caller] {
+							callerContext[caller] = true
+						}
 						add(caller)
 					}
 				}
@@ -236,4 +281,50 @@ func intersects(left, right map[string]bool) bool {
 		}
 	}
 	return false
+}
+
+// RelevantEvidence selects complete declarations using shared identifiers, not
+// the file header. Missing or oversized scopes cannot authorize a grouping hint.
+func (index *EvidenceIndex) RelevantEvidence(path string, terms map[string]bool, budget int) []Evidence {
+	type candidate struct {
+		unit  *sourceUnit
+		score int
+	}
+	candidates := []candidate{}
+	for _, unit := range index.sources[path].units {
+		if unit.header {
+			continue
+		}
+		score := 0
+		for name := range terms {
+			if unit.refs[name] {
+				score++
+			}
+			if unit.names[name] {
+				score += 2
+			}
+		}
+		if score > 0 || !index.sources[path].parsed {
+			candidates = append(candidates, candidate{unit, score})
+		}
+	}
+	sort.SliceStable(candidates, func(i, j int) bool { return candidates[i].score > candidates[j].score })
+	out := []Evidence{}
+	for _, candidate := range candidates {
+		u := candidate.unit
+		e, ok := SourceEvidence(path, index.files[path], max(u.Start, u.codeStart), u.End)
+		if !ok {
+			continue
+		}
+		encoded, _ := json.Marshal(e)
+		if len(encoded)+1 > budget {
+			continue
+		}
+		budget -= len(encoded) + 1
+		out = append(out, e)
+		if len(out) == 3 {
+			break
+		}
+	}
+	return out
 }

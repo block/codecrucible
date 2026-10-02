@@ -25,15 +25,20 @@ type scanDecisions struct {
 	recorder             *decision.Recorder
 	files                map[string]string
 	graph                map[string][]string
+	groupingBaseline     map[string][]string
 }
 
 func newScanDecisions(cfg config.Decisions, files ingest.FileMap, sources []ingest.SourceFile) (*scanDecisions, error) {
-	if !cfg.AnyEnabled() {
+	if !cfg.AnyEnabled() && !cfg.DependencyGrouping {
 		return nil, nil
 	}
-	client, err := decision.New(decision.Options{URL: cfg.URL, APIKey: cfg.APIKey, Model: cfg.Model, Timeout: time.Duration(cfg.Timeout) * time.Second, MaxCalls: cfg.MaxCalls, Retries: cfg.Retries, InputPrice: cfg.InputPrice})
-	if err != nil {
-		return nil, err
+	var client decision.Evaluator
+	if cfg.AnyEnabled() {
+		var err error
+		client, err = decision.New(decision.Options{URL: cfg.URL, APIKey: cfg.APIKey, Model: cfg.Model, Timeout: time.Duration(cfg.Timeout) * time.Second, MaxCalls: cfg.MaxCalls, Retries: cfg.Retries, InputPrice: cfg.InputPrice, StageLimits: decisionStageLimits(cfg)})
+		if err != nil {
+			return nil, err
+		}
 	}
 	graph := ingest.ResolveDependencies(sources)
 	var index *decision.EvidenceIndex
@@ -42,7 +47,30 @@ func newScanDecisions(cfg config.Decisions, files ingest.FileMap, sources []inge
 	}
 	return &scanDecisions{evidenceIndex: index, cfg: cfg, recorder: &decision.Recorder{Client: client}, files: map[string]string(files), graph: graph}, nil
 }
-func (d *scanDecisions) enabled(stage string) bool { return d != nil && d.cfg.Modes()[stage] != "off" }
+
+func decisionStageLimits(cfg config.Decisions) map[string]int {
+	stages := []string{}
+	for _, stage := range []string{"feature-detection", "smart-chunking", "audit", "review"} {
+		if mode := cfg.Modes()[stage]; mode == "active" || mode == "shadow" {
+			stages = append(stages, stage)
+		}
+	}
+	limits := map[string]int{}
+	for i, stage := range stages {
+		limits[stage] = cfg.MaxCalls / len(stages)
+		if i < cfg.MaxCalls%len(stages) {
+			limits[stage]++
+		}
+	}
+	return limits
+}
+func (d *scanDecisions) enabled(stage string) bool {
+	if d == nil {
+		return false
+	}
+	mode := d.cfg.Modes()[stage]
+	return mode == "active" || mode == "shadow"
+}
 func (d *scanDecisions) featureDetection(ctx context.Context, loader *llm.PromptLoader) ([]string, bool, error) {
 	if !d.enabled("feature-detection") {
 		return nil, false, nil
@@ -79,29 +107,73 @@ func (d *scanDecisions) featureDetection(ctx context.Context, loader *llm.Prompt
 		names = append(names, f)
 	}
 	sort.Strings(names)
+	// In active mode incomplete coverage cannot omit a single category. Avoid
+	// paying for answers that cannot change this outcome; shadow can measure them.
+	if !complete && mode == "active" {
+		d.recorder.Skip("feature-detection", mode, "incomplete_coverage_all_sections")
+		d.recorder.Action("all_sections")
+		for _, name := range names {
+			d.recorder.Records[len(d.recorder.Records)-1].Features = append(d.recorder.Records[len(d.recorder.Records)-1].Features, decision.FeatureObservation{Name: name, Status: "unknown", Retained: true})
+		}
+		d.recorder.Outcome("categories_retained", len(names))
+		d.recorder.Outcome("categories_omitted", 0)
+		return names, true, nil
+	}
 	questions := map[string]decision.Question{}
 	for i, f := range names {
 		sort.Strings(descriptions[f])
 		questions[fmt.Sprintf("feature_%d", i)] = decision.Choice("Does the scanned source use feature "+f+"? Associated analysis sections: "+strings.Join(descriptions[f], ", ")+". An absence decision requires complete supplied source coverage; missing a signal in a sample is insufficient evidence.", map[string]string{"present": "Positive source evidence of this feature", "absent": "The complete scanned source establishes this feature is unused", "insufficient_evidence": "Coverage or behavior is uncertain"})
+		questions[fmt.Sprintf("feature_%d_signal", i)] = decision.Noul("Does `source` contain executable use of feature " + f + "? Interpret the feature using these analysis section descriptions: " + strings.Join(descriptions[f], ", ") + ". A dependency name or a comment alone is not executable use. This question concerns positive evidence in the supplied source only.")
 	}
 	response, err := d.recorder.Evaluate(ctx, "feature-detection", mode, "repository", map[string]any{"manifest": manifest, "source": evidence, "coverage_complete": complete}, questions, evidence, complete)
 	if ctx.Err() != nil {
 		return nil, false, ctx.Err()
 	}
-	if mode == "shadow" {
-		d.recorder.Action("existing_feature_detection")
-		return nil, false, nil
-	}
 	if err != nil {
+		if mode == "shadow" {
+			d.recorder.Action("existing_feature_detection")
+			return nil, false, nil
+		}
 		d.recorder.Action("all_sections")
 		slog.Warn("Jev feature detection unavailable; using all sections")
-		return nil, true, nil
+		for _, name := range names {
+			d.recorder.Records[len(d.recorder.Records)-1].Features = append(d.recorder.Records[len(d.recorder.Records)-1].Features, decision.FeatureObservation{Name: name, Status: "unavailable", Retained: true})
+		}
+		d.recorder.Outcome("categories_retained", len(names))
+		d.recorder.Outcome("categories_omitted", 0)
+		return names, true, nil
 	}
 	retained := []string{}
 	for i, f := range names {
-		if !complete || !decision.Strong(response.Answers[fmt.Sprintf("feature_%d", i)], "absent") {
+		positive := decision.StrongYes(response.Answers[fmt.Sprintf("feature_%d_signal", i)])
+		omit := complete && !positive && decision.Strong(response.Answers[fmt.Sprintf("feature_%d", i)], "absent")
+		status := "unknown"
+		if positive {
+			status = "observed_present"
+		} else if omit {
+			status = "absent"
+		}
+		d.recorder.Records[len(d.recorder.Records)-1].Features = append(d.recorder.Records[len(d.recorder.Records)-1].Features, decision.FeatureObservation{Name: f, Status: status, Retained: !omit})
+		if !omit {
 			retained = append(retained, f)
 		}
+	}
+	// Empty feature lists mean all sections in the existing prompt contract.
+	if len(retained) == 0 {
+		retained = names
+		for i := range d.recorder.Records[len(d.recorder.Records)-1].Features {
+			d.recorder.Records[len(d.recorder.Records)-1].Features[i].Retained = true
+		}
+	}
+	prefix := ""
+	if mode == "shadow" {
+		prefix = "proposed_"
+	}
+	d.recorder.Outcome(prefix+"categories_retained", len(retained))
+	d.recorder.Outcome(prefix+"categories_omitted", len(names)-len(retained))
+	if mode == "shadow" {
+		d.recorder.Action("existing_feature_detection")
+		return nil, false, nil
 	}
 	// Empty retains the historical all-sections convention, including custom prompts.
 	d.recorder.Action("conservative_feature_selection")
@@ -172,6 +244,31 @@ func (d *scanDecisions) recordPhase(m *sarif.ScanMetadata, phase string) {
 			state.Reason = "decision unavailable; conservative fallback"
 			state.Fallback = "all_sections"
 		}
+		if r.Status == "skipped" {
+			state.Status = "skipped"
+			state.Reason = r.Fallback
+			state.Fallback = "all_sections"
+			state.Actual = nil
+		}
 	}
 	m.Execution.Phases[phase] = state
+}
+
+func (d *scanDecisions) featureObservations() []decision.FeatureObservation {
+	for _, record := range d.recorder.Records {
+		if record.Stage == "feature-detection" {
+			return record.Features
+		}
+	}
+	return nil
+}
+
+func (d *scanDecisions) observedFeatures() []string {
+	out := []string{}
+	for _, feature := range d.featureObservations() {
+		if feature.Status == "observed_present" {
+			out = append(out, feature.Name)
+		}
+	}
+	return out
 }

@@ -24,7 +24,7 @@ import (
 
 const Model = "jev-1.13.0"
 const InputPricePerMillion = 0.042
-const PolicyVersion = "jev-decisions-v2"
+const PolicyVersion = "jev-decisions-v3"
 
 var ErrLimit = errors.New("decision request limit reached")
 
@@ -68,14 +68,16 @@ type Options struct {
 	InputPrice         float64
 	// Limits use UTF-8 JSON byte counts as a conservative token upper bound.
 	RequestLimit, StateQuestionLimit int
+	StageLimits                      map[string]int
 	Transport                        http.RoundTripper
 	Backoff                          func(int) time.Duration
 }
 type Client struct {
-	opts  Options
-	http  *http.Client
-	mu    sync.Mutex
-	calls int
+	opts       Options
+	http       *http.Client
+	mu         sync.Mutex
+	calls      int
+	stageCalls map[string]int
 }
 
 func New(opts Options) (*Client, error) {
@@ -113,7 +115,15 @@ func New(opts Options) (*Client, error) {
 			return time.Second*time.Duration(1<<attempt) + time.Duration(rand.IntN(250))*time.Millisecond
 		}
 	}
-	return &Client{opts: opts, http: &http.Client{Transport: opts.Transport, Timeout: opts.Timeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}, nil
+	stageLimits := make(map[string]int, len(opts.StageLimits))
+	for stage, limit := range opts.StageLimits {
+		if limit < 0 {
+			return nil, errors.New("invalid decision stage limit")
+		}
+		stageLimits[stage] = limit
+	}
+	opts.StageLimits = stageLimits
+	return &Client{opts: opts, stageCalls: map[string]int{}, http: &http.Client{Transport: opts.Transport, Timeout: opts.Timeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}, nil
 }
 
 func (c *Client) Evaluate(ctx context.Context, req Request) (Response, error) {
@@ -129,11 +139,13 @@ func (c *Client) Evaluate(ctx context.Context, req Request) (Response, error) {
 		return Response{}, err
 	}
 	c.mu.Lock()
-	if c.calls >= c.opts.MaxCalls {
+	limit, bounded := c.opts.StageLimits[req.Purpose]
+	if c.calls >= c.opts.MaxCalls || (bounded && c.stageCalls[req.Purpose] >= limit) {
 		c.mu.Unlock()
 		return Response{}, ErrLimit
 	}
 	c.calls++
+	c.stageCalls[req.Purpose]++
 	c.mu.Unlock()
 	ctx = usage.WithPhase(ctx, usage.Phase{Name: "decision." + req.Purpose, Provider: "typesafe", PricingModel: c.opts.Model, Pricing: usage.Pricing{InputPerMillion: c.opts.InputPrice}})
 	record := usage.Begin(ctx, "http", c.opts.Model, req.Purpose)

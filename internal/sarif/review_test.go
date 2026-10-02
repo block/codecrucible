@@ -7,6 +7,16 @@ import (
 	"testing"
 )
 
+func TestReviewPresentationShowsEscapedAssertionDisagreement(t *testing.T) {
+	doc := Build(AnalysisResult{SecurityIssues: []SecurityIssue{{Issue: "Unsafe output", FilePath: "a.go", StartLine: 1, Summary: "A source assertion needs checking."}}}, nil, BuilderConfig{})
+	doc.Runs[0].Results[0].Properties.DecisionReview = &DecisionAssessment{Status: "contradicted", Checks: []DecisionCheck{{Assertion: "The output includes <script>.", Status: "contradicted"}}}
+	got := ReviewPresentation(doc)
+	help := got.Runs[0].Tool.Driver.Rules[0].Help.Markdown
+	if !strings.Contains(help, "Evidence check (contradicted)") || !strings.Contains(help, "&lt;script&gt;") || strings.Contains(help, "<script>") {
+		t.Fatalf("missing or unsafe evidence check: %s", help)
+	}
+}
+
 func TestReviewPresentation(t *testing.T) {
 	details := "Payload: <script>alert(1)</script> & `literal`\n\n[Audit confidence: 90%] GATE 0: verbose reasoning."
 	doc := Build(AnalysisResult{SecurityIssues: []SecurityIssue{

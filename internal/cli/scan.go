@@ -550,7 +550,11 @@ func runScan(cmd *cobra.Command, args []string) (scanErr error) {
 		if handled {
 			decisions.recordPhase(metadata, "feature-detection")
 			state := metadata.Execution.Phases["feature-detection"]
-			if err := artifacts.WriteFeatureDetection(featureDetectionArtifact{Phase: "feature-detection", Status: state.Status, Reason: state.Reason, Fallback: state.Fallback, Repo: repoName, Provider: "typesafe", Model: state.Actual.Model, DetectedFeatures: detectedFeatures}); err != nil {
+			actualModel := ""
+			if state.Actual != nil {
+				actualModel = state.Actual.Model
+			}
+			if err := artifacts.WriteFeatureDetection(featureDetectionArtifact{Phase: "feature-detection", Status: state.Status, Reason: state.Reason, Fallback: state.Fallback, Repo: repoName, Provider: "typesafe", Model: actualModel, DetectedFeatures: decisions.observedFeatures(), RetainedFeatures: detectedFeatures, FeatureObservations: decisions.featureObservations()}); err != nil {
 				return err
 			}
 		} else {
@@ -633,6 +637,10 @@ func runScan(cmd *cobra.Command, args []string) (scanErr error) {
 	}
 
 	metadata.Execution.DetectedFeatures = append([]string{}, detectedFeatures...)
+	if decisions != nil && decisions.cfg.FeatureDetection == "active" && len(decisions.featureObservations()) > 0 {
+		metadata.Execution.RetainedFeatures = append([]string{}, detectedFeatures...)
+		metadata.Execution.DetectedFeatures = decisions.observedFeatures()
+	}
 	metadata.Execution.TokenCorrection = tokenCorrection
 
 	// Measure actual prompt token overhead with the resolved features.
@@ -737,6 +745,18 @@ func runScan(cmd *cobra.Command, args []string) (scanErr error) {
 	chunks, err := chunker.Chunk(flatResult, chunkBudget, chunkOpts)
 	if err != nil {
 		return fmt.Errorf("chunking: %w", err)
+	}
+
+	if decisions != nil && decisions.hasAppliedGroupingEdges() {
+		baselineOptions := *chunkOpts
+		baselineOptions.ImportGraph = decisions.groupingBaseline
+		baselineChunks, baselineErr := chunker.Chunk(flatResult, chunkBudget, &baselineOptions)
+		if baselineErr != nil {
+			slog.Warn("grouping placement comparison unavailable", "error", baselineErr)
+			decisions.recorder.Skip("smart-chunking", decisions.cfg.SmartChunking, "placement_comparison_unavailable")
+		} else {
+			decisions.recordGroupingPlacement(baselineChunks, chunks)
+		}
 	}
 
 	slog.Info("chunking complete",

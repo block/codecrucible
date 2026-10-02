@@ -14,14 +14,16 @@ type ScanMetadata struct {
 }
 
 type DecisionRecipe struct {
-	Modes      map[string]string `json:"modes"`
-	Model      string            `json:"model"`
-	Endpoint   string            `json:"endpoint"`
-	Policy     string            `json:"policy"`
-	Timeout    int               `json:"requestTimeoutSeconds"`
-	MaxCalls   int               `json:"maxCalls"`
-	Retries    int               `json:"retries"`
-	InputPrice float64           `json:"inputPricePerMillion"`
+	DependencyGrouping bool              `json:"dependencyGrouping"`
+	StageCallLimits    map[string]int    `json:"stageCallLimits,omitempty"`
+	Modes              map[string]string `json:"modes"`
+	Model              string            `json:"model"`
+	Endpoint           string            `json:"endpoint"`
+	Policy             string            `json:"policy"`
+	Timeout            int               `json:"requestTimeoutSeconds"`
+	MaxCalls           int               `json:"maxCalls"`
+	Retries            int               `json:"retries"`
+	InputPrice         float64           `json:"inputPricePerMillion"`
 }
 
 type ScanRecipe struct {
@@ -100,6 +102,7 @@ type ContextIdentity struct {
 type ScanExecution struct {
 	ArtifactStage    string                    `json:"artifactStage"`
 	Phases           map[string]PhaseExecution `json:"phases"`
+	RetainedFeatures []string                  `json:"retainedFeatures,omitempty"`
 	DetectedFeatures []string                  `json:"detectedFeatures"`
 	TokenCorrection  float64                   `json:"tokenCorrection"`
 	Chunks           ChunkExecution            `json:"chunks"`
