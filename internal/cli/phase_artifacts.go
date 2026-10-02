@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/block/codecrucible/internal/config"
+	"github.com/block/codecrucible/internal/decision"
 	"github.com/block/codecrucible/internal/sarif"
 	"github.com/block/codecrucible/internal/usage"
 )
@@ -39,6 +40,8 @@ func newPhaseArtifactWriter(cfg *config.Config) phaseArtifactWriter {
 			"analysis":          filepath.Join(dir, "analysis.sarif"),
 			"audit":             filepath.Join(dir, "audit.sarif"),
 			"usage":             filepath.Join(dir, "usage.json"),
+			"decisions":         filepath.Join(dir, "decisions.json"),
+			"review":            filepath.Join(dir, "review.sarif"),
 		}}
 	}
 
@@ -59,6 +62,8 @@ func newPhaseArtifactWriter(cfg *config.Config) phaseArtifactWriter {
 		"analysis":          filepath.Join(dir, stem+".analysis.sarif"),
 		"audit":             filepath.Join(dir, stem+".audit.sarif"),
 		"usage":             filepath.Join(dir, stem+".usage.json"),
+		"decisions":         filepath.Join(dir, stem+".decisions.json"),
+		"review":            filepath.Join(dir, stem+".review.sarif"),
 	}}
 }
 
@@ -123,4 +128,8 @@ func writeArtifactFile(path string, data []byte) error {
 
 func (w phaseArtifactWriter) WriteUsage(report usage.Report) error {
 	return w.writeJSON("usage", report)
+}
+
+func (w phaseArtifactWriter) WriteDecisions(report decision.Report) error {
+	return w.writeJSON("decisions", report)
 }

@@ -67,6 +67,9 @@ type FeatureDetectionPrompt struct {
 
 // AuditPrompt represents the parsed audit.yaml template.
 type AuditPrompt struct {
+	// DecisionAudit permits the optional fixed Jev evidence policy to resolve
+	// findings without running this template. Omit for discovery/custom audits.
+	DecisionAudit       bool   `yaml:"decision_audit"`
 	SystemMessage       string `yaml:"system_message"`
 	UserPromptTemplate  string `yaml:"user_prompt_template"`
 	JSONFormattingRules string `yaml:"json_formatting_rules"`

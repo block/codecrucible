@@ -1,0 +1,391 @@
+package cli
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"testing"
+	"testing/fstest"
+
+	"github.com/block/codecrucible/internal/chunk"
+	"github.com/block/codecrucible/internal/config"
+	"github.com/block/codecrucible/internal/decision"
+	"github.com/block/codecrucible/internal/ingest"
+	"github.com/block/codecrucible/internal/llm"
+	"github.com/block/codecrucible/internal/sarif"
+	"github.com/block/codecrucible/internal/usage"
+)
+
+type evaluateFunc func(context.Context, decision.Request) (decision.Response, error)
+
+func (f evaluateFunc) Evaluate(ctx context.Context, r decision.Request) (decision.Response, error) {
+	return f(ctx, r)
+}
+func strongAnswer(q decision.Question, choice string) decision.Answer {
+	one := 1.0
+	p := map[string]float64{}
+	for key := range q.Criteria.(map[string]string) {
+		p[key] = 0
+	}
+	p[choice] = 1
+	return decision.Answer{Type: "choice", Choice: choice, Confidence: &one, Probabilities: p}
+}
+func answersFor(req decision.Request, choices map[string]string) decision.Response {
+	out := decision.Response{Model: decision.Model, Answers: map[string]decision.Answer{}}
+	for id, q := range req.Questions {
+		choice := choices[id]
+		if choice == "" {
+			choice = "insufficient_evidence"
+		}
+		out.Answers[id] = strongAnswer(q, choice)
+	}
+	return out
+}
+func decisionFixture(t *testing.T) (*scanDecisions, sarif.SARIFDocument) {
+	t.Helper()
+	files := map[string]string{"a.go": "package main\nfunc read(input string) {\n execute(input)\n}\n", "b.go": "package main\nfunc read(input string) {\n if !allowed(input) { return }\n execute(input)\n}\n"}
+	doc := sarif.Build(sarif.AnalysisResult{SecurityIssues: []sarif.SecurityIssue{{Issue: "Unchecked input", FilePath: "a.go", StartLine: 3, EndLine: 3, Severity: 8, TechnicalDetails: "Input reaches execute without an allowlist."}, {Issue: "Unchecked input", FilePath: "b.go", StartLine: 4, EndLine: 4, Severity: 8, TechnicalDetails: "Input reaches execute without an allowlist."}}}, sarif.FileMap(files), sarif.BuilderConfig{})
+	d := &scanDecisions{auditPolicySupported: true, cfg: config.Decisions{Audit: "active", Review: "active", FeatureDetection: "off", SmartChunking: "off"}, files: files, graph: map[string][]string{}, recorder: &decision.Recorder{}}
+	return d, doc
+}
+func TestJevAuditRoutesOnlySufficientFindings(t *testing.T) {
+	d, doc := decisionFixture(t)
+	calls := 0
+	d.recorder.Client = evaluateFunc(func(_ context.Context, req decision.Request) (decision.Response, error) {
+		calls++
+		state := req.State.(map[string]any)
+		evidence := state["source"].([]decision.Evidence)
+		choices := map[string]string{"coverage": "sufficient", "verdict": "supported", "blocking_evidence": "none"}
+		if evidence[0].Path == "b.go" {
+			choices["coverage"] = "insufficient_evidence"
+		}
+		return answersFor(req, choices), nil
+	})
+	queue, routed, err := d.routeAudit(context.Background(), doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(queue.Runs[0].Results) != 1 || len(routed.Retained) != 1 || routed.Rejected != 0 || calls != 2 {
+		t.Fatalf("queue=%d routed=%+v calls=%d", len(queue.Runs[0].Results), routed, calls)
+	}
+	result := routed.Retained[0]
+	if result.Properties.AuditStatus != "jev_supported" || result.Properties.AuditConfidence != nil {
+		t.Fatal("Jev probability became audit confidence")
+	}
+	// An unavailable generative auditor must preserve the unresolved finding too.
+	remaining := applyAuditVerdicts(queue, AuditResult{}, ingest.FileMap(d.files), .9)
+	restored := restoreRoutedAudit(remaining, routed)
+	if len(restored.Runs[0].Results) != 2 {
+		t.Fatal("lost finding when unresolved audit failed")
+	}
+	if doc.Runs[0].Results[0].Properties.AuditStatus != "" {
+		t.Fatal("mutated original analysis")
+	}
+}
+func TestJevRejectionRequiresIndependentExactEvidenceValidation(t *testing.T) {
+	for _, verification := range []string{"blocked", "not_blocked", "insufficient_evidence", "error"} {
+		t.Run(verification, func(t *testing.T) {
+			d, doc := decisionFixture(t)
+			doc.Runs[0].Results = doc.Runs[0].Results[1:]
+			calls := 0
+			d.recorder.Client = evaluateFunc(func(_ context.Context, req decision.Request) (decision.Response, error) {
+				calls++
+				if _, ok := req.Questions["blocking_validation"]; ok {
+					if verification == "error" {
+						return decision.Response{}, errors.New("unavailable")
+					}
+					span := req.State.(map[string]any)["proposed_blocking_span"].(decision.Evidence)
+					if !strings.Contains(span.Text, "if !allowed(input)") {
+						t.Fatal("validation not grounded in source")
+					}
+					return answersFor(req, map[string]string{"blocking_validation": verification}), nil
+				}
+				source := req.State.(map[string]any)["source"].([]decision.Evidence)
+				return answersFor(req, map[string]string{"coverage": "sufficient", "verdict": "blocked", "blocking_evidence": source[0].ID}), nil
+			})
+			queue, routed, err := d.routeAudit(context.Background(), doc)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if calls != 2 {
+				t.Fatalf("missing independent check: %d", calls)
+			}
+			wantRejected := 0
+			if verification == "blocked" {
+				wantRejected = 1
+			}
+			if routed.Rejected != wantRejected || len(queue.Runs[0].Results) != 1-wantRejected {
+				t.Fatal("rejection gate failed")
+			}
+		})
+	}
+}
+func TestJevIncompleteAndShadowPreserveFindings(t *testing.T) {
+	d, doc := decisionFixture(t)
+	d.cfg.Audit = "shadow"
+	d.recorder.Client = evaluateFunc(func(_ context.Context, req decision.Request) (decision.Response, error) {
+		return answersFor(req, map[string]string{"coverage": "sufficient", "verdict": "supported", "blocking_evidence": "none"}), nil
+	})
+	queue, routed, err := d.routeAudit(context.Background(), doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(queue, doc) || len(routed.Retained) != 0 || routed.Rejected != 0 {
+		t.Fatal("shadow altered output")
+	}
+	d.cfg.Audit = "active"
+	delete(d.files, "a.go")
+	d.files["b.go"] = strings.Repeat("source\n", 10000)
+	d.recorder.Client = evaluateFunc(func(context.Context, decision.Request) (decision.Response, error) {
+		t.Fatal("incomplete evidence should fall back without a decision")
+		return decision.Response{}, nil
+	})
+	queue, routed, err = d.routeAudit(context.Background(), doc)
+	if err != nil || len(queue.Runs[0].Results) != 2 || len(routed.Retained) != 0 {
+		t.Fatal("incomplete evidence suppressed a finding")
+	}
+}
+func TestJevReviewRetainsUncertainFindingsAndEvidenceProvenance(t *testing.T) {
+	d, doc := decisionFixture(t)
+	d.recorder.Client = evaluateFunc(func(_ context.Context, req decision.Request) (decision.Response, error) {
+		return answersFor(req, map[string]string{"claim_support": "contradicted"}), nil
+	})
+	reviewed, err := d.reviewFindings(context.Background(), doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reviewed.Runs[0].Results) != 2 {
+		t.Fatal("review silently suppressed a finding")
+	}
+	for _, r := range reviewed.Runs[0].Results {
+		if r.Properties.DecisionReview.Status != "needs_review" || len(r.Properties.DecisionReview.EvidenceIDs) == 0 {
+			t.Fatal("missing explicit validation requirement")
+		}
+	}
+	presented := sarif.ReviewPresentation(reviewed)
+	if !strings.Contains(presented.Runs[0].Results[0].Message.Text, "manual validation") {
+		t.Fatal("review uncertainty invisible")
+	}
+	report, _ := json.Marshal(d.recorder.Report())
+	if strings.Contains(string(report), "execute(input)") {
+		t.Fatal("raw source in decision artifact")
+	}
+}
+func TestJevFeatureSelectionRequiresCompleteCoverage(t *testing.T) {
+	loader := llm.NewPromptLoader(fstest.MapFS{"analysis_sections.yaml": &fstest.MapFile{Data: []byte("sections:\n  auth:\n    title: Authentication\n    features: [auth]\n    content: Check authentication\n  storage:\n    title: Storage\n    features: [database]\n    content: Check storage\n  always:\n    title: Always\n    content: Check inputs\n")}})
+	d, _ := decisionFixture(t)
+	d.cfg.FeatureDetection = "active"
+	d.recorder.Client = evaluateFunc(func(_ context.Context, req decision.Request) (decision.Response, error) {
+		return answersFor(req, map[string]string{"feature_0": "present", "feature_1": "absent"}), nil
+	})
+	features, handled, err := d.featureDetection(context.Background(), loader)
+	if err != nil || !handled || !reflect.DeepEqual(features, []string{"auth"}) {
+		t.Fatalf("features=%v handled=%v err=%v", features, handled, err)
+	}
+	d.files["huge.go"] = strings.Repeat("important source\n", 3000)
+	features, handled, err = d.featureDetection(context.Background(), loader)
+	if err != nil || !handled || len(features) != 2 {
+		t.Fatal("partial source pruned a feature")
+	}
+	d.cfg.FeatureDetection = "shadow"
+	_, handled, err = d.featureDetection(context.Background(), loader)
+	if err != nil || handled {
+		t.Fatal("shadow replaced feature detection")
+	}
+}
+func TestJevGroupingPreservesDependenciesAndFileCoverage(t *testing.T) {
+	d, _ := decisionFixture(t)
+	d.cfg.SmartChunking = "active"
+	d.files = map[string]string{"route/a.go": "package a\nfunc customerHandler() { customerService() }\n" + strings.Repeat("// route behavior\n", 20), "storage/b.go": "package b\nfunc customerService() { customerHandler() }\n" + strings.Repeat("// storage behavior\n", 20), "unrelated/c.go": "package c\n" + strings.Repeat("// unrelated behavior\n", 20)}
+	d.graph = map[string][]string{"route/a.go": {"unrelated/c.go"}}
+	d.recorder.Client = evaluateFunc(func(_ context.Context, req decision.Request) (decision.Response, error) {
+		choices := map[string]string{}
+		for id := range req.Questions {
+			choices[id] = "related"
+		}
+		return answersFor(req, choices), nil
+	})
+	graph, err := d.smartGrouping(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(graph["route/a.go"], ","), "unrelated/c.go") {
+		t.Fatal("discarded deterministic dependency")
+	}
+	if !strings.Contains(strings.Join(graph["route/a.go"], ","), "storage/b.go") {
+		t.Fatal("semantic relationship not grouped")
+	}
+	counter := chunk.NewTokenCounter("", nil)
+	chunks, err := chunk.NewChunker(counter, nil).Chunk(ingest.FlattenResult{FileMap: ingest.FileMap(d.files)}, 700, &chunk.ChunkOptions{ImportGraph: graph})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, c := range chunks {
+		if c.Tokens > 700 {
+			t.Fatal("chunk exceeded budget")
+		}
+		for _, p := range c.Paths {
+			seen[p] = true
+		}
+	}
+	if len(seen) != len(d.files) {
+		t.Fatalf("lost files: %v", seen)
+	}
+	d.cfg.SmartChunking = "shadow"
+	baseline := map[string][]string{"one": {"two"}}
+	got, err := d.smartGrouping(context.Background(), baseline)
+	if err != nil || !reflect.DeepEqual(got, baseline) {
+		t.Fatal("shadow changed chunking")
+	}
+}
+
+func TestOptionalJevCLIUsesOriginalPipelineUnlessEnabled(t *testing.T) {
+	for _, tc := range []struct {
+		name                      string
+		flags                     []string
+		auditCalls, decisionCalls int
+		jevAudit, failure, dryRun bool
+	}{
+		{name: "disabled", auditCalls: 1},
+		{name: "enabled", flags: []string{"--jev"}, decisionCalls: 2, jevAudit: true},
+		{name: "per-stage overrides", flags: []string{"--jev", "--jev-audit", "off", "--jev-review", "off"}, auditCalls: 1},
+		{name: "skip audit", flags: []string{"--jev", "--skip-audit"}, decisionCalls: 1},
+		{name: "review only", flags: []string{"--jev-review", "active"}, auditCalls: 1, decisionCalls: 1},
+		{name: "unavailable", flags: []string{"--jev"}, auditCalls: 1, decisionCalls: 2, failure: true},
+		{name: "dry run without key", flags: []string{"--jev", "--dry-run"}, dryRun: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			oldV := v
+			t.Cleanup(func() { v = oldV })
+			t.Setenv("TYPESAFE_API_KEY", "test-jev-key")
+			if tc.dryRun {
+				t.Setenv("TYPESAFE_API_KEY", "")
+			}
+			analysisCalls, auditCalls, decisionCalls := 0, 0, 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasSuffix(r.URL.Path, "systemone") {
+					decisionCalls++
+					if tc.failure {
+						w.WriteHeader(http.StatusServiceUnavailable)
+						return
+					}
+					var req decision.Request
+					if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+						t.Error(err)
+						return
+					}
+					// Decode criteria into typed questions as the real client sends JSON maps.
+					for id, q := range req.Questions {
+						raw := q.Criteria.(map[string]any)
+						typed := map[string]string{}
+						for k, value := range raw {
+							typed[k] = value.(string)
+						}
+						q.Criteria = typed
+						req.Questions[id] = q
+					}
+					response := answersFor(req, map[string]string{"coverage": "sufficient", "verdict": "supported", "blocking_evidence": "none", "claim_support": "supported"})
+					input, output := 20, 4
+					response.Usage = decision.TokenUsage{Input: &input, Output: &output}
+					_ = json.NewEncoder(w).Encode(response)
+					return
+				}
+				var req struct {
+					Model string `json:"model"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+					t.Error(err)
+					return
+				}
+				content := `{"security_issues":[{"issue":"Missing authorization","file_path":"src/main.go","start_line":3,"end_line":3,"severity":8,"cwe_id":"CWE-862","technical_details":"The handler accesses a resource without checking ownership."}],"public_api_routes":[]}`
+				if req.Model == "jev-test-audit" {
+					auditCalls++
+					content = `{"audited_findings":[{"original_issue":"Missing authorization","file_path":"src/main.go","start_line":3,"end_line":3,"verdict":"confirmed","confidence":0.9,"refined_severity":8,"refined_technical_details":"Missing ownership check.","justification":"Visible source evidence.","blocking_code":""}],"new_findings":[],"audit_summary":"checked"}`
+				} else {
+					analysisCalls++
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{"model": req.Model, "choices": []any{map[string]any{"message": map[string]any{"content": content}, "finish_reason": "stop"}}, "usage": map[string]int{"prompt_tokens": 10, "completion_tokens": 2}})
+			}))
+			defer srv.Close()
+			dir := createTestRepo(t)
+			out := filepath.Join(t.TempDir(), "scan.sarif")
+			cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+			cfg := fmt.Sprintf("provider: openai\nmodel: jev-test-analysis\nopenai-api-key: test-key\nbase-url: %s\ncontext-limit: 100000\nmax-output-tokens: 1024\nphases:\n  audit:\n    model: jev-test-audit\ndecisions:\n  retries: 0\n  base-url: %s/v1/systemone\n", srv.URL, srv.URL)
+			if err := os.WriteFile(cfgPath, []byte(cfg), 0600); err != nil {
+				t.Fatal(err)
+			}
+			cmd := NewRootCommand()
+			prompts, err := filepath.Abs("../../prompts/default")
+			if err != nil {
+				t.Fatal(err)
+			}
+			args := []string{"--config", cfgPath, "scan", dir, "--prompts-dir", prompts, "--output", out, "--max-cost", "0"}
+			args = append(args, tc.flags...)
+			cmd.SetArgs(args)
+			if err := cmd.Execute(); err != nil {
+				t.Fatal(err)
+			}
+			if tc.dryRun {
+				if analysisCalls != 0 || auditCalls != 0 || decisionCalls != 0 {
+					t.Fatal("dry run made requests")
+				}
+				return
+			}
+			if auditCalls != tc.auditCalls || decisionCalls != tc.decisionCalls {
+				t.Fatalf("requests: audit=%d Jev=%d; wanted audit=%d Jev=%d", auditCalls, decisionCalls, tc.auditCalls, tc.decisionCalls)
+			}
+			data, err := os.ReadFile(out)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var doc sarif.SARIFDocument
+			if err := json.Unmarshal(data, &doc); err != nil {
+				t.Fatal(err)
+			}
+			if analysisCalls != 1 || len(doc.Runs[0].Results) != 1 {
+				t.Fatal("analysis or findings changed")
+			}
+			if tc.jevAudit {
+				if doc.Runs[0].Results[0].Properties.AuditStatus != "jev_supported" {
+					t.Fatal("missing Jev provenance")
+				}
+				data, err = os.ReadFile(strings.TrimSuffix(out, ".sarif") + ".usage.json")
+				if err != nil {
+					t.Fatal(err)
+				}
+				var report usage.Report
+				if err = json.Unmarshal(data, &report); err != nil {
+					t.Fatal(err)
+				}
+				if report.Phases["decision.audit"].Attempts != 1 || report.Phases["decision.review"].Attempts != 1 {
+					t.Fatal("Jev usage absent from whole scan ledger")
+				}
+			} else if len(tc.flags) == 0 {
+				if _, err := os.Stat(strings.TrimSuffix(out, ".sarif") + ".decisions.json"); !os.IsNotExist(err) {
+					t.Fatal("disabled scan wrote decision artifact")
+				}
+			}
+		})
+	}
+}
+
+func TestJevPreservesCustomAuditPolicy(t *testing.T) {
+	d, doc := decisionFixture(t)
+	d.auditPolicySupported = false
+	d.recorder.Client = evaluateFunc(func(context.Context, decision.Request) (decision.Response, error) {
+		t.Fatal("custom audit bypassed without prompt-set opt-in")
+		return decision.Response{}, nil
+	})
+	queue, routed, err := d.routeAudit(context.Background(), doc)
+	if err != nil || !reflect.DeepEqual(queue, doc) || routed.OriginalCount != 0 {
+		t.Fatal("custom audit changed")
+	}
+}

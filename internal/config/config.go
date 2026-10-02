@@ -78,7 +78,8 @@ type Config struct {
 	// phase; feature-detection and audit inherit from analysis. See
 	// ResolvePhases. Populated by config file (phases.audit.provider: ...)
 	// or env (PHASES_AUDIT_PROVIDER=...).
-	Phases Phases `mapstructure:"phases"`
+	Phases    Phases    `mapstructure:"phases"`
+	Decisions Decisions `mapstructure:"decisions"`
 
 	// Models extends (or overrides) the built-in model registry. Each entry
 	// is passed to RegisterModel at Load time, keyed by Name — so user
@@ -129,11 +130,15 @@ func Load(v *viper.Viper) (*Config, error) {
 		return nil, fmt.Errorf("registering models from config: %w", err)
 	}
 
+	if err := validateDecisions(v, &cfg.Decisions); err != nil {
+		return nil, err
+	}
 	return &cfg, nil
 }
 
 // SetDefaults configures the default values for all config keys.
 func SetDefaults(v *viper.Viper) {
+	decisionDefaults(v)
 	v.SetDefault("verbose", false)
 	v.SetDefault("model", "")
 	v.SetDefault("fail-on-severity", float64(0))
@@ -168,6 +173,7 @@ func SetDefaults(v *viper.Viper) {
 
 // BindEnvVars binds environment variables to Viper keys.
 func BindEnvVars(v *viper.Viper) {
+	decisionEnv(v)
 	// "-" → "_" lets flat keys like context-limit map to CONTEXT_LIMIT.
 	// "." → "_" lets nested keys like phases.audit.provider map to
 	// PHASES_AUDIT_PROVIDER. No existing key contains a dot, so this is

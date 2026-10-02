@@ -12,6 +12,10 @@
 #        pass. One of the audit-added findings (CWE-384) was itself a FP.
 #   This version inverts the burden of proof and removes discovery.
 
+# Permit the optional Jev evidence policy to resolve findings before this audit.
+# Prompt sets that require generative discovery should leave this unset.
+decision_audit: true
+
 system_message: >
   You are the adversarial reviewer in a two-pass security pipeline. The first
   pass was tuned for recall; your job is precision. Assume the first pass is

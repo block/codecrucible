@@ -124,6 +124,22 @@ phases:
   #   model-params:
   #     max_tokens: 8192
 
+# --- Optional Jev decisions ----------------------------------------------
+# Requires TYPESAFE_API_KEY only when enabled. Existing behavior is the default.
+# --jev enables unspecified stages; explicit stage modes take precedence.
+# Shadow records decisions but keeps the existing pipeline's output.
+#
+# decisions:
+#   enabled: false
+#   feature-detection: active    # off | shadow | active
+#   smart-chunking: active
+#   audit: shadow               # unresolved findings use the configured auditor
+#   review: active              # uncertain findings are retained for review
+#   model: jev-1.13.0
+#   request-timeout: 30
+#   max-calls: 128               # includes independent rejection verification
+#   retries: 2
+
 # --- Audit tuning --------------------------------------------------------
 
 # skip-audit: false

@@ -90,8 +90,8 @@ func TestScanUsageIncludesEveryPhaseAndSurvivesAuditFailure(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "scan.sarif")
 	cmd := NewRootCommand()
 	cmd.SetArgs([]string{"--config", cfgPath, "scan", dir, "--prompts-dir", prompts, "--output", out, "--max-cost", "0", "--concurrency", "2"})
-	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "audit") {
-		t.Fatalf("expected audit failure, got %v", err)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("incomplete audit should continue: %v", err)
 	}
 	data, err := os.ReadFile(strings.TrimSuffix(out, ".sarif") + ".usage.json")
 	if err != nil {
@@ -101,7 +101,7 @@ func TestScanUsageIncludesEveryPhaseAndSurvivesAuditFailure(t *testing.T) {
 	if err := json.Unmarshal(data, &report); err != nil {
 		t.Fatal(err)
 	}
-	if report.Status != "failed" || report.SchemaVersion != 1 || report.RunID == "" || report.Total.Complete {
+	if report.Status != "completed" || report.SchemaVersion != 1 || report.RunID == "" || report.Total.Complete {
 		t.Fatalf("bad report: %+v", report)
 	}
 	total := 0

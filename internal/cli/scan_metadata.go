@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/block/codecrucible/internal/config"
+	"github.com/block/codecrucible/internal/decision"
 	"github.com/block/codecrucible/internal/llm"
 	"github.com/block/codecrucible/internal/sarif"
 )
@@ -82,6 +83,10 @@ func newScanMetadata(cfg *config.Config) *sarif.ScanMetadata {
 			Phases: append([]string{}, source.Phases...), Include: append([]string{}, source.Include...), Exclude: append([]string{}, source.Exclude...),
 		})
 		m.Execution.ContextSources = append(m.Execution.ContextSources, sarif.ContextExecution{SourceIndex: i, Status: "not_loaded", Compression: "not_requested"})
+	}
+	if cfg.Decisions.AnyEnabled() {
+		d := cfg.Decisions
+		m.Recipe.Decisions = &sarif.DecisionRecipe{Modes: d.Modes(), Model: d.Model, Endpoint: safeURL(d.URL), Policy: decision.PolicyVersion, Timeout: d.Timeout, MaxCalls: d.MaxCalls, Retries: d.Retries, InputPrice: d.InputPrice}
 	}
 	return m
 }
@@ -244,4 +249,12 @@ func recordChunkOutcome(m *sarif.ScanMetadata, doc sarif.SARIFDocument, err erro
 	} else {
 		m.Execution.Chunks.Completed++
 	}
+}
+
+func recordDecisionPhase(m *sarif.ScanMetadata, phase string, d config.Decisions) {
+	state := m.Execution.Phases[phase]
+	state.Status = "completed"
+	state.Actual = &sarif.PhaseRecipe{Provider: "typesafe", Model: d.Model, BaseURL: safeURL(d.URL), Transport: "http", OutputMode: "typed_decisions", RequestTimeoutSeconds: d.Timeout, ContextLimit: 64000, Tokenizer: "conservative_utf8_bytes", Pricing: sarif.ModelPricing{InputPerMillion: d.InputPrice}}
+	state.RequestPolicy = "Bounded typed Jev decisions; source coverage and evidence checks required; uncertain findings use the generative auditor"
+	m.Execution.Phases[phase] = state
 }

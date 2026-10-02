@@ -94,6 +94,8 @@ pipeline and produces SARIF output suitable for GitHub Code Scanning integration
 	cmd.Flags().StringP("output", "o", "", "write output to file (default: stdout)")
 	cmd.Flags().String("phase-output-dir", "", "write per-phase artifacts to this directory (default: sidecars next to --output)")
 
+	registerDecisionFlags(cmd)
+
 	// Bind scan flags to viper
 	cmd.PreRun = func(cmd *cobra.Command, args []string) {
 		bindScanFlags(cmd)
@@ -142,6 +144,7 @@ var phaseLeaves = map[string]string{
 }
 
 func bindScanFlags(cmd *cobra.Command) {
+	bindDecisionFlags(cmd)
 	// Flat flags map to same-named viper keys.
 	flags := []string{
 		"paths", "fail-on-severity", "max-cost", "dry-run",
@@ -401,6 +404,10 @@ func runScan(cmd *cobra.Command, args []string) (scanErr error) {
 	}
 
 	if cfg.DryRun {
+		if cfg.Decisions.AnyEnabled() {
+			slog.Info("Jev decisions configured (dry run; no requests)", "modes", cfg.Decisions.Modes(), "model", cfg.Decisions.Model, "max_calls", cfg.Decisions.MaxCalls, "retries", cfg.Decisions.Retries)
+			fmt.Printf("  Jev: %v; at most %d logical calls, %d retries each. Decision spend is additional to the source-input estimate.\n", cfg.Decisions.Modes(), cfg.Decisions.MaxCalls, cfg.Decisions.Retries)
+		}
 		fmt.Printf("Dry run — analysis scope:\n")
 		fmt.Printf("  Files: %d (of %d total)\n", stats.Kept, stats.Total)
 		fmt.Printf("  Tokens: %d\n", totalTokens)
@@ -472,10 +479,33 @@ func runScan(cmd *cobra.Command, args []string) (scanErr error) {
 		)
 	}
 
+	decisions, err := newScanDecisions(cfg.Decisions, flatResult.FileMap, filtered)
+	if err != nil {
+		return fmt.Errorf("configuring Jev: %w", err)
+	}
+	if decisions != nil {
+		decisions.requirements = cfg.CustomRequirements
+		decisions.productionOnly = !cfg.IncludeTests
+		if decisions.enabled("audit") && !cfg.SkipAudit {
+			if policy, loadErr := promptLoader.LoadAuditPrompt(); loadErr == nil {
+				decisions.auditPolicySupported = policy.DecisionAudit
+			}
+		}
+		defer func() {
+			if err := artifacts.WriteDecisions(decisions.recorder.Report()); err != nil {
+				scanErr = errors.Join(scanErr, err)
+			}
+		}()
+	}
+
 	// --- Stage 5.25: Load & pack supplementary context ---
 	analysisCtx, auditCtx, err := loadSupplementaryContext(scanCtx, cfg, counter, promptLoader, modelCfg.ContextLimit, metadata)
 	if err != nil {
 		return err
+	}
+
+	if decisions != nil {
+		decisions.supplementary = auditCtx.Rendered
 	}
 
 	// --- Stage 5.5: Estimate whether we need chunking ---
@@ -511,59 +541,72 @@ func runScan(cmd *cobra.Command, args []string) (scanErr error) {
 	var detectedFeatures []string
 	var tokenCorrection float64
 	if !cfg.SkipFeatureDetection && totalTokens > worstCaseBudget {
-		// Multi-chunk scenario: feature detection trims sections and saves tokens.
-		fd := &cfg.Phases.FeatureDetection
-		fdClient, fdEndpoint, fdErr := buildPhaseClient(*fd, cfg)
-		if fdErr != nil {
-			slog.Warn("failed to build feature-detection client; falling back to analysis client",
-				"error", fdErr, "provider", fd.Provider)
-			fdClient, fdEndpoint = client, endpoint
-			fd = analysis
-		} else if fd.ModelCfg.Name != modelCfg.Name || fd.Provider != analysis.Provider {
-			slog.Info("feature detection uses separate configuration",
-				"provider", fd.Provider, "model", fd.ModelCfg.Name)
-		}
-		recordActualPhase(metadata, "feature-detection", *fd, cfg, fdErr != nil)
-		fdOutputMode := llm.OutputModeForConfig(fd.ModelCfg)
-		var fdCorrection float64
-		fdFallback := ""
-		if fdErr != nil {
-			fdFallback = "analysis_client"
-		}
-		detectedFeatures, fdCorrection, err = runFeatureDetection(phaseUsageContext(scanCtx, "feature-detection", *fd, fdFallback), filtered, repoName, fdClient, fdEndpoint, fd.ModelCfg, promptLoader, fdOutputMode, fd.ModelParams, counter)
+		var handled bool
+		detectedFeatures, handled, err = decisions.featureDetection(scanCtx, promptLoader)
 		if err != nil {
-			setPhaseStatus(metadata, "feature-detection", "failed", "using all sections")
-			if wErr := artifacts.WriteFeatureDetection(featureDetectionArtifact{
-				Phase:    "feature-detection",
-				Status:   "failed",
-				Repo:     repoName,
-				Provider: fd.Provider,
-				Model:    fd.ModelCfg.Name,
-				Error:    err.Error(),
-				Fallback: "all_sections",
-			}); wErr != nil {
-				return fmt.Errorf("writing feature-detection artifact: %w", wErr)
-			}
-			slog.Warn("feature detection failed, using all sections", "error", err)
-		} else {
-			setPhaseStatus(metadata, "feature-detection", "completed", "")
-			if wErr := artifacts.WriteFeatureDetection(featureDetectionArtifact{
-				Phase:            "feature-detection",
-				Status:           "completed",
-				Repo:             repoName,
-				Provider:         fd.Provider,
-				Model:            fd.ModelCfg.Name,
-				DetectedFeatures: detectedFeatures,
-				TokenCorrection:  fdCorrection,
-			}); wErr != nil {
-				return fmt.Errorf("writing feature-detection artifact: %w", wErr)
-			}
-			slog.Info("feature detection complete", "features", detectedFeatures)
+			return err
 		}
-		// Calibration is only valid when feature detection hit the same model
-		// as chunk analysis — a different model means a different tokenizer.
-		if fd.ModelCfg.Name == modelCfg.Name {
-			tokenCorrection = fdCorrection
+		if handled {
+			decisions.recordPhase(metadata, "feature-detection")
+			state := metadata.Execution.Phases["feature-detection"]
+			if err := artifacts.WriteFeatureDetection(featureDetectionArtifact{Phase: "feature-detection", Status: state.Status, Reason: state.Reason, Fallback: state.Fallback, Repo: repoName, Provider: "typesafe", Model: state.Actual.Model, DetectedFeatures: detectedFeatures}); err != nil {
+				return err
+			}
+		} else {
+			// Multi-chunk scenario: feature detection trims sections and saves tokens.
+			fd := &cfg.Phases.FeatureDetection
+			fdClient, fdEndpoint, fdErr := buildPhaseClient(*fd, cfg)
+			if fdErr != nil {
+				slog.Warn("failed to build feature-detection client; falling back to analysis client",
+					"error", fdErr, "provider", fd.Provider)
+				fdClient, fdEndpoint = client, endpoint
+				fd = analysis
+			} else if fd.ModelCfg.Name != modelCfg.Name || fd.Provider != analysis.Provider {
+				slog.Info("feature detection uses separate configuration",
+					"provider", fd.Provider, "model", fd.ModelCfg.Name)
+			}
+			recordActualPhase(metadata, "feature-detection", *fd, cfg, fdErr != nil)
+			fdOutputMode := llm.OutputModeForConfig(fd.ModelCfg)
+			var fdCorrection float64
+			fdFallback := ""
+			if fdErr != nil {
+				fdFallback = "analysis_client"
+			}
+			detectedFeatures, fdCorrection, err = runFeatureDetection(phaseUsageContext(scanCtx, "feature-detection", *fd, fdFallback), filtered, repoName, fdClient, fdEndpoint, fd.ModelCfg, promptLoader, fdOutputMode, fd.ModelParams, counter)
+			if err != nil {
+				setPhaseStatus(metadata, "feature-detection", "failed", "using all sections")
+				if wErr := artifacts.WriteFeatureDetection(featureDetectionArtifact{
+					Phase:    "feature-detection",
+					Status:   "failed",
+					Repo:     repoName,
+					Provider: fd.Provider,
+					Model:    fd.ModelCfg.Name,
+					Error:    err.Error(),
+					Fallback: "all_sections",
+				}); wErr != nil {
+					return fmt.Errorf("writing feature-detection artifact: %w", wErr)
+				}
+				slog.Warn("feature detection failed, using all sections", "error", err)
+			} else {
+				setPhaseStatus(metadata, "feature-detection", "completed", "")
+				if wErr := artifacts.WriteFeatureDetection(featureDetectionArtifact{
+					Phase:            "feature-detection",
+					Status:           "completed",
+					Repo:             repoName,
+					Provider:         fd.Provider,
+					Model:            fd.ModelCfg.Name,
+					DetectedFeatures: detectedFeatures,
+					TokenCorrection:  fdCorrection,
+				}); wErr != nil {
+					return fmt.Errorf("writing feature-detection artifact: %w", wErr)
+				}
+				slog.Info("feature detection complete", "features", detectedFeatures)
+			}
+			// Calibration is only valid when feature detection hit the same model
+			// as chunk analysis — a different model means a different tokenizer.
+			if fd.ModelCfg.Name == modelCfg.Name {
+				tokenCorrection = fdCorrection
+			}
 		}
 	} else if cfg.SkipFeatureDetection {
 		slog.Info("feature detection skipped (--skip-feature-detection)")
@@ -679,6 +722,12 @@ func runScan(cmd *cobra.Command, args []string) (scanErr error) {
 		chunkBudget = adjusted
 	}
 
+	if decisions != nil && totalTokens > chunkBudget {
+		importGraph, err = decisions.smartGrouping(scanCtx, importGraph)
+		if err != nil {
+			return err
+		}
+	}
 	chunker := chunk.NewChunker(counter, slog.Default())
 	chunkOpts := &chunk.ChunkOptions{
 		ImportGraph:     importGraph,
@@ -816,46 +865,59 @@ func runScan(cmd *cobra.Command, args []string) (scanErr error) {
 
 	// --- Stage 6.75: Audit phase (CWE-specific scrutiny) ---
 	if !cfg.SkipAudit && len(merged.Runs[0].Results) > 0 {
-		audit := &cfg.Phases.Audit
-		auditClient, auditEndpoint, auditErr := buildPhaseClient(*audit, cfg)
-		if auditErr != nil {
-			slog.Warn("failed to build audit client; falling back to analysis client",
-				"error", auditErr, "provider", audit.Provider)
-			auditClient, auditEndpoint = client, endpoint
-			audit = analysis
-		} else if audit.ModelCfg.Name != modelCfg.Name || audit.Provider != analysis.Provider {
-			slog.Info("audit phase uses separate configuration",
-				"provider", audit.Provider, "model", audit.ModelCfg.Name)
+		var routed routedAudit
+		merged, routed, err = decisions.routeAudit(scanCtx, merged)
+		if err != nil {
+			return err
 		}
-		recordActualPhase(metadata, "audit", *audit, cfg, auditErr != nil)
-		auditOutputMode := llm.OutputModeForConfig(audit.ModelCfg)
+		if len(merged.Runs[0].Results) > 0 {
+			audit := &cfg.Phases.Audit
+			auditClient, auditEndpoint, auditErr := buildPhaseClient(*audit, cfg)
+			if auditErr != nil {
+				slog.Warn("failed to build audit client; falling back to analysis client",
+					"error", auditErr, "provider", audit.Provider)
+				auditClient, auditEndpoint = client, endpoint
+				audit = analysis
+			} else if audit.ModelCfg.Name != modelCfg.Name || audit.Provider != analysis.Provider {
+				slog.Info("audit phase uses separate configuration",
+					"provider", audit.Provider, "model", audit.ModelCfg.Name)
+			}
+			recordActualPhase(metadata, "audit", *audit, cfg, auditErr != nil)
+			auditOutputMode := llm.OutputModeForConfig(audit.ModelCfg)
 
-		auditFallback := ""
-		if auditErr != nil {
-			auditFallback = "analysis_client"
-		}
-		auditedDoc, _, _, auditErr := runAuditPhase(
-			phaseUsageContext(scanCtx, "audit", *audit, auditFallback), merged, repoName,
-			auditClient, auditEndpoint, audit.ModelCfg, promptLoader,
-			auditOutputMode, flatResult.FileMap, cfg.AuditConfidenceThreshold, audit.ModelParams, auditCtx.Rendered,
-			cfg.AuditBatchSize, !cfg.IncludeTests, counter, metadata,
-		)
-		if auditedDoc != nil {
-			merged = *auditedDoc
-		}
-		if auditErr != nil {
-			// A provider request can time out while the scan context is still
-			// healthy. Only cancellation of the scan itself should fail CI.
-			if cmd.Context().Err() != nil {
-				setPhaseStatus(metadata, "audit", "failed", "audit cancelled")
-				merged = markInvocationFailed(merged, "audit cancelled: "+auditErr.Error())
+			auditFallback := ""
+			if auditErr != nil {
+				auditFallback = "analysis_client"
+			}
+			auditedDoc, _, _, auditErr := runAuditPhase(
+				phaseUsageContext(scanCtx, "audit", *audit, auditFallback), merged, repoName,
+				auditClient, auditEndpoint, audit.ModelCfg, promptLoader,
+				auditOutputMode, flatResult.FileMap, cfg.AuditConfidenceThreshold, audit.ModelParams, auditCtx.Rendered,
+				cfg.AuditBatchSize, !cfg.IncludeTests, counter, metadata,
+			)
+			if auditedDoc != nil {
+				merged = *auditedDoc
+			}
+			if auditErr != nil {
+				// A provider request can time out while the scan context is still
+				// healthy. Only cancellation of the scan itself should fail CI.
+				if cmd.Context().Err() != nil {
+					setPhaseStatus(metadata, "audit", "failed", "audit cancelled")
+					merged = markInvocationFailed(merged, "audit cancelled: "+auditErr.Error())
+				} else {
+					setPhaseStatus(metadata, "audit", "incomplete", "unaudited findings retained")
+					merged = markAuditIncomplete(merged, auditErr.Error())
+					slog.Warn("audit incomplete; continuing with unaudited findings", "error", auditErr)
+				}
 			} else {
-				setPhaseStatus(metadata, "audit", "incomplete", "unaudited findings retained")
-				merged = markAuditIncomplete(merged, auditErr.Error())
-				slog.Warn("audit incomplete; continuing with unaudited findings", "error", auditErr)
+				setPhaseStatus(metadata, "audit", "completed", "")
 			}
 		} else {
-			setPhaseStatus(metadata, "audit", "completed", "")
+			decisions.recordPhase(metadata, "audit")
+		}
+		merged = restoreRoutedAudit(merged, routed)
+		if routed.OriginalCount > 0 {
+			slog.Info("Jev audit routing complete", "retained", len(routed.Retained), "rejected", routed.Rejected, "generative_candidates", routed.OriginalCount-len(routed.Retained)-routed.Rejected)
 		}
 		if err := artifacts.WriteSARIF("audit", merged); err != nil {
 			return fmt.Errorf("writing audit artifact: %w", err)
@@ -865,6 +927,16 @@ func runScan(cmd *cobra.Command, args []string) (scanErr error) {
 	} else {
 		slog.Info("audit phase skipped (no findings to audit)")
 		setPhaseStatus(metadata, "audit", "skipped", "no findings")
+	}
+
+	merged, err = decisions.reviewFindings(scanCtx, merged)
+	if err != nil {
+		return err
+	}
+	if decisions.enabled("review") {
+		if err := artifacts.WriteSARIF("review", merged); err != nil {
+			return err
+		}
 	}
 
 	slog.Info("analysis complete",

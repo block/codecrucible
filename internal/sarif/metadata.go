@@ -13,7 +13,19 @@ type ScanMetadata struct {
 	Execution         ScanExecution `json:"execution"`
 }
 
+type DecisionRecipe struct {
+	Modes      map[string]string `json:"modes"`
+	Model      string            `json:"model"`
+	Endpoint   string            `json:"endpoint"`
+	Policy     string            `json:"policy"`
+	Timeout    int               `json:"requestTimeoutSeconds"`
+	MaxCalls   int               `json:"maxCalls"`
+	Retries    int               `json:"retries"`
+	InputPrice float64           `json:"inputPricePerMillion"`
+}
+
 type ScanRecipe struct {
+	Decisions                     *DecisionRecipe        `json:"decisions,omitempty"`
 	ToolVersion                   string                 `json:"toolVersion"`
 	ToolCommit                    string                 `json:"toolCommit"`
 	Phases                        map[string]PhaseRecipe `json:"phases"`

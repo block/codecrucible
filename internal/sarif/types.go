@@ -130,13 +130,23 @@ type SARIFResult struct {
 	Properties *FindingProperties `json:"properties,omitempty"`
 }
 
+// DecisionAssessment records bounded evidence checks separately from audit confidence.
+type DecisionAssessment struct {
+	Status      string   `json:"status"`
+	Model       string   `json:"model,omitempty"`
+	Policy      string   `json:"policy"`
+	EvidenceIDs []string `json:"evidenceIds,omitempty"`
+}
+
 // FindingProperties keeps full evidence available outside the inline annotation.
 type FindingProperties struct {
-	Summary          string   `json:"summary,omitempty"`
-	Remediation      string   `json:"remediation,omitempty"`
-	TechnicalDetails string   `json:"technicalDetails,omitempty"`
-	AuditStatus      string   `json:"auditStatus,omitempty"`
-	AuditConfidence  *float64 `json:"auditConfidence,omitempty"`
+	DecisionAudit    *DecisionAssessment `json:"decisionAudit,omitempty"`
+	DecisionReview   *DecisionAssessment `json:"decisionReview,omitempty"`
+	Summary          string              `json:"summary,omitempty"`
+	Remediation      string              `json:"remediation,omitempty"`
+	TechnicalDetails string              `json:"technicalDetails,omitempty"`
+	AuditStatus      string              `json:"auditStatus,omitempty"`
+	AuditConfidence  *float64            `json:"auditConfidence,omitempty"`
 }
 
 type SARIFCodeFlow struct {

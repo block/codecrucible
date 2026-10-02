@@ -137,7 +137,20 @@ func reviewLocation(r SARIFResult) string {
 }
 
 func reviewStatus(p FindingProperties) string {
+	status := auditReviewStatus(p)
+	if p.DecisionReview != nil && p.DecisionReview.Status != "supported" {
+		if status != "" {
+			status += " "
+		}
+		status += "Evidence review requires manual validation."
+	}
+	return status
+}
+
+func auditReviewStatus(p FindingProperties) string {
 	switch p.AuditStatus {
+	case "jev_supported":
+		return "Jev audit: supported by supplied evidence."
 	case "not_audited":
 		return "Not audited: audit coverage is incomplete; review this finding manually."
 	case "unverified":

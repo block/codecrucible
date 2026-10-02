@@ -129,6 +129,78 @@ its `run_id` to the imported benchmark run. Use `duration_ms` for scan latency;
 benchmrk import time measures a different operation. `--max-cost` remains a
 source-input preflight check and does not cap billed runtime spend.
 
+### Optional Jev decisions
+
+Jev is disabled by default. Existing scans use their configured feature detector,
+chunker, and auditor; setting `TYPESAFE_API_KEY` alone does not enable it.
+Enable all four decision stages with:
+
+```bash
+# Set TYPESAFE_API_KEY in your environment, alongside your usual LLM credentials.
+codecrucible scan ./my-repo --jev --output results.sarif
+```
+
+Each stage accepts `off`, `shadow`, or `active`. An explicit stage setting takes
+precedence over `--jev`. Individual stages can also be enabled without that flag:
+
+```bash
+codecrucible scan ./my-repo --jev --jev-audit off
+codecrucible scan ./my-repo --jev-audit shadow --jev-review active
+```
+
+| Flag | Active behavior | Uncertainty or failure |
+| --- | --- | --- |
+| `--jev-feature-detection` | Selects conditional analysis sections for scans that need multiple chunks. A section is omitted only when complete supplied source supports absence. | Includes all sections. Shadow mode runs the existing feature detector. |
+| `--jev-smart-chunking` | Adds bounded semantic grouping hints to local import/dependency edges before the existing chunker packs files. | Uses the original grouping. File boundaries and token limits remain enforced. |
+| `--jev-audit` | Resolves sufficiently supported findings without a generative audit; rejects only after an exact blocking span passes a second verification request. | Sends unresolved findings to the existing auditor. Exhausted audit retries retain unaudited findings with a warning. |
+| `--jev-review` | Checks retained findings against source and records support or a manual-validation requirement. | Retains findings and marks review as unavailable or incomplete. |
+
+Shadow mode makes Jev requests and records proposed decisions without changing
+findings or grouping. `--skip-feature-detection` and `--skip-audit` still apply;
+final review is independent of audit. Feature detection and smart chunking are
+skipped when their existing single-chunk conditions do not require them.
+
+The bundled `default` audit prompt opts into the fixed Jev evidence policy with
+`decision_audit: true` in `audit.yaml`. Other prompt sets keep their generative
+audit unless they explicitly opt in. Leave this unset for custom audits that
+must discover additional findings or run specialized procedures. Jev preserves
+original finding prose and does not generate refined descriptions or new findings.
+
+```yaml
+decisions:
+  enabled: false                 # true enables unspecified stages
+  # feature-detection: active    # off | shadow | active
+  # smart-chunking: active
+  # audit: shadow
+  # review: active
+  model: jev-1.13.0
+  request-timeout: 30             # seconds per HTTP attempt
+  max-calls: 128                  # logical requests, including verification
+  retries: 2                     # additional attempts per request
+```
+
+Flags include `--jev-model`, `--jev-base-url` (the full evaluation endpoint),
+`--jev-request-timeout`, and `--jev-max-calls`. Environment settings use
+`DECISIONS_…`, such as `DECISIONS_AUDIT=shadow`; the credential is
+`TYPESAFE_API_KEY`. Dry runs show enabled stages and request caps without
+requiring that credential or calling Jev. HTTP 408/429/5xx and transport failures
+have bounded retries; authentication errors fall back without a retry loop.
+
+Enabled scans write `results.decisions.json` with evidence references, coverage,
+returned model, policy version, typed answers, and routing actions. It excludes
+source text and credentials. Review also writes `results.review.sarif`.
+`--phase-output-dir` puts these alongside the other phase artifacts; stdout scans
+need that flag to retain them. The usage report includes every Jev attempt under
+`decision.<stage>`, including retries and unknown usage from failed requests.
+
+This integration uses an experimental evidence policy. Its routing thresholds
+are not calibrated vulnerability probabilities and never replace SARIF audit
+confidence. Local dependency resolution is best effort. Missing or oversized
+evidence falls back conservatively. Live finding quality and net savings have
+not yet been benchmarked; the [implementation and evaluation notes](docs/plans/jev-integration.md)
+describe the remaining work. Jev spend is additional to the existing `--max-cost`
+source-input preflight estimate.
+
 ## Installation
 
 ### From Source
