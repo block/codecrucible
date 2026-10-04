@@ -236,7 +236,7 @@ func TestJevFeatureSelectionRequiresCompleteCoverage(t *testing.T) {
 	if err != nil || !handled || !reflect.DeepEqual(features, []string{"auth"}) {
 		t.Fatalf("features=%v handled=%v err=%v", features, handled, err)
 	}
-	d.files["huge.go"] = strings.Repeat("important source\n", 3000)
+	d.files["huge.go"] = strings.Repeat("important source", 3000)
 	features, handled, err = d.featureDetection(context.Background(), loader)
 	if err != nil || !handled || len(features) != 2 {
 		t.Fatal("partial source pruned a feature")

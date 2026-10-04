@@ -155,7 +155,7 @@ codecrucible scan ./my-repo --jev-cwe-mapping active --jev-deduplication active
 
 | Flag | Active behavior | Uncertainty or failure |
 | --- | --- | --- |
-| `--jev-feature-detection` | Uses Noul for positive feature evidence and Choice for presence/absence. Only complete supplied source can authorize omission. | Incomplete coverage retains all sections without an active Jev request. Shadow mode runs the existing detector. |
+| `--jev-feature-detection` | Uses Noul for positive feature evidence and Choice for presence/absence. Aggregates bounded source batches; only strong absence in every batch can authorize omission. | Coverage gaps, failed requests, or exhausted quotas retain uncertain categories. Shadow mode runs the existing detector. |
 | `--jev-smart-chunking` | Scores the additional context of candidate source scopes, then adds accepted grouping hints to the existing import graph. | Missing scopes skip the request. Failed batches keep earlier hints. File boundaries and token limits remain enforced. |
 | `--jev-audit` | Checks reachability, attacker control, operation, impact, and mitigation separately. Rejection still requires an exact blocking span and a second verification request. | Sends unresolved findings to the existing auditor. Exhausted audit retries retain unaudited findings with a warning. |
 | `--jev-review` | Checks individual report assertions and identifies supported, contradicted, unsupported, or unresolved statements. Identical claim/evidence checks are reused within the phase. | Preserves every finding, with the specific disagreement or missing context available in SARIF. |

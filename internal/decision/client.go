@@ -24,7 +24,7 @@ import (
 
 const Model = "jev-1.13.0"
 const InputPricePerMillion = 0.042
-const PolicyVersion = "jev-decisions-v4"
+const PolicyVersion = "jev-decisions-v5"
 
 var ErrLimit = errors.New("decision request limit reached")
 

@@ -15,20 +15,19 @@ import (
 	"github.com/block/codecrucible/internal/llm"
 )
 
-func TestFeatureCoverageSkipsCallsAndRecordsRetention(t *testing.T) {
+func TestFeatureCoverageGapsRetainCategories(t *testing.T) {
 	loader := llm.NewPromptLoader(fstest.MapFS{"analysis_sections.yaml": &fstest.MapFile{Data: []byte("sections:\n  auth:\n    title: Authentication\n    features: [auth]\n    content: Check authentication\n")}})
 	d, _ := decisionFixture(t)
 	d.cfg.FeatureDetection = "active"
-	d.files["large.go"] = strings.Repeat("source\n", 20000)
+	d.files["large.go"] = strings.Repeat("source", 20000)
 	d.recorder.Client = evaluateFunc(func(context.Context, decision.Request) (decision.Response, error) {
-		t.Fatal("paid call cannot affect retention")
 		return decision.Response{}, nil
 	})
 	features, handled, err := d.featureDetection(context.Background(), loader)
 	if err != nil || !handled || !reflect.DeepEqual(features, []string{"auth"}) {
 		t.Fatalf("bad fallback: %v %v", features, err)
 	}
-	r := d.recorder.Records[0]
+	r := d.recorder.Records[len(d.recorder.Records)-1]
 	if len(r.Features) != 1 || r.Features[0].Status != "unknown" || !r.Features[0].Retained || r.Outcomes["categories_omitted"] != 0 {
 		t.Fatalf("incorrect observation: %+v", r)
 	}
@@ -172,7 +171,7 @@ func TestFeaturePositiveSignalOverridesAbsenceAndShadowPreservesDetector(t *test
 			t.Fatalf("lost positive signal: %+v", observation)
 		}
 		if mode == "shadow" {
-			r := d.recorder.Records[0]
+			r := d.recorder.Records[len(d.recorder.Records)-1]
 			if features != nil || r.Outcomes["proposed_categories_retained"] != 1 {
 				t.Fatal("shadow changed detector or counted a realized outcome")
 			}

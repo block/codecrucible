@@ -9,19 +9,30 @@ alone never enables requests. Generative analysis remains the discovery pass.
 
 ## Phase contracts
 
-Policy `jev-decisions-v4` uses different question shapes for different actions.
+Policy `jev-decisions-v5` uses different question shapes for different actions.
 Choice describes categorical evidence, Noul tests a scoped yes/no proposition,
 and Score ranks optional context. Question builders preserve the untrusted-source
 boundary without instructing a Noul or Score to return a Choice category.
 
 | Phase | Questions and evidence | Action |
 | --- | --- | --- |
-| Feature detection | One Noul for executable use and one Choice for presence/absence per conditional feature, including custom features. | Positive evidence retains the section. Only complete supplied source and a strong absence answer can omit it. Incomplete active coverage skips the paid call and retains all sections as unknown. |
+| Feature detection | One Noul for executable use and one Choice for presence/absence per conditional feature in each bounded source batch, including custom features. | Positive evidence retains the section. Only complete coverage and strong absence in every batch can omit it. Failures, missing source, and exhausted quotas retain uncertain categories. |
 | Smart chunking | A bounded identifier shortlist selects pairs not already connected by the grouping graph. Score compares no demonstrated benefit, supporting context, and directly connected operations. | Accepted pairs add optional edges. The existing chunker still controls file accounting and token packing. |
 | Audit | Separate Choice checks for reachability, attacker control, operation, impact, and mitigation. Noul checks for relevant control evidence; Choice locates a candidate blocking span. | All support prerequisites must pass to avoid generative audit. Rejection requires an exact blocking span and a second source-grounded verification. Everything unresolved goes to the existing auditor. |
 | Review | Choice for each sentence-sized assertion, using the original claim and exact source as shared state. | Record supported, contradicted, unsupported, insufficient context, unavailable, or nonfactual status. Keep every finding. Reuse only identical claim/evidence/context checks within this phase. |
 | CWE mapping | Choice among at most 16 retrieved CWE definitions, plus outside-candidate and insufficient-evidence options. | Explicit active mode applies strong Allowed mappings. Review-required and uncertain suggestions preserve the original label. |
 | Deduplication | Separate Choice questions for complete root-cause identity and an exact shared source scope. | Explicit active mode consolidates strongly supported duplicates and preserves the full original records. Every duplicate is compared directly with its representative. |
+
+Feature evidence is packed deterministically into at most 18K serialized bytes per
+batch. Files stay together where possible; larger files use adjacent source
+ranges. Questions require uncertainty when a split declaration or missing context
+prevents classification. Unrepresentable lines create a coverage gap instead of
+being silently truncated. The repository filename list is no longer a coverage
+gate. A positive observation in any batch retains the feature and stops further
+questions about it. Absence requires strong answers in every batch and complete
+source coverage. Batch records distinguish local observations from the final
+repository aggregate, including attempted/completed batch counts. The shared
+request quotas and retries still apply; incomplete work cannot authorize omission.
 
 Feature observations separate `observed_present`, `absent`, `unknown`, and
 `unavailable` from `retained_for_analysis`. A low Noul value is not proof of
