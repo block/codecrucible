@@ -8,8 +8,9 @@ import (
 )
 
 // RelatedEvidence is deterministic candidate retrieval, not proof of program
-// reachability. Anchors are never ranked away. Literal file references also
-// cover script/template attachments when a language parser is unavailable.
+// reachability. The auditor already receives entire cited files; this budget
+// covers only additional files. Literal references also cover script/template
+// attachments when a language parser is unavailable.
 func (index *EvidenceIndex) RelatedEvidence(anchors []Evidence, budget int) []Evidence {
 	anchorIDs, paths := map[string]bool{}, map[string]bool{}
 	for _, e := range anchors {
@@ -19,11 +20,13 @@ func (index *EvidenceIndex) RelatedEvidence(anchors []Evidence, budget int) []Ev
 	for _, e := range anchors {
 		spans = append(spans, SourceRange{Path: e.Path, Start: e.Start, End: e.End})
 	}
-	selected := index.Select(spans, budget)
+	selected := index.selectEvidence(spans, budget, paths)
 	candidates := map[string]Evidence{}
+	related := map[string]bool{}
 	for _, e := range selected.Evidence {
-		if !paths[e.Path] {
+		if !anchorIDs[e.ID] {
 			candidates[e.ID] = e
+			related[e.ID] = true
 		}
 	}
 	for _, name := range sortedKeys(index.files) {
@@ -53,12 +56,18 @@ func (index *EvidenceIndex) RelatedEvidence(anchors []Evidence, budget int) []Ev
 		}
 	}
 	sort.Slice(ordered, func(i, j int) bool {
+		// Source relations take priority over filename literals, which may
+		// appear in unrelated comments or documentation.
+		if related[ordered[i].ID] != related[ordered[j].ID] {
+			return related[ordered[i].ID]
+		}
 		if ordered[i].Path != ordered[j].Path {
 			return ordered[i].Path < ordered[j].Path
 		}
 		return ordered[i].Start < ordered[j].Start
 	})
 	out := []Evidence{}
+	budget -= 2 // JSON array delimiters; reserve a comma per candidate below.
 	for _, e := range ordered {
 		encoded, _ := json.Marshal(e)
 		if len(encoded)+1 > budget {

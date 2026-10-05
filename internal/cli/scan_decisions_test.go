@@ -85,7 +85,11 @@ func answersFor(req decision.Request, choices map[string]string) decision.Respon
 				value = 2
 				probabilities = map[string]float64{"0": 0, "1": 0, "2": 1}
 			}
-			out.Answers[id] = decision.Answer{Type: "score", Score: &value, Confidence: &confidence, Probabilities: probabilities}
+			legend := map[string]string{}
+			for i, level := range q.Criteria.([]string) {
+				legend[fmt.Sprint(i)] = level
+			}
+			out.Answers[id] = decision.Answer{Type: "score", Score: &value, Confidence: &confidence, Probabilities: probabilities, Legend: legend}
 			continue
 		}
 		if choice == "" {
@@ -465,6 +469,46 @@ func TestJevGroupingKeepsSuccessfulBatchesAfterFailure(t *testing.T) {
 			after, _ := json.Marshal(baseline)
 			if string(original) != string(after) {
 				t.Fatal("mutated baseline")
+			}
+		})
+	}
+}
+
+func TestJevGroupingKeepsValidAnswersWithinFailedBatch(t *testing.T) {
+	for _, mode := range []string{"active", "shadow"} {
+		t.Run(mode, func(t *testing.T) {
+			d, _ := decisionFixture(t)
+			d.cfg.SmartChunking = mode
+			d.files = map[string]string{}
+			for _, p := range []string{"a.go", "b.go", "c.go"} {
+				d.files[p] = "package app\nfunc customerHandler() { customerService() }\n"
+			}
+			baseline := map[string][]string{"baseline.go": {"required.go"}}
+			d.recorder.Client = evaluateFunc(func(_ context.Context, req decision.Request) (decision.Response, error) {
+				if len(req.Questions) != 3 {
+					t.Fatalf("expected three pairs, got %d", len(req.Questions))
+				}
+				response := answersFor(req, map[string]string{"pair_0": "related", "pair_1": "related", "pair_2": "related"})
+				delete(response.Answers, "pair_1")
+				invalid := response.Answers["pair_2"]
+				invalid.Legend = nil
+				response.Answers["pair_2"] = invalid
+				return response, errors.New("remaining pairs unavailable")
+			})
+			graph, err := d.smartGrouping(context.Background(), baseline)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if mode == "active" {
+				if !hasGroupingEdge(graph, "a.go", "b.go") || hasGroupingEdge(graph, "a.go", "c.go") || hasGroupingEdge(graph, "b.go", "c.go") {
+					t.Fatalf("must use only the valid independent hint: %+v", graph)
+				}
+			} else if !reflect.DeepEqual(graph, baseline) {
+				t.Fatal("shadow changed grouping")
+			}
+			outcomes := d.recorder.Report().Outcomes["smart-chunking"]
+			if outcomes["pairs_unavailable"] != 2 || outcomes["pairs_evaluated"] != 1 || outcomes["edges_accepted"] != 1 {
+				t.Fatalf("partial batch accounting is wrong: %+v", outcomes)
 			}
 		})
 	}

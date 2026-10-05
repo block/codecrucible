@@ -140,6 +140,14 @@ func NewEvidenceIndex(files map[string]string, graph map[string][]string) *Evide
 // declarations and callers. Unrelated declarations and their imports cannot
 // consume the context budget. Missing scopes/definitions remain explicit gaps.
 func (index *EvidenceIndex) Select(cited []SourceRange, budget int) EvidenceSelection {
+	return index.selectEvidence(cited, budget, nil)
+}
+
+// suppliedFiles enables optional selection: follow source relations through
+// already supplied files without charging their scopes to this budget. Return
+// other declarations as indivisible candidates, omitting import headers.
+func (index *EvidenceIndex) selectEvidence(cited []SourceRange, budget int, suppliedFiles map[string]bool) EvidenceSelection {
+	optionalOnly := suppliedFiles != nil
 	out := EvidenceSelection{}
 	queue := []*sourceUnit{}
 	seen := map[*sourceUnit]bool{}
@@ -195,12 +203,19 @@ func (index *EvidenceIndex) Select(cited []SourceRange, budget int) EvidenceSele
 	budget -= 2 // JSON array delimiters; reserve one comma for each span below.
 	for i := 0; i < len(queue); i++ {
 		unit := queue[i]
+		if optionalOnly && unit.header {
+			continue
+		}
 		// Resolve an entire scope before admitting it. A partial function can hide
 		// a dominating guard, so budget exhaustion cannot authorize a verdict.
 		spans := []Evidence{}
 		size := 0
-		for start := unit.Start; start <= unit.End; start += 24 {
-			evidence, _ := SourceEvidence(unit.Path, index.files[unit.Path], start, min(start+23, unit.End))
+		step := 24
+		if optionalOnly {
+			step = unit.End - unit.Start + 1
+		}
+		for start := unit.Start; start <= unit.End && !suppliedFiles[unit.Path]; start += step {
+			evidence, _ := SourceEvidence(unit.Path, index.files[unit.Path], start, min(start+step-1, unit.End))
 			if usedEvidence[evidence.ID] {
 				continue
 			}

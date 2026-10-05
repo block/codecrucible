@@ -153,23 +153,30 @@ func (d *scanDecisions) smartGrouping(ctx context.Context, baseline map[string][
 			d.recorder.Outcome("pairs_skipped_missing_scopes", len(batch))
 			continue
 		}
-		response, err := d.recorder.Evaluate(ctx, "smart-chunking", mode, fmt.Sprintf("pairs_%d", start), map[string]any{"source_samples": evidence}, questions, evidence, false)
+		response, _ := d.recorder.Evaluate(ctx, "smart-chunking", mode, fmt.Sprintf("pairs_%d", start), map[string]any{"source_samples": evidence}, questions, evidence, false)
 		d.recorder.Outcome("pairs_skipped_missing_scopes", len(batch)-len(questions))
 		if ctx.Err() != nil {
 			return baseline, ctx.Err()
 		}
-		if err != nil {
-			d.recorder.Action("existing_chunking_for_batch")
-			d.recorder.Outcome("pairs_unavailable", len(questions))
-			continue
-		}
 		d.recorder.Outcome("edges_accepted", 0)
 		d.recorder.Outcome("edges_applied", 0)
+		evaluated := 0
 		for i, pair := range batch {
-			if _, evaluated := questions[fmt.Sprintf("pair_%d", i)]; !evaluated {
+			id := fmt.Sprintf("pair_%d", i)
+			q, requested := questions[id]
+			if !requested {
 				continue
 			}
-			if decision.UsefulGrouping(response.Answers[fmt.Sprintf("pair_%d", i)]) && !hasGroupingEdge(graph, pair.left, pair.right) {
+			// Pair decisions are independent: an unavailable neighbor must not
+			// discard this validated answer from a partial response.
+			one := decision.Request{Questions: map[string]decision.Question{id: q}}
+			answer := decision.Response{Model: response.Model, Answers: map[string]decision.Answer{id: response.Answers[id]}}
+			if decision.ValidateResponse(one, answer) != nil {
+				d.recorder.Outcome("pairs_unavailable", 1)
+				continue
+			}
+			evaluated++
+			if decision.UsefulGrouping(response.Answers[id]) && !hasGroupingEdge(graph, pair.left, pair.right) {
 				graph[pair.left] = appendUnique(graph[pair.left], pair.right)
 				graph[pair.right] = appendUnique(graph[pair.right], pair.left)
 				d.recorder.Records[len(d.recorder.Records)-1].Edges = append(d.recorder.Records[len(d.recorder.Records)-1].Edges, decision.GroupingEdge{Left: pair.left, Right: pair.right, Origin: "jev", Applied: mode == "active"})
@@ -179,8 +186,12 @@ func (d *scanDecisions) smartGrouping(ctx context.Context, baseline map[string][
 				}
 			}
 		}
-		d.recorder.Outcome("pairs_evaluated", len(questions))
-		d.recorder.Action("grouping_hints")
+		d.recorder.Outcome("pairs_evaluated", evaluated)
+		if evaluated == 0 {
+			d.recorder.Action("existing_chunking_for_batch")
+		} else {
+			d.recorder.Action("grouping_hints")
+		}
 	}
 	if len(pairs) == 0 {
 		d.recorder.Skip("smart-chunking", mode, "no_semantic_candidates")

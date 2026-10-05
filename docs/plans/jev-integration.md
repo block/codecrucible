@@ -1,15 +1,14 @@
 # Optional Jev integration
 
-The runtime integration covers feature detection, smart chunking, audit, and
-finding review, CWE mapping, and semantic deduplication. All stages default to off.
-`--jev` enables the original four unspecified stages in active mode and the new
-mapping/deduplication stages in shadow mode;
-individual `--jev-<stage> off|shadow|active` settings override it. A credential
+The runtime integration covers feature detection, smart chunking, audit evidence
+selection, finding review, CWE mapping, and semantic deduplication. All stages
+default to off. Enable stages explicitly with `--jev-<stage> off|shadow|active`.
+Bare `--jev` is rejected; it does not enable unspecified stages. A credential
 alone never enables requests. Generative analysis remains the discovery pass.
 
 ## Phase contracts
 
-Policy `jev-decisions-v5` uses different question shapes for different actions.
+Policy `jev-decisions-v7` uses different question shapes for different actions.
 Choice describes categorical evidence, Noul tests a scoped yes/no proposition,
 and Score ranks optional context. Question builders preserve the untrusted-source
 boundary without instructing a Noul or Score to return a Choice category.
@@ -18,7 +17,7 @@ boundary without instructing a Noul or Score to return a Choice category.
 | --- | --- | --- |
 | Feature detection | One Noul for executable use and one Choice for presence/absence per conditional feature in each bounded source batch, including custom features. | Positive evidence retains the section. Only complete coverage and strong absence in every batch can omit it. Failures, missing source, and exhausted quotas retain uncertain categories. |
 | Smart chunking | A bounded identifier shortlist selects pairs not already connected by the grouping graph. Score compares no demonstrated benefit, supporting context, and directly connected operations. | Accepted pairs add optional edges. The existing chunker still controls file accounting and token packing. |
-| Audit | Separate Choice checks for reachability, attacker control, operation, impact, and mitigation. Noul checks for relevant control evidence; Choice locates a candidate blocking span. | All support prerequisites must pass to avoid generative audit. Rejection requires an exact blocking span and a second source-grounded verification. Everything unresolved goes to the existing auditor. |
+| Audit | Independent Noul questions select optional caller, definition and template evidence from bounded source candidates. | Accepted evidence augments the configured generative auditor. Every finding reaches that auditor; Jev never issues an audit verdict. |
 | Review | Choice for each sentence-sized assertion, using the original claim and exact source as shared state. | Record supported, contradicted, unsupported, insufficient context, unavailable, or nonfactual status. Keep every finding. Reuse only identical claim/evidence/context checks within this phase. |
 | CWE mapping | Choice among at most 16 retrieved CWE definitions, plus outside-candidate and insufficient-evidence options. | Explicit active mode applies strong Allowed mappings. Review-required and uncertain suggestions preserve the original label. |
 | Deduplication | Separate Choice questions for complete root-cause identity and an exact shared source scope. | Explicit active mode consolidates strongly supported duplicates and preserves the full original records. Every duplicate is compared directly with its representative. |
@@ -43,13 +42,13 @@ and skip guards remain in force. `--skip-feature-detection` supplies an all-sect
 control without a detector request.
 
 The bundled `default` audit template declares `decision_audit: true`. This opts
-into the fixed Jev evidence policy, including the possibility that a resolved
-finding never reaches the template. Other prompt sets retain generative audit
-unless they explicitly opt in. Jev does not refine prose, severity, or CWE labels
-and does not create findings. Unresolved findings are repacked into generative
-batches. Jev-retained findings are restored afterward, outside legacy confidence
-filtering. Exhausted generative audit retries preserve unaudited findings and
-allow CI to continue with an incomplete-audit warning.
+into optional Jev context selection when the audit stage is explicitly enabled.
+Other prompt sets receive no Jev audit context unless they opt in. All findings
+still reach generative audit, including after Jev errors or budget exhaustion.
+The Jev audit stage cannot suppress, confirm, refine, or create findings.
+Exhausted generative audit retries preserve unaudited findings and allow CI to
+continue with an incomplete-audit warning. Original claims and code paths remain
+archived in SARIF when audit revisions change their presentation.
 
 Review checks at most 12 assertions. Truncated checklists and reports containing
 only nonfactual advice cannot become fully supported. A disagreement remains
@@ -57,6 +56,9 @@ attached to its assertion and appears in SARIF help. It never suppresses the
 finding. An identical check can be reused with a `reused_from` reference; changed
 source, assertions, custom requirements, or supplementary context cause a fresh
 check. This cache does not reuse the audit's different question contract.
+Valid independent assertions survive a partial response failure; missing or
+malformed answers remain unavailable. Partial reviews are never cached or
+reported as fully supported.
 
 Shadow mode records proposed model decisions while preserving the stage's
 existing output. Stage controls are independent. Review may run with
@@ -87,20 +89,29 @@ when they fit. Evidence is deduplicated within a request. A pair with no bounded
 scope for either file is skipped without a model question. Grouping is optional:
 no pair score excludes a source file.
 
-Audit and review use an index of admitted source. Cited Go declarations are
-reserved first, followed by referenced local definitions and incoming uses,
+Audit and review use an index of admitted source. Referenced local definitions
+and incoming uses are followed from cited Go declarations,
 including function values passed as handlers. Ancestor scopes retain registration
 and guard ordering. Conventional `Use`/`With` middleware references and condition
 references supply additional definitions. Shared helpers do not recursively pull
 in unrelated callers. Other languages and Go parse failures use full files.
 
 These are best-effort source relations, not a typed call graph or control-flow
-proof. Source scopes are supplied in exact 24-line spans within an 18K serialized
-byte budget. A partial function cannot authorize a verdict. Missing files,
-invalid locations, or required scopes that do not fit create coverage gaps.
-`coverage_scope: "claim_context"` describes this selection, not whole-program
-coverage. Jev must still establish prerequisites, runtime behavior, and control
-ordering from the evidence. Uncertainty routes to the generative auditor.
+proof. Review reserves cited scopes first, then supplies related scopes in exact
+24-line spans within an 18K serialized byte budget. It admits each complete scope
+or records a coverage gap. `coverage_scope: "claim_context"` describes the
+selected context, not whole-program coverage.
+
+Audit selection supplies complete cited declarations within a 9K serialized byte
+budget and optional candidates within a separate 7K budget. The generative
+auditor already receives whole cited files, so optional candidates only add other
+files. Traversal through already supplied source does not consume that optional
+budget. Each optional declaration is selected in full or omitted; Jev cannot
+select only the beginning of a function while losing a later guard. Source
+relations take precedence over filename-literal matches. At most 24 candidates
+are offered, with independent use and definition questions for each. These
+questions still require held-out evaluation; complete declarations alone do not
+establish the value of the selection policy.
 
 ## Bounds, policies, and accounting
 
@@ -149,13 +160,18 @@ Default bounds are 128 logical requests, two retries, and a 30-second timeout
 per attempt. The logical cap is divided equally among enabled stages, including
 shadow stages. Remainders go in feature detection, grouping, audit, review, CWE
 mapping, deduplication order.
-Disabled stages reserve nothing. Unused capacity is not borrowed. Verification
-requests consume the audit quota. Quotas are recorded in the scan recipe.
+Disabled stages reserve nothing. Completed stages release unused capacity for
+later stages; future reservations remain protected and the global cap still
+applies. Quotas are recorded in the scan recipe.
 
 HTTP 408, 429, 5xx, transport/read failures, and invalid successful responses share
 bounded retries. Other HTTP errors fall back immediately. Parent cancellation
 interrupts requests and backoff. Redirects are rejected. Errors and decision
 records exclude provider response bodies and credentials.
+The client preserves valid independent answers and retries only unresolved
+questions. Audit evidence, grouping hints and review assertions can use those
+answers even if another question exhausts its retries. Deduplication requires
+both prerequisite answers before proposing a merge.
 
 Request validation budgets JSON UTF-8 bytes plus overhead under 64K for the full
 request and 32K for state plus one question. These conservative upper bounds are
@@ -163,7 +179,7 @@ not a Jev tokenizer estimate. Oversized requests never reach the provider. Jev
 token counts do not calibrate the generative model's chunk budget. `--max-cost`
 remains the existing source-input preflight check, not a billed-spend cap.
 
-Verdict and omission gates require selected Choice probability at least 0.98 and
+Classification and omission gates require selected Choice probability at least 0.98 and
 confidence at least 0.95. Scoped positive Noul checks require at least 0.98.
 Optional grouping has a separate experimental policy: Score at least 1.6,
 probability of the directly-connected level at least 0.8, and confidence at least
@@ -173,8 +189,8 @@ answers are not multiplied. A second request to the same model is an additional
 check, not independent proof. See [TypeSafe confidence](https://docs.typesafe.ai/confidence).
 
 The common usage ledger records actual HTTP attempts, returned models, retries,
-reported token categories, and unknown or unpriced usage. Logical caps include
-verification; the retry cap separately bounds additional HTTP attempts.
+reported token categories, and unknown or unpriced usage. The retry cap
+separately bounds additional HTTP attempts per logical request.
 
 ## Observable outcomes
 
@@ -189,8 +205,8 @@ prompt bodies. Counts describe decisions and their effects:
   that placement differs from packing the same input without those edges.
   `placement_measured` distinguishes a completed comparison from unmeasured edges.
   A comparison failure warns and does not discard the successful scan.
-- Audit retain, reject, and escalate outcomes. These count findings routed away
-  from or toward generative audit, not a claim about the number of batches saved.
+- Audit candidates sent to the generative pipeline and selected optional evidence.
+  Shadow selection counts proposed evidence; no finding bypasses the auditor.
 - Assertions supported, contradicted, unsupported, unresolved, or unavailable;
   finding review statuses and reused assessments. Assertion counters count fresh
   evaluations; finding counters include explicit reuse.
@@ -208,7 +224,7 @@ reuse provenance. Review help exposes unresolved assertions for human validation
 Mock-provider tests cover typed contracts, retries, cancellation, redirects,
 request and stage caps, disabled-mode compatibility, deterministic grouping
 without credentials, conservative feature selection, callback evidence,
-file/chunk budgets, required audit prerequisites, exact rejection verification,
+file/chunk budgets, complete optional audit scopes, independent answer recovery,
 assertion review, duplicate reuse, and whole-scan usage reporting. These tests
 verify implementation behavior. They do not establish live model quality or
 savings.

@@ -103,11 +103,15 @@ func (d *scanDecisions) reviewFindings(ctx context.Context, doc sarif.SARIFDocum
 				assessment.Model = response.Model
 				assessment.Status = "supported"
 				supported := 0
+				completeAnswers := true
 				for k, assertion := range assertions {
 					id := fmt.Sprintf("assertion_%d", k)
 					a := response.Answers[id]
 					status := "insufficient_context"
-					if err != nil {
+					one := decision.Request{Questions: map[string]decision.Question{id: questions[id]}}
+					answer := decision.Response{Model: response.Model, Answers: map[string]decision.Answer{id: a}}
+					if decision.ValidateResponse(one, answer) != nil {
+						completeAnswers = false
 						status = "unavailable"
 					} else {
 						for _, candidate := range []string{"supported", "contradicted", "unsupported", "insufficient_evidence", "not_applicable"} {
@@ -130,8 +134,8 @@ func (d *scanDecisions) reviewFindings(ctx context.Context, doc sarif.SARIFDocum
 				if !assertionsComplete || supported == 0 {
 					assessment.Status = mergeReviewStatus(assessment.Status, "insufficient_context")
 				}
-				if err != nil {
-					assessment.Status = "unavailable"
+				if err != nil || !completeAnswers {
+					assessment.Status = mergeReviewStatus(assessment.Status, "unavailable")
 				} else {
 					cache[cacheKey] = cachedReview{decisionSubject(*finding), assessment}
 				}
