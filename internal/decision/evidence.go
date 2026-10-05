@@ -108,12 +108,11 @@ func (r *Recorder) Evaluate(ctx context.Context, stage, mode, subject string, st
 		record.Evidence = append(record.Evidence, e)
 	}
 	response, err := r.Client.Evaluate(ctx, Request{State: state, Questions: questions, Purpose: stage})
+	record.Model = response.Model
+	record.Answers = response.Answers
 	if err != nil {
 		record.Status = "fallback"
 		record.Fallback = FailureReason(err)
-	} else {
-		record.Model = response.Model
-		record.Answers = response.Answers
 	}
 	r.Records = append(r.Records, record)
 	return response, err

@@ -1,10 +1,26 @@
 package llm
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 	"testing/fstest"
 )
+
+func TestPromptOrderingIsStableAcrossAssemblies(t *testing.T) {
+	loader := NewPromptLoader(testFS())
+	params := PromptParams{RepoName: "fixture", ChunkTotal: 1, XML: "<source/>"}
+	want, err := loader.AssembleMessages(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 100; i++ {
+		got, err := loader.AssembleMessages(params)
+		if err != nil || !reflect.DeepEqual(got, want) {
+			t.Fatal("map iteration changed prompt bytes and budgeting input")
+		}
+	}
+}
 
 const testBaseYAML = `system_message: >
   You are a senior security engineer.

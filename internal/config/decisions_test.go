@@ -19,16 +19,22 @@ func TestJevConfigurationIsOptIn(t *testing.T) {
 		t.Fatal("credential enabled decisions")
 	}
 	v.Set("decisions.enabled", true)
-	v.Set("decisions.audit", "off")
+	if _, err := Load(v); err == nil {
+		t.Fatal("bare --jev must require explicit stages")
+	}
+	v.Set("decisions.audit", "shadow")
 	cfg, err = Load(v)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Decisions.Audit != "off" || cfg.Decisions.FeatureDetection != "active" || cfg.Decisions.Review != "active" || cfg.Decisions.SmartChunking != "active" {
-		t.Fatalf("modes: %+v", cfg.Decisions.Modes())
-	}
-	if cfg.Decisions.CWEMapping != "shadow" || cfg.Decisions.Deduplication != "shadow" {
-		t.Fatal("new stages must start in shadow mode under --jev")
+	for stage, mode := range cfg.Decisions.Modes() {
+		want := "off"
+		if stage == "audit" {
+			want = "shadow"
+		}
+		if mode != want {
+			t.Fatalf("%s mode %s, want %s", stage, mode, want)
+		}
 	}
 }
 

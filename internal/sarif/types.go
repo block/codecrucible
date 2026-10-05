@@ -1,5 +1,7 @@
 package sarif
 
+import "encoding/json"
+
 // AnalysisResult represents the structured output from the LLM security analysis.
 type AnalysisResult struct {
 	RepoName          string          `json:"repo_name"`
@@ -148,6 +150,8 @@ type DecisionCheck struct {
 
 // FindingProperties keeps full evidence available outside the inline annotation.
 type FindingProperties struct {
+	AuditOriginal    *AuditOriginalFinding `json:"auditOriginal,omitempty"`
+	AuditRevision    json.RawMessage       `json:"auditRevision,omitempty"`
 	FindingID        string                `json:"findingId,omitempty"`
 	CWEChanges       []CWEChange           `json:"cweChanges,omitempty"`
 	DecisionCWE      *CWEAssessment        `json:"decisionCWE,omitempty"`
@@ -243,4 +247,14 @@ type SARIFInvocation struct {
 type SARIFNotification struct {
 	Level   string       `json:"level"`
 	Message SARIFMessage `json:"message"`
+}
+
+// AuditOriginalFinding preserves claim semantics and citations across rewrites.
+// Result omits recursive audit history to keep the archive finite.
+type AuditOriginalFinding struct {
+	Result           SARIFResult `json:"result"`
+	Rule             SARIFRule   `json:"rule"`
+	TechnicalDetails string      `json:"technicalDetails,omitempty"`
+	Summary          string      `json:"summary,omitempty"`
+	Remediation      string      `json:"remediation,omitempty"`
 }

@@ -12,6 +12,7 @@ import (
 
 	"github.com/block/codecrucible/internal/chunk"
 	"github.com/block/codecrucible/internal/config"
+	"github.com/block/codecrucible/internal/decision"
 	"github.com/block/codecrucible/internal/ingest"
 	"github.com/block/codecrucible/internal/llm"
 	"github.com/block/codecrucible/internal/sarif"
@@ -26,13 +27,13 @@ type AuditResult struct {
 
 // AuditedFinding is the audit verdict for a single initial finding.
 //
-// BlockingCode is the audit phase's quoted source-line citation that
-// justifies a "rejected" verdict. applyAuditVerdicts coerces any
-// "rejected" verdict with an empty BlockingCode to "unverified" — this
-// prevents the audit phase from silently dropping multi-file invariant
-// findings it couldn't fully re-prove in one pass. See the audit prompt's
-// "AUDIT REJECTION DISCIPLINE" section.
+// Rejection requires exact BlockingEvidence and complete claim coverage.
+// Missing evidence and partial refinements retain the original claim.
 type AuditedFinding struct {
+	ClaimCoverage    string                 `json:"claim_coverage"`
+	UnresolvedClaims []string               `json:"unresolved_claims"`
+	BlockingEvidence *AuditBlockingEvidence `json:"blocking_evidence"`
+
 	FindingID               string               `json:"finding_id"`
 	OriginalIssue           string               `json:"original_issue"`
 	FilePath                string               `json:"file_path"`
@@ -48,6 +49,30 @@ type AuditedFinding struct {
 	Summary                 string               `json:"summary"`
 	Remediation             string               `json:"remediation"`
 	CodePath                []sarif.CodePathStep `json:"code_path"`
+}
+
+// AuditBlockingEvidence is a verifiable source citation plus an explicit
+// statement of what it disproves. Coverage is a model assertion, not a proof.
+type AuditBlockingEvidence struct {
+	Path           string `json:"path"`
+	Start          int    `json:"start_line"`
+	End            int    `json:"end_line"`
+	Quote          string `json:"quote"`
+	BlocksAllPaths bool   `json:"blocks_all_paths"`
+	Reason         string `json:"reason"`
+}
+
+func groundedAuditRejection(af AuditedFinding, files ingest.FileMap) bool {
+	b := af.BlockingEvidence
+	if af.ClaimCoverage != "complete" || len(af.UnresolvedClaims) != 0 || b == nil || !b.BlocksAllPaths || b.Reason != "executable_protection" {
+		return false
+	}
+	source, ok := files[b.Path]
+	if !ok {
+		return false
+	}
+	e, valid := decision.SourceEvidence(b.Path, source, b.Start, b.End)
+	return valid && strings.TrimSpace(b.Quote) != "" && strings.TrimSpace(e.Text) == strings.TrimSpace(b.Quote)
 }
 
 // NewFinding is an additional finding discovered during the audit phase.
@@ -86,6 +111,7 @@ func runAuditPhase(
 	productionOnly bool,
 	counter *chunk.TokenCounter,
 	metadata *sarif.ScanMetadata,
+	additionalEvidence ...map[string][]decision.Evidence,
 ) (*sarif.SARIFDocument, llm.TokenUsage, float64, error) {
 	if len(doc.Runs) == 0 || len(doc.Runs[0].Results) == 0 {
 		return &doc, llm.TokenUsage{}, 0, nil
@@ -190,6 +216,22 @@ func runAuditPhase(
 		}
 
 		var codeCtx strings.Builder
+		seenEvidence := map[string]bool{}
+		if len(additionalEvidence) > 0 {
+			for _, f := range batch {
+				for _, e := range additionalEvidence[0][f.FindingID] {
+					source, exists := fileMap[e.Path]
+					exact, valid := decision.SourceEvidence(e.Path, source, e.Start, e.End)
+					if !exists || !valid || exact.ID != e.ID || filesNeeded[e.Path] || seenEvidence[e.ID] {
+						continue
+					}
+					seenEvidence[e.ID] = true
+					packet, _ := json.Marshal(e)
+					fmt.Fprintf(&codeCtx, "<optional_source_evidence>%s</optional_source_evidence>\n", packet)
+				}
+			}
+		}
+
 		paths := make([]string, 0, len(filesNeeded))
 		for path := range filesNeeded {
 			paths = append(paths, path)
@@ -469,7 +511,9 @@ func applyAuditVerdicts(
 	// Process existing results: apply verdicts.
 	var keptResults []sarif.SARIFResult
 	ruleByID := make(map[string]sarif.SARIFRule, len(run.Tool.Driver.Rules))
+	originalRules := make(map[string]sarif.SARIFRule, len(run.Tool.Driver.Rules))
 	for _, rule := range run.Tool.Driver.Rules {
+		originalRules[rule.ID] = rule
 		properties := make(map[string]any, len(rule.Properties))
 		for k, v := range rule.Properties {
 			properties[k] = v
@@ -500,48 +544,41 @@ func applyAuditVerdicts(
 			continue
 		}
 
-		// Symmetric-skepticism gate: a "rejected" verdict without a
-		// quoted blocking source line is an unsubstantiated rejection.
-		// Coerce to "unverified" so the finding survives instead of
-		// silently disappearing — multi-file invariants (e.g. Copy
-		// Fail-style splice→sink chains) routinely get rejected here
-		// just because the auditor couldn't re-prove the whole chain
-		// in one pass.
-		if af.Verdict == "rejected" && strings.TrimSpace(af.BlockingCode) == "" {
-			slog.Warn("audit: rejection without blocking_code — coerced to unverified",
-				"issue", af.OriginalIssue,
-				"file", af.FilePath,
-				"justification", af.Justification,
-			)
+		original := result
+		originalProps := props
+		originalProps.AuditOriginal = nil
+		originalProps.AuditRevision = nil
+		original.Properties = &originalProps
+		props.AuditOriginal = &sarif.AuditOriginalFinding{Result: original, Rule: originalRules[result.RuleID], TechnicalDetails: props.TechnicalDetails, Summary: props.Summary, Remediation: props.Remediation}
+		revision, _ := json.Marshal(af)
+		props.AuditRevision = revision
+		if af.Verdict == "rejected" && !groundedAuditRejection(af, fileMap) {
 			af.Verdict = "unverified"
 			coerced++
 		}
-
-		// "unverified" findings are retained. Floor confidence at the
-		// threshold so a low score doesn't immediately re-drop them.
-		// They are clearly marked as unverified in the SARIF message.
+		// Low confidence is uncertainty, not evidence against a claim. A
+		// partial refinement must not replace the original combined finding.
+		if af.Verdict != "rejected" && (af.Confidence < confidenceThreshold || af.ClaimCoverage == "partial" || af.ClaimCoverage == "unknown" || len(af.UnresolvedClaims) > 0 || (af.Verdict == "refined" && af.ClaimCoverage != "complete")) {
+			af.Verdict = "unverified"
+		}
+		if af.Verdict == "rejected" {
+			rejected++
+			continue
+		}
 		if af.Verdict == "unverified" {
 			unverified++
-			if af.Confidence < confidenceThreshold {
-				af.Confidence = confidenceThreshold
+			props.AuditStatus = "unverified"
+			props.AuditConfidence = &af.Confidence
+			// Preserve the claim, severity and location. Keep the original
+			// walkthrough in the archive without displaying an unverified path.
+			result.CodeFlows = nil
+			details := result.Message.Text
+			if props.TechnicalDetails != "" {
+				details = props.TechnicalDetails
 			}
-			if af.RefinedTechnicalDetails == "" {
-				af.RefinedTechnicalDetails = result.Message.Text
-			}
-			af.RefinedTechnicalDetails = "[UNVERIFIED — audit could not re-prove the full chain; treat as a lead]\n\n" + af.RefinedTechnicalDetails
-		}
-
-		// Reject explicit rejections (now guaranteed to have blocking_code)
-		// and findings below confidence threshold.
-		if af.Verdict == "rejected" || af.Confidence < confidenceThreshold {
-			rejected++
-			slog.Debug("audit: rejected finding",
-				"issue", af.OriginalIssue,
-				"file", af.FilePath,
-				"confidence", af.Confidence,
-				"blocking_code", af.BlockingCode,
-				"reason", af.Justification,
-			)
+			result.Message.Text = "[UNVERIFIED — original claim retained]\n\n" + details
+			props.TechnicalDetails = details
+			keptResults = append(keptResults, result)
 			continue
 		}
 
@@ -570,8 +607,6 @@ func applyAuditVerdicts(
 			refined++
 		case "escalated":
 			escalated++
-		case "unverified":
-			// counted above
 		default:
 			confirmed++
 		}
@@ -585,9 +620,6 @@ func applyAuditVerdicts(
 		// Audit paths replace analysis paths; an unavailable/unverified path
 		// must not leave an obsolete analysis walkthrough in the final report.
 		result.CodeFlows = sarif.BuildCodeFlows(af.CodePath, sarif.FileMap(fileMap))
-		if af.Verdict == "unverified" {
-			result.CodeFlows = nil
-		}
 		if af.RefinedTechnicalDetails == "" {
 			af.RefinedTechnicalDetails = result.Message.Text
 		}

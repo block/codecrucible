@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -24,7 +25,7 @@ import (
 
 const Model = "jev-1.13.0"
 const InputPricePerMillion = 0.042
-const PolicyVersion = "jev-decisions-v5"
+const PolicyVersion = "jev-decisions-v6"
 
 var ErrLimit = errors.New("decision request limit reached")
 
@@ -73,11 +74,13 @@ type Options struct {
 	Backoff                          func(int) time.Duration
 }
 type Client struct {
-	opts       Options
-	http       *http.Client
-	mu         sync.Mutex
-	calls      int
-	stageCalls map[string]int
+	opts            Options
+	http            *http.Client
+	mu              sync.Mutex
+	calls           int
+	stageCalls      map[string]int
+	completedStages map[string]bool
+	released        int
 }
 
 func New(opts Options) (*Client, error) {
@@ -123,7 +126,7 @@ func New(opts Options) (*Client, error) {
 		stageLimits[stage] = limit
 	}
 	opts.StageLimits = stageLimits
-	return &Client{opts: opts, stageCalls: map[string]int{}, http: &http.Client{Transport: opts.Transport, Timeout: opts.Timeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}, nil
+	return &Client{opts: opts, stageCalls: map[string]int{}, completedStages: map[string]bool{}, http: &http.Client{Transport: opts.Transport, Timeout: opts.Timeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}, nil
 }
 
 func (c *Client) Evaluate(ctx context.Context, req Request) (Response, error) {
@@ -140,15 +143,24 @@ func (c *Client) Evaluate(ctx context.Context, req Request) (Response, error) {
 	}
 	c.mu.Lock()
 	limit, bounded := c.opts.StageLimits[req.Purpose]
-	if c.calls >= c.opts.MaxCalls || (bounded && c.stageCalls[req.Purpose] >= limit) {
+	if c.completedStages[req.Purpose] || c.calls >= c.opts.MaxCalls || (bounded && c.stageCalls[req.Purpose] >= limit && c.released == 0) {
 		c.mu.Unlock()
 		return Response{}, ErrLimit
+	}
+	if bounded && c.stageCalls[req.Purpose] >= limit {
+		c.released--
 	}
 	c.calls++
 	c.stageCalls[req.Purpose]++
 	c.mu.Unlock()
 	ctx = usage.WithPhase(ctx, usage.Phase{Name: "decision." + req.Purpose, Provider: "typesafe", PricingModel: c.opts.Model, Pricing: usage.Pricing{InputPerMillion: c.opts.InputPrice}})
 	record := usage.Begin(ctx, "http", c.opts.Model, req.Purpose)
+	aggregate := Response{Answers: map[string]Answer{}, Usage: TokenUsage{Input: new(int), Output: new(int)}}
+	pending := req
+	pending.Questions = make(map[string]Question, len(req.Questions))
+	for id, q := range req.Questions {
+		pending.Questions[id] = q
+	}
 	var last error
 	var delay time.Duration
 	for attempt := 0; attempt <= c.opts.Retries; attempt++ {
@@ -157,18 +169,18 @@ func (c *Client) Evaluate(ctx context.Context, req Request) (Response, error) {
 			select {
 			case <-ctx.Done():
 				timer.Stop()
-				return Response{}, ctx.Err()
+				return aggregate, ctx.Err()
 			case <-timer.C:
 			}
 		}
 		if err := ctx.Err(); err != nil {
-			return Response{}, err
+			return aggregate, err
 		}
 		started := time.Now()
 		result := usage.Result{Status: "error", Reason: "transport", UsageStatus: "unknown"}
 		request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.opts.URL, bytes.NewReader(body))
 		if err != nil {
-			return Response{}, errors.New("invalid decision request")
+			return aggregate, errors.New("invalid decision request")
 		}
 		request.Header.Set("Content-Type", "application/json")
 		request.Header.Set("Authorization", "Bearer "+c.opts.APIKey)
@@ -216,7 +228,26 @@ func (c *Client) Evaluate(ctx context.Context, req Request) (Response, error) {
 				if decodeErr != nil {
 					last = responseError("invalid_json")
 				} else {
-					last = ValidateResponse(req, decoded)
+					last = ValidateResponse(pending, decoded)
+					// Questions are independent. Preserve validated answers but keep
+					// an error until every prerequisite has been answered.
+					if validEnvelope(pending, decoded) && (aggregate.Model == "" || aggregate.Model == decoded.Model) {
+						aggregate.Model = decoded.Model
+						for id, q := range pending.Questions {
+							one := Request{Questions: map[string]Question{id: q}}
+							answer, exists := decoded.Answers[id]
+							if !exists || ValidateResponse(one, Response{Model: decoded.Model, Answers: map[string]Answer{id: answer}}) != nil {
+								continue
+							}
+							aggregate.Answers[id] = answer
+							delete(pending.Questions, id)
+						}
+						if len(pending.Questions) == 0 {
+							last = nil
+						}
+					} else if last == nil {
+						last = responseError("model_changed")
+					}
 				}
 				if last != nil {
 					result.Reason = FailureReason(last)
@@ -233,15 +264,18 @@ func (c *Client) Evaluate(ctx context.Context, req Request) (Response, error) {
 			last = ctx.Err()
 			retry = false
 		}
+		accumulateUsage(&aggregate.Usage.Input, decoded.Usage.Input)
+		accumulateUsage(&aggregate.Usage.Output, decoded.Usage.Output)
 		record.Record(attempt+1, started, result)
 		if last == nil {
-			return decoded, nil
+			return aggregate, nil
 		}
+		body, _ = json.Marshal(pending) // Same validated state, only unresolved questions.
 		if !retry {
-			return Response{}, last
+			return aggregate, last
 		}
 	}
-	return Response{}, last
+	return aggregate, last
 }
 
 func validateRequest(req Request, size int, opts Options) error {
@@ -288,7 +322,8 @@ func ValidateResponse(req Request, resp Response) error {
 	if resp.Model == "" || len(resp.Answers) != len(req.Questions) {
 		return responseError("incomplete_response")
 	}
-	for id, q := range req.Questions {
+	for _, id := range sortedKeys(req.Questions) {
+		q := req.Questions[id]
 		a, ok := resp.Answers[id]
 		if !ok || a.Type != q.Type {
 			return responseError("answer_id_or_type")
@@ -329,7 +364,7 @@ func ValidateResponse(req Request, resp Response) error {
 			return responseError("probability_count")
 		}
 		sum, weighted, highest := 0.0, 0.0, 0.0
-		for k := range expected {
+		for _, k := range sortedKeys(expected) {
 			p, ok := a.Probabilities[k]
 			if !ok || !probability(p) {
 				return responseError("probability_range")
@@ -380,4 +415,40 @@ func FailureReason(err error) string {
 		return "context_cancelled"
 	}
 	return "decision_unavailable"
+}
+
+func sortedKeys[T any](values map[string]T) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// Foreign IDs or a missing model make the envelope untrustworthy. Missing
+// expected IDs can be retried independently; they are never treated as answers.
+func validEnvelope(req Request, resp Response) bool {
+	if resp.Model == "" {
+		return false
+	}
+	for id := range resp.Answers {
+		if _, ok := req.Questions[id]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// A missing count on any attempt leaves the aggregate unknown. The ledger
+// separately retains every known billed component and unknown attempt.
+func accumulateUsage(total **int, amount *int) {
+	if *total == nil {
+		return
+	}
+	if amount == nil || *amount < 0 {
+		*total = nil
+		return
+	}
+	**total += *amount
 }

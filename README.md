@@ -133,39 +133,33 @@ source-input preflight check and does not cap billed runtime spend.
 
 Jev is disabled by default. Existing scans use their configured feature detector,
 chunker, and auditor; setting `TYPESAFE_API_KEY` alone does not enable it.
-Enable feature detection, chunking, audit and review, and observe proposed CWE
-mapping and deduplication decisions, with:
+Select each experimental stage explicitly. Bare `--jev` returns an actionable
+configuration error; it no longer enables a bundle of stages. Each stage accepts
+`off`, `shadow`, or `active`, with `off` as its default.
 
 ```bash
-# Set TYPESAFE_API_KEY in your environment, alongside your usual LLM credentials.
-codecrucible scan ./my-repo --jev --output results.sarif
-```
-
-Each stage accepts `off`, `shadow`, or `active`. An explicit stage setting takes
-precedence over `--jev`. Individual stages can also be enabled without that flag:
-
-```bash
-codecrucible scan ./my-repo --jev --jev-audit off
-codecrucible scan ./my-repo --jev-audit shadow --jev-review active
-# Evaluate the new stages without enabling the other Jev stages:
-codecrucible scan ./my-repo --jev-cwe-mapping shadow --jev-deduplication shadow
-# Explicitly apply their decisions:
-codecrucible scan ./my-repo --jev-cwe-mapping active --jev-deduplication active
+# Set TYPESAFE_API_KEY alongside the usual LLM credentials.
+# Observe evidence selection without changing the auditor's context:
+codecrucible scan ./my-repo --jev-audit shadow --output results.sarif
+# Add selected evidence to the existing auditor:
+codecrucible scan ./my-repo --jev-audit active
+# Evaluate or apply CWE classification independently:
+codecrucible scan ./my-repo --jev-cwe-mapping shadow
+codecrucible scan ./my-repo --jev-cwe-mapping active
 ```
 
 | Flag | Active behavior | Uncertainty or failure |
 | --- | --- | --- |
 | `--jev-feature-detection` | Uses Noul for positive feature evidence and Choice for presence/absence. Aggregates bounded source batches; only strong absence in every batch can authorize omission. | Coverage gaps, failed requests, or exhausted quotas retain uncertain categories. Shadow mode runs the existing detector. |
 | `--jev-smart-chunking` | Scores the additional context of candidate source scopes, then adds accepted grouping hints to the existing import graph. | Missing scopes skip the request. Failed batches keep earlier hints. File boundaries and token limits remain enforced. |
-| `--jev-audit` | Checks reachability, attacker control, operation, impact, and mitigation separately. Rejection still requires an exact blocking span and a second verification request. | Sends unresolved findings to the existing auditor. Exhausted audit retries retain unaudited findings with a warning. |
+| `--jev-audit` | Uses independent Noul relevance questions to select optional caller, guard, input-source and template evidence. Every finding still reaches the configured generative auditor. | Mandatory source stays intact. Unknown answers add nothing. Jev never issues a finding verdict. |
 | `--jev-review` | Checks individual report assertions and identifies supported, contradicted, unsupported, or unresolved statements. Identical claim/evidence checks are reused within the phase. | Preserves every finding, with the specific disagreement or missing context available in SARIF. |
 | `--jev-cwe-mapping` | Classifies final findings against a bounded shortlist from the pinned CWE 4.20 catalog. Records original and proposed labels and updates each affected SARIF rule independently. | Uncertain, outside-candidate, and MITRE review-required mappings preserve the original label. Classification never removes findings or certifies their validity. |
-| `--jev-deduplication` | Compares findings sharing a cited source scope. Strong duplicate and shared-root answers consolidate display entries into the highest-severity representative. | Uncertain pairs remain separate. Every merge preserves the full original result and rule, locations, code flows, and decision provenance. No transitive merges are inferred. |
+| `--jev-deduplication` | Compares findings sharing a primary source operation or terminal source-to-sink step, excluding matches caused only by secondary router citations. Strong duplicate and shared-root answers consolidate display entries into the highest-severity representative. | Uncertain and partially overlapping pairs remain separate. Every merge preserves the full original result and rule, locations, code flows, and decision provenance. No transitive merges are inferred. |
 
 Shadow mode makes Jev requests and records proposed decisions without changing
 findings or grouping. `--skip-feature-detection` and `--skip-audit` still apply;
-final review, CWE mapping and deduplication are independent of audit. CWE mapping
-and deduplication default to **shadow** under `--jev`; explicit `active` is required
+final review, CWE mapping and deduplication are independent of audit. All stages require explicit settings; `active` is required
 to apply their decisions. Feature detection and smart chunking are
 skipped when their existing single-chunk conditions do not require them.
 
@@ -175,15 +169,14 @@ without Jev or a TypeSafe credential. It is no longer implicit in `--jev`. Use
 dependencies with semantic hints. This separation lets you measure whether Jev
 adds value beyond the dependency graph.
 
-The bundled `default` audit prompt opts into the fixed Jev evidence policy with
-`decision_audit: true` in `audit.yaml`. Other prompt sets keep their generative
-audit unless they explicitly opt in. Leave this unset for custom audits that
-must discover additional findings or run specialized procedures. Jev preserves
-original finding prose and does not generate refined descriptions or new findings.
+The bundled `default` audit prompt opts into optional Jev context selection with
+`decision_audit: true` in `audit.yaml`. Other prompt sets keep their existing context
+unless they opt in. Every prompt set keeps its generative audit. Jev preserves
+original finding prose and never replaces the generative audit.
 
 ```yaml
 decisions:
-  enabled: false                 # new mapping/deduplication stages start in shadow
+  enabled: false                 # explicit stage modes are always required
   dependency-grouping: false     # deterministic; independent of Jev
   # feature-detection: active    # off | shadow | active
   # smart-chunking: active
@@ -203,16 +196,18 @@ Flags include `--jev-model`, `--jev-base-url` (the full evaluation endpoint),
 `TYPESAFE_API_KEY`. Dry runs show enabled stages and request caps without
 requiring that credential or calling Jev. HTTP 408/429/5xx and transport failures
 and malformed successful responses share the bounded retry budget; authentication
-errors fall back without a retry loop. The logical call cap is split equally among
-enabled stages, with any remainder assigned in pipeline order. Unused reservations
-are not borrowed, so early stages cannot exhaust later stages. Blocking verification
-uses the audit reservation. Validation failures record fixed categories
+errors fall back without a retry loop. Valid independent answers survive a partial
+response; retries contain only unresolved questions. Numeric tolerances remain
+strict, and a compound decision still requires all its answers. The logical call
+cap is initially split equally among enabled stages. Completed stages release
+unused reservations for later stages, while future reservations and the global
+cap remain protected. Validation failures record fixed categories
 such as `invalid_response_probability_sum`, without response bodies.
 
 Enabled scans write `results.decisions.json` with evidence references, coverage,
 returned model, policy version, typed answers, routing actions, and outcome totals
 by stage. Outcomes distinguish retained categories from omissions, accepted edges
-from measured chunk-placement changes, audit routing, and assertion review results.
+from measured chunk-placement changes, audit evidence selection, and assertion review results.
 Shadow outcomes are proposed decisions. Per-finding records include an immutable subject ID and categorical coverage gaps. It excludes
 source text and credentials. Feature artifacts distinguish `detected_features`
 from `retained_features` and record unknown or unavailable observations. Review
@@ -236,9 +231,9 @@ languages and files that cannot be parsed use full-file evidence. Required scope
 that cannot fit, missing source and invalid locations cause conservative fallback;
 unrelated Go declarations do not consume the evidence budget. Records marked
 `coverage_scope: "claim_context"` describe the selected context, not repository-wide
-coverage. Jev still has to establish the claim's material prerequisites and controls.
+coverage. Audit evidence selection does not certify reachability or exploitability.
 
-This integration uses an experimental evidence policy. Its routing thresholds
+This integration uses an experimental evidence policy. Its decision thresholds
 are not calibrated vulnerability probabilities and never replace SARIF audit
 confidence. Local dependency resolution is best effort. Missing or oversized
 evidence falls back conservatively. These policies still need human-reviewed
@@ -360,7 +355,7 @@ Per-phase flags follow the pattern `--{phase}-{flag}` (e.g. `--audit-model`, `--
 ```
   --audit-batch-size int               split audit into N-finding batches (default 25)
   --audit-concurrency int              max parallel audit batches, 1-32 (default 1)
-  --audit-confidence-threshold float   reject findings below this confidence (default 0.3)
+  --audit-confidence-threshold float   mark existing findings below this confidence unverified (default 0.3)
   --base-url string                    override default provider URL
   --compress                           compress whitespace in source files to save tokens
   --concurrency int                    max parallel chunks (default 3)
@@ -1027,3 +1022,19 @@ make vet         # go vet
 ## License
 
 See [LICENSE](LICENSE) for the full license text.
+
+### Fixed-case decision evaluation
+
+`go run ./cmd/decision-eval -cases internal/decisioneval/testdata/cases.json -out /tmp/decision-cases.json`
+prepares frozen requests and deterministic CWE baselines without network calls.
+Add `-live` to evaluate the same cases with Jev. Outputs include source packets,
+request hashes, typed responses, candidate coverage, abstentions, errors, usage,
+and elapsed time. Keep private cases and outputs outside Git. The bundled cases
+are synthetic development fixtures, not evidence of real-world accuracy. See
+[decision evaluation](docs/decision-evaluation.md) for the promotion criteria.
+
+Audit uncertainty preserves the original finding. Rejection requires a structured,
+exact source citation and a complete claim assessment; a low confidence score,
+missing context, or conditional execution alone cannot remove a finding. Partial
+refinements retain the original claim and location. Original findings and proposed
+revisions remain available in `auditOriginal` and `auditRevision` properties.

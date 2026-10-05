@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"sort"
 	"strings"
 	"sync"
 
@@ -67,8 +68,8 @@ type FeatureDetectionPrompt struct {
 
 // AuditPrompt represents the parsed audit.yaml template.
 type AuditPrompt struct {
-	// DecisionAudit permits the optional fixed Jev evidence policy to resolve
-	// findings without running this template. Omit for discovery/custom audits.
+	// DecisionAudit permits Jev to select optional source context. Every
+	// finding still runs through this template. Omit to keep its context unchanged.
 	DecisionAudit       bool   `yaml:"decision_audit"`
 	SystemMessage       string `yaml:"system_message"`
 	UserPromptTemplate  string `yaml:"user_prompt_template"`
@@ -206,7 +207,13 @@ func (l *PromptLoader) AssembleMessages(params PromptParams) ([]Message, error) 
 	if err == nil && len(sections.Sections) > 0 {
 		user.WriteString(bp.AnalysisRequirementsHeader)
 		user.WriteString("\n")
-		for _, section := range sections.Sections {
+		keys := make([]string, 0, len(sections.Sections))
+		for key := range sections.Sections {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			section := sections.Sections[key]
 			if !sectionEnabled(section, params.EnabledFeatures) {
 				continue
 			}

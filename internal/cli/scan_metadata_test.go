@@ -303,12 +303,12 @@ func TestAuditDescriptionsFollowFinalVerdicts(t *testing.T) {
 	}}, nil, sarif.BuilderConfig{})
 	audit := AuditResult{
 		AuditedFindings: []AuditedFinding{
-			{OriginalIssue: "Shared", FilePath: "a.go", StartLine: 1, Verdict: "rejected", BlockingCode: "return nil", Confidence: 1},
+			{OriginalIssue: "Shared", FilePath: "a.go", StartLine: 1, Verdict: "rejected", BlockingCode: "return nil", Confidence: 1, ClaimCoverage: "complete", BlockingEvidence: &AuditBlockingEvidence{Path: "a.go", Start: 1, End: 1, Quote: "return nil", BlocksAllPaths: true, Reason: "executable_protection"}},
 			{OriginalIssue: "Shared", FilePath: "b.go", StartLine: 1, Verdict: "unverified", RefinedTechnicalDetails: "FINAL DETAILS", Justification: "chain uncertain", Confidence: .1},
 		},
 		NewFindings: []NewFinding{{Issue: "New issue", FilePath: "c.go", StartLine: 1, TechnicalDetails: "NEW EVIDENCE", Severity: 9, Confidence: .9}},
 	}
-	final, err := prepareSARIF(applyFixtureAuditVerdicts(doc, audit, ingest.FileMap{}, .3), nil, "final")
+	final, err := prepareSARIF(applyFixtureAuditVerdicts(doc, audit, ingest.FileMap{"a.go": "return nil"}, .3), nil, "final")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -316,7 +316,7 @@ func TestAuditDescriptionsFollowFinalVerdicts(t *testing.T) {
 		t.Fatal("wrong final finding count")
 	}
 	for _, rule := range final.Runs[0].Tool.Driver.Rules {
-		for _, evidence := range []string{"REMOVE ME", "OLD DETAILS"} {
+		for _, evidence := range []string{"REMOVE ME", "FINAL DETAILS"} {
 			if strings.Contains(rule.Help.Text+rule.Help.Markdown, evidence) {
 				t.Fatal("stale evidence in issue help", rule.Help)
 			}
@@ -327,7 +327,7 @@ func TestAuditDescriptionsFollowFinalVerdicts(t *testing.T) {
 		if strings.Contains(result.Message.Text, "DETAILS") || strings.Contains(result.Message.Text, "EVIDENCE") {
 			t.Fatal("verbose evidence in inline annotation", result.Message)
 		}
-		if strings.Contains(message, "REMOVE ME") || strings.Contains(message, "OLD DETAILS") {
+		if strings.Contains(message, "REMOVE ME") || strings.Contains(message, "FINAL DETAILS") {
 			t.Fatal("stale evidence", message)
 		}
 		switch result.Locations[0].PhysicalLocation.ArtifactLocation.URI {
@@ -335,7 +335,7 @@ func TestAuditDescriptionsFollowFinalVerdicts(t *testing.T) {
 			if !strings.Contains(result.Message.Text, "Unverified") {
 				t.Fatal("uncertainty missing from annotation", result.Message)
 			}
-			for _, evidence := range []string{"FINAL DETAILS", "UNVERIFIED", "30%", "chain uncertain"} {
+			for _, evidence := range []string{"OLD DETAILS"} {
 				if !strings.Contains(message, evidence) {
 					t.Fatal("lost audit refinement or caveat", message)
 				}
@@ -378,7 +378,7 @@ func TestScanArtifactsIncludeFinalEvidenceAndMetadata(t *testing.T) {
 						t.Error(err)
 						return
 					}
-					content = `{"audited_findings":[{"finding_id":"` + requestedClaims(t, request)[0].FindingID + `","original_issue":"Reflected XSS","file_path":"src/main.go","start_line":1,"verdict":"refined","confidence":0.9,"refined_technical_details":"Final evidence: <script>alert(1)</script> bypasses \\*.","justification":"Validated chain"}]}`
+					content = `{"audited_findings":[{"finding_id":"` + requestedClaims(t, request)[0].FindingID + `","original_issue":"Reflected XSS","file_path":"src/main.go","start_line":1,"verdict":"refined","claim_coverage":"complete","confidence":0.9,"refined_technical_details":"Final evidence: <script>alert(1)</script> bypasses \\*.","justification":"Validated chain"}]}`
 				}
 				_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": content}, "finish_reason": "stop"}}})
 			}))

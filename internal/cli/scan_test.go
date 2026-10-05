@@ -855,12 +855,12 @@ func TestApplyAuditVerdicts_RejectsAndConfirms(t *testing.T) {
 			// Rejection with a quoted blocking line — a substantiated
 			// rejection that should drop the finding.
 			{FilePath: "src/a.go", StartLine: 10, Verdict: "rejected", Confidence: 0.9,
-				BlockingCode: "src/a.go:42: if !cap_capable(...) return -EPERM;"},
+				BlockingCode: "if !capable() { return }", ClaimCoverage: "complete", BlockingEvidence: &AuditBlockingEvidence{Path: "src/a.go", Start: 1, End: 1, Quote: "if !capable() { return }", BlocksAllPaths: true, Reason: "executable_protection"}},
 			{FilePath: "src/b.go", StartLine: 20, Verdict: "confirmed", Confidence: 0.95},
 		},
 	}
 
-	out := applyFixtureAuditVerdicts(doc, audit, ingest.FileMap{}, 0.5)
+	out := applyFixtureAuditVerdicts(doc, audit, ingest.FileMap{"src/a.go": "if !capable() { return }"}, 0.5)
 
 	if len(out.Runs[0].Results) != 1 {
 		t.Fatalf("expected 1 kept result, got %d", len(out.Runs[0].Results))
@@ -941,8 +941,8 @@ func TestApplyAuditVerdicts_UnverifiedRetainedAboveThreshold(t *testing.T) {
 	if !strings.Contains(msg, "UNVERIFIED") {
 		t.Errorf("retained message %q missing UNVERIFIED marker", msg)
 	}
-	if !strings.Contains(msg, "30%") {
-		t.Errorf("retained message %q should show floored 30%% confidence, got: %s", msg, msg)
+	if confidence := out.Runs[0].Results[0].Properties.AuditConfidence; confidence == nil || *confidence != .05 {
+		t.Fatal("uncertain confidence was inflated")
 	}
 }
 
@@ -959,15 +959,15 @@ func TestApplyAuditVerdicts_ConfidenceThreshold(t *testing.T) {
 	}
 	audit := AuditResult{
 		AuditedFindings: []AuditedFinding{
-			// Confirmed but below threshold — should be dropped.
+			// A low-confidence confirmation is retained as unverified.
 			{FilePath: "src/a.go", StartLine: 10, Verdict: "confirmed", Confidence: 0.3},
 		},
 	}
 
 	out := applyFixtureAuditVerdicts(doc, audit, ingest.FileMap{}, 0.7)
 
-	if len(out.Runs[0].Results) != 0 {
-		t.Fatalf("expected 0 results after confidence cutoff, got %d", len(out.Runs[0].Results))
+	if len(out.Runs[0].Results) != 1 || out.Runs[0].Results[0].Properties.AuditStatus != "unverified" {
+		t.Fatalf("expected unverified result below confidence threshold, got %d", len(out.Runs[0].Results))
 	}
 }
 
@@ -984,9 +984,9 @@ func TestApplyAuditVerdicts_RefinesSeverityAndMessage(t *testing.T) {
 	}
 	audit := AuditResult{
 		AuditedFindings: []AuditedFinding{{
-			FilePath:                "src/a.go",
-			StartLine:               10,
-			Verdict:                 "refined",
+			FilePath:  "src/a.go",
+			StartLine: 10,
+			Verdict:   "refined", ClaimCoverage: "complete",
 			Confidence:              0.9,
 			RefinedSeverity:         8.5,
 			RefinedTechnicalDetails: "new details",

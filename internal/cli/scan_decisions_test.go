@@ -102,76 +102,36 @@ func decisionFixture(t *testing.T) (*scanDecisions, sarif.SARIFDocument) {
 	d := &scanDecisions{auditPolicySupported: true, cfg: config.Decisions{Audit: "active", Review: "active", FeatureDetection: "off", SmartChunking: "off"}, files: files, graph: map[string][]string{}, recorder: &decision.Recorder{}}
 	return d, doc
 }
-func TestJevAuditRoutesOnlySufficientFindings(t *testing.T) {
-	d, doc := decisionFixture(t)
-	calls := 0
-	d.recorder.Client = evaluateFunc(func(_ context.Context, req decision.Request) (decision.Response, error) {
-		calls++
-		state := req.State.(map[string]any)
-		evidence := state["source"].([]decision.Evidence)
-		choices := map[string]string{"coverage": "sufficient", "verdict": "supported", "blocking_evidence": "none"}
-		if evidence[0].Path == "b.go" {
-			choices["coverage"] = "insufficient_evidence"
-		}
-		return answersFor(req, choices), nil
-	})
-	queue, routed, err := d.routeAudit(context.Background(), doc)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(queue.Runs[0].Results) != 1 || len(routed.Retained) != 1 || routed.Rejected != 0 || calls != 2 {
-		t.Fatalf("queue=%d routed=%+v calls=%d", len(queue.Runs[0].Results), routed, calls)
-	}
-	result := routed.Retained[0]
-	if result.Properties.AuditStatus != "jev_supported" || result.Properties.AuditConfidence != nil {
-		t.Fatal("Jev probability became audit confidence")
-	}
-	// An unavailable generative auditor must preserve the unresolved finding too.
-	remaining := applyAuditVerdicts(queue, AuditResult{}, ingest.FileMap(d.files), .9)
-	restored := restoreRoutedAudit(remaining, routed)
-	if len(restored.Runs[0].Results) != 2 {
-		t.Fatal("lost finding when unresolved audit failed")
-	}
-	if doc.Runs[0].Results[0].Properties.AuditStatus != "" {
-		t.Fatal("mutated original analysis")
-	}
-}
-func TestJevRejectionRequiresSecondExactEvidenceValidation(t *testing.T) {
-	for _, verification := range []string{"blocked", "not_blocked", "insufficient_evidence", "error"} {
-		t.Run(verification, func(t *testing.T) {
-			d, doc := decisionFixture(t)
-			doc.Runs[0].Results = doc.Runs[0].Results[1:]
-			calls := 0
-			d.recorder.Client = evaluateFunc(func(_ context.Context, req decision.Request) (decision.Response, error) {
-				calls++
-				if _, ok := req.Questions["blocking_validation"]; ok {
-					if verification == "error" {
-						return decision.Response{}, errors.New("unavailable")
-					}
-					span := req.State.(map[string]any)["proposed_blocking_span"].(decision.Evidence)
-					if !strings.Contains(span.Text, "if !allowed(input)") {
-						t.Fatal("validation not grounded in source")
-					}
-					return answersFor(req, map[string]string{"blocking_validation": verification}), nil
+func TestJevAuditSelectsEvidenceWithoutChangingFindings(t *testing.T) {
+	for _, mode := range []string{"active", "shadow"} {
+		d, doc := decisionFixture(t)
+		d.cfg.Audit = mode
+		d.files["page.html"] = `<script src="a.go"></script>`
+		calls := 0
+		d.recorder.Client = evaluateFunc(func(_ context.Context, req decision.Request) (decision.Response, error) {
+			calls++
+			if req.Purpose != "audit" {
+				t.Fatal("unexpected stage")
+			}
+			answers := map[string]decision.Answer{}
+			for id, q := range req.Questions {
+				if q.Type != "noul" {
+					t.Fatal("audit still requests verdicts")
 				}
-				source := req.State.(map[string]any)["source"].([]decision.Evidence)
-				return answersFor(req, map[string]string{"coverage": "sufficient", "verdict": "blocked", "blocking_evidence": source[0].ID}), nil
-			})
-			queue, routed, err := d.routeAudit(context.Background(), doc)
-			if err != nil {
-				t.Fatal(err)
+				one := 1.0
+				answers[id] = decision.Answer{Type: "noul", Noul: &one}
 			}
-			if calls != 2 {
-				t.Fatalf("missing independent check: %d", calls)
-			}
-			wantRejected := 0
-			if verification == "blocked" {
-				wantRejected = 1
-			}
-			if routed.Rejected != wantRejected || len(queue.Runs[0].Results) != 1-wantRejected {
-				t.Fatal("rejection gate failed")
-			}
+			return decision.Response{Model: decision.Model, Answers: answers}, nil
 		})
+		before, _ := json.Marshal(doc)
+		err := d.selectAuditEvidence(context.Background(), doc)
+		after, _ := json.Marshal(doc)
+		if err != nil || string(before) != string(after) || calls == 0 {
+			t.Fatalf("findings changed or evidence unused: %v calls=%d", err, calls)
+		}
+		if (len(d.auditEvidence) > 0) != (mode == "active") {
+			t.Fatal("wrong evidence mode behavior")
+		}
 	}
 }
 func TestJevIncompleteAndShadowPreserveFindings(t *testing.T) {
@@ -180,22 +140,26 @@ func TestJevIncompleteAndShadowPreserveFindings(t *testing.T) {
 	d.recorder.Client = evaluateFunc(func(_ context.Context, req decision.Request) (decision.Response, error) {
 		return answersFor(req, map[string]string{"coverage": "sufficient", "verdict": "supported", "blocking_evidence": "none"}), nil
 	})
-	queue, routed, err := d.routeAudit(context.Background(), doc)
+	before, _ := json.Marshal(doc)
+	err := d.selectAuditEvidence(context.Background(), doc)
+	after, _ := json.Marshal(doc)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(queue, doc) || len(routed.Retained) != 0 || routed.Rejected != 0 {
+	if string(before) != string(after) {
 		t.Fatal("shadow altered output")
 	}
 	d.cfg.Audit = "active"
+	d.evidenceIndex = nil
 	delete(d.files, "a.go")
 	d.files["b.go"] = strings.Repeat("source\n", 10000)
 	d.recorder.Client = evaluateFunc(func(context.Context, decision.Request) (decision.Response, error) {
 		t.Fatal("incomplete evidence should fall back without a decision")
 		return decision.Response{}, nil
 	})
-	queue, routed, err = d.routeAudit(context.Background(), doc)
-	if err != nil || len(queue.Runs[0].Results) != 2 || len(routed.Retained) != 0 {
+	err = d.selectAuditEvidence(context.Background(), doc)
+	after, _ = json.Marshal(doc)
+	if err != nil || len(doc.Runs[0].Results) != 2 || string(before) != string(after) {
 		t.Fatal("incomplete evidence suppressed a finding")
 	}
 }
@@ -305,14 +269,14 @@ func TestOptionalJevCLIUsesOriginalPipelineUnlessEnabled(t *testing.T) {
 	}{
 		{name: "disabled", auditCalls: 1},
 		{name: "dependency control without key", flags: []string{"--dependency-grouping"}, auditCalls: 1},
-		{name: "enabled", flags: []string{"--jev"}, decisionCalls: 3, jevAudit: true},
-		{name: "per-stage overrides", flags: []string{"--jev", "--jev-audit", "off", "--jev-review", "off", "--jev-cwe-mapping", "off", "--jev-deduplication", "off"}, auditCalls: 1},
-		{name: "skip audit", flags: []string{"--jev", "--skip-audit"}, decisionCalls: 2},
+		{name: "enabled", flags: []string{"--jev", "--jev-review", "active", "--jev-cwe-mapping", "shadow"}, auditCalls: 1, decisionCalls: 2, jevAudit: true},
+		{name: "per-stage overrides", flags: []string{"--jev-audit", "active", "--jev-review", "off"}, auditCalls: 1},
+		{name: "skip audit", flags: []string{"--jev-review", "active", "--skip-audit"}, decisionCalls: 1},
 		{name: "review only", flags: []string{"--jev-review", "active"}, auditCalls: 1, decisionCalls: 1},
 		{name: "CWE mapping only", flags: []string{"--jev-cwe-mapping", "shadow"}, auditCalls: 1, decisionCalls: 1},
 		{name: "deduplication only", flags: []string{"--jev-deduplication", "active"}, auditCalls: 1},
-		{name: "unavailable", flags: []string{"--jev"}, auditCalls: 1, decisionCalls: 3, failure: true},
-		{name: "dry run without key", flags: []string{"--jev", "--dry-run"}, dryRun: true},
+		{name: "unavailable", flags: []string{"--jev-review", "active", "--jev-cwe-mapping", "shadow"}, auditCalls: 1, decisionCalls: 2, failure: true},
+		{name: "dry run without key", flags: []string{"--jev-audit", "shadow", "--dry-run"}, dryRun: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			oldV := v
@@ -410,8 +374,8 @@ func TestOptionalJevCLIUsesOriginalPipelineUnlessEnabled(t *testing.T) {
 				t.Fatal("analysis or findings changed")
 			}
 			if tc.jevAudit {
-				if doc.Runs[0].Results[0].Properties.AuditStatus != "jev_supported" {
-					t.Fatal("missing Jev provenance")
+				if doc.Runs[0].Results[0].Properties.AuditStatus != "confirmed" {
+					t.Fatal("generative audit was bypassed")
 				}
 				data, err = os.ReadFile(strings.TrimSuffix(out, ".sarif") + ".usage.json")
 				if err != nil {
@@ -421,7 +385,7 @@ func TestOptionalJevCLIUsesOriginalPipelineUnlessEnabled(t *testing.T) {
 				if err = json.Unmarshal(data, &report); err != nil {
 					t.Fatal(err)
 				}
-				if report.Phases["decision.audit"].Attempts != 1 || report.Phases["decision.review"].Attempts != 1 {
+				if report.Phases["decision.cwe-mapping"].Attempts != 1 || report.Phases["decision.review"].Attempts != 1 {
 					t.Fatal("Jev usage absent from whole scan ledger")
 				}
 			} else if len(tc.flags) == 0 {
@@ -440,8 +404,10 @@ func TestJevPreservesCustomAuditPolicy(t *testing.T) {
 		t.Fatal("custom audit bypassed without prompt-set opt-in")
 		return decision.Response{}, nil
 	})
-	queue, routed, err := d.routeAudit(context.Background(), doc)
-	if err != nil || !reflect.DeepEqual(queue, doc) || routed.OriginalCount != 0 {
+	before, _ := json.Marshal(doc)
+	err := d.selectAuditEvidence(context.Background(), doc)
+	after, _ := json.Marshal(doc)
+	if err != nil || string(before) != string(after) {
 		t.Fatal("custom audit changed")
 	}
 }

@@ -183,7 +183,7 @@ const auditSchemaJSON = `{
         "description": "Audit verdicts for each initial finding",
         "items": {
           "type": "object",
-          "required": ["finding_id", "original_issue", "file_path", "start_line", "end_line", "verdict", "confidence", "refined_severity", "refined_technical_details", "refined_cwe_id", "justification", "blocking_code", "summary", "remediation", "code_path"],
+          "required": ["finding_id", "original_issue", "file_path", "start_line", "end_line", "verdict", "confidence", "refined_severity", "refined_technical_details", "refined_cwe_id", "justification", "blocking_code", "claim_coverage", "unresolved_claims", "blocking_evidence", "summary", "remediation", "code_path"],
           "additionalProperties": false,
           "properties": {
             "finding_id": {
@@ -209,7 +209,7 @@ const auditSchemaJSON = `{
             "verdict": {
               "type": "string",
               "enum": ["confirmed", "refined", "rejected", "escalated", "unverified"],
-              "description": "Audit verdict. 'unverified' means you could not prove or disprove the chain in one pass — use this instead of 'rejected' when uncertain. 'rejected' REQUIRES a non-empty blocking_code citation."
+              "description": "Audit verdict. 'unverified' means you could not prove or disprove the chain in one pass — use this instead of 'rejected' when uncertain. 'rejected' requires complete claim coverage and an exact blocking_evidence citation of executable protection on every relevant path."
             },
             "confidence": {
               "type": "number",
@@ -232,9 +232,22 @@ const auditSchemaJSON = `{
               "type": "string",
               "description": "Justification for the verdict, explaining why the finding was confirmed, refined, rejected, escalated, or unverified"
             },
+            "claim_coverage": {"type":"string","enum":["complete","partial","unknown"],"description":"Whether this verdict addresses every material part of the original claim. Partial/unknown refinements cannot replace it."},
+            "unresolved_claims": {"type":"array","items":{"type":"string"},"description":"Every original subclaim that remains unresolved; never silently omit a subclaim during refinement."},
+            "blocking_evidence": {
+              "type":["object","null"],"additionalProperties":false,
+              "required":["path","start_line","end_line","quote","blocks_all_paths","reason"],
+              "properties":{
+                "path":{"type":"string"},"start_line":{"type":"integer"},"end_line":{"type":"integer"},
+                "quote":{"type":"string","description":"Exact complete source lines at this range, without line-number prefixes."},
+                "blocks_all_paths":{"type":"boolean","description":"True only if executable protection blocks every path for every material subclaim. An element-existence check or unknown caller is not protection."},
+                "reason":{"type":"string","enum":["executable_protection","missing_context","conditional_execution","other"]}
+              },
+              "description":"Required for rejection. Null for other verdicts. Missing context, unshown callers/templates, and conditional execution alone must produce unverified, never rejected."
+            },
             "blocking_code": {
               "type": "string",
-              "description": "Required when verdict='rejected': quote the exact source line(s) (with file:line) that BLOCK the exploit chain. An empty string means rejection is not substantiated by code; the verdict will be auto-coerced to 'unverified'. Empty string is acceptable for non-rejected verdicts."
+              "description": "Human-readable blocking explanation. This string alone never authorizes rejection: provide structured blocking_evidence with exact source lines and complete claim coverage. Empty is acceptable for other verdicts."
             }
           }
         }

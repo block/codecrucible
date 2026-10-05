@@ -35,6 +35,45 @@ func duplicateAnswer(req decision.Request, relationship string) decision.Respons
 	return answersFor(req, map[string]string{"relationship": relationship, "shared_root": anchor})
 }
 
+func TestDedupSharedRouterDoesNotCreateCandidates(t *testing.T) {
+	d, doc := decisionFixture(t)
+	d.cfg.Deduplication = "active"
+	d.cfg.MaxCalls = 10
+	d.files["router.go"] = "package main\nfunc router() { mount() }"
+	for i := range doc.Runs[0].Results {
+		doc.Runs[0].Results[i].CodeFlows = sarif.BuildCodeFlows([]sarif.CodePathStep{{FilePath: "router.go", StartLine: 2, EndLine: 2, Message: "Shared registration"}}, sarif.FileMap(d.files))
+	}
+	doc = sarif.WithFindingIDs(doc)
+	d.recorder.Client = evaluateFunc(func(context.Context, decision.Request) (decision.Response, error) {
+		t.Fatal("shared router consumed dedup budget")
+		return decision.Response{}, nil
+	})
+	out, err := d.deduplicateFindings(context.Background(), doc)
+	if err != nil || !reflect.DeepEqual(out, doc) {
+		t.Fatal("distinct findings changed")
+	}
+}
+
+func TestDedupSharedHelperSurvivesCandidateFiltering(t *testing.T) {
+	d, doc := decisionFixture(t)
+	d.cfg.Deduplication = "active"
+	d.cfg.MaxCalls = 1
+	d.files["helper.go"] = "package app\nfunc helper(input string) { execute(input) }"
+	for i := range doc.Runs[0].Results {
+		path := doc.Runs[0].Results[i].Locations[0].PhysicalLocation.ArtifactLocation.URI
+		doc.Runs[0].Results[i].CodeFlows = sarif.BuildCodeFlows([]sarif.CodePathStep{{FilePath: path, StartLine: 3, EndLine: 3, Message: "Caller"}, {FilePath: "helper.go", StartLine: 2, EndLine: 2, Message: "Shared defective operation"}}, sarif.FileMap(d.files))
+	}
+	calls := 0
+	d.recorder.Client = evaluateFunc(func(_ context.Context, req decision.Request) (decision.Response, error) {
+		calls++
+		return duplicateAnswer(req, "duplicate"), nil
+	})
+	out, err := d.deduplicateFindings(context.Background(), doc)
+	if err != nil || calls != 1 || len(out.Runs[0].Results) != 1 {
+		t.Fatalf("shared helper starved: %d calls, %v", calls, err)
+	}
+}
+
 func TestSemanticDedupDirectComparisonsPreserveRecords(t *testing.T) {
 	for _, mode := range []string{"active", "shadow"} {
 		t.Run(mode, func(t *testing.T) {
@@ -98,7 +137,7 @@ func TestSemanticDedupDirectComparisonsPreserveRecords(t *testing.T) {
 }
 
 func TestSemanticDedupConservativeFailures(t *testing.T) {
-	for _, kind := range []string{"provider", "uncertain", "low_probability", "missing_anchor", "foreign_anchor", "missing_source", "off"} {
+	for _, kind := range []string{"provider", "uncertain", "overlap", "low_probability", "missing_anchor", "foreign_anchor", "missing_source", "off"} {
 		t.Run(kind, func(t *testing.T) {
 			d, doc := dedupFixture()
 			if kind == "missing_source" {
@@ -115,6 +154,8 @@ func TestSemanticDedupConservativeFailures(t *testing.T) {
 				}
 				out := duplicateAnswer(req, "duplicate")
 				switch kind {
+				case "overlap":
+					out = duplicateAnswer(req, "overlap")
 				case "uncertain":
 					out = duplicateAnswer(req, "insufficient_evidence")
 				case "low_probability":

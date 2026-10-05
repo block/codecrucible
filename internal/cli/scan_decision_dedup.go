@@ -20,7 +20,7 @@ func (d *scanDecisions) deduplicateFindings(ctx context.Context, doc sarif.SARIF
 	}
 	mode := d.cfg.Deduplication
 	out := sarif.WithFindingIDs(doc)
-	limit := min(128, decisionStageLimits(d.cfg)["deduplication"])
+	limit := min(128, d.cfg.MaxCalls)
 	pairs, total, merged := 0, 0, 0
 	for ri := range out.Runs {
 		run := &out.Runs[ri]
@@ -44,6 +44,7 @@ func (d *scanDecisions) deduplicateFindings(ctx context.Context, doc sarif.SARIF
 			return decisionSubject(run.Results[order[i]]) < decisionSubject(run.Results[order[j]])
 		})
 		selections := map[int]decision.EvidenceSelection{}
+		primaryScopes := map[int][]decision.Evidence{}
 		claims := map[int]string{}
 		byScope := map[string][]int{}
 		for _, i := range order {
@@ -71,7 +72,22 @@ func (d *scanDecisions) deduplicateFindings(ctx context.Context, doc sarif.SARIF
 				continue
 			}
 			selections[i], claims[i] = s, claim
-			for _, e := range s.Evidence {
+			// Primary locations and terminal source-to-sink steps identify
+			// possible operations. Shared entrypoints alone are excluded.
+			operations := r
+			operations.CodeFlows = nil
+			if len(operations.Locations) > 0 {
+				operations.Locations = append([]sarif.SARIFLocation{}, operations.Locations[:1]...)
+			}
+			for _, flow := range r.CodeFlows {
+				for _, thread := range flow.ThreadFlows {
+					if len(thread.Locations) >= 2 {
+						operations.Locations = append(operations.Locations, thread.Locations[len(thread.Locations)-1].Location)
+					}
+				}
+			}
+			primaryScopes[i] = d.citedEvidence(operations, 7500).Evidence
+			for _, e := range primaryScopes[i] {
 				byScope[e.ID] = append(byScope[e.ID], i)
 			}
 		}
@@ -86,7 +102,7 @@ func (d *scanDecisions) deduplicateFindings(ctx context.Context, doc sarif.SARIF
 				continue
 			}
 			candidates := map[int]bool{}
-			for _, e := range selections[left].Evidence {
+			for _, e := range primaryScopes[left] {
 				for _, right := range byScope[e.ID] {
 					if rank[right] > rank[left] && !removed[right] {
 						candidates[right] = true
@@ -119,7 +135,7 @@ func (d *scanDecisions) deduplicateFindings(ctx context.Context, doc sarif.SARIF
 						evidence = append(evidence, e)
 					}
 				}
-				q := decision.Choice("Do these two complete findings describe the SAME concrete root cause at the SAME source operation, so one specific fix resolves both in full? Different vulnerable operations, independent checks, attacker capabilities, or combined additional weaknesses mean distinct, even within one function or with the same CWE. Different caller locations qualify only when source establishes the same shared defective operation. Similar prose, a shared helper name, or a common weakness category is insufficient. Do not judge validity or discard an uncertain finding.", map[string]string{"duplicate": "One identical source-backed root cause and specific fix cover both findings in full", "distinct": "The findings describe distinct operations, root causes, or additional weaknesses", "insufficient_evidence": "The supplied source cannot establish identity of the complete root cause"})
+				q := decision.Choice("Do these two complete findings describe the SAME concrete root cause at the SAME source operation, so one specific fix resolves both in full? Different vulnerable operations, independent checks, attacker capabilities, or combined additional weaknesses mean overlap or distinct, even within one function or with the same CWE. Different caller locations qualify only when source establishes the same shared defective operation. Similar prose, a shared helper name, or a common weakness category is insufficient. Do not judge validity or discard an uncertain finding.", map[string]string{"duplicate": "One identical source-backed root cause and specific fix cover both findings in full", "overlap": "The findings share a defect but one includes additional claims or a different remedy; retain both", "distinct": "The findings describe distinct operations or root causes", "insufficient_evidence": "The supplied source cannot establish identity of the complete root cause"})
 				anchor := decision.Choice("Which shared source scope establishes the single defective operation underlying BOTH findings? Select none unless its actual source establishes this, rather than merely containing both operations.", anchors)
 				state := map[string]any{"left": map[string]any{"id": decisionSubject(l), "finding": claims[left], "locations": l.Locations}, "right": map[string]any{"id": decisionSubject(r), "finding": claims[right], "locations": r.Locations}, "source": evidence, "coverage_scope": "cited declarations only; omitted behavior must not be inferred", "custom_requirements": d.requirements}
 				response, err := d.recorder.Evaluate(ctx, "deduplication", mode, decision.Digest(decisionSubject(l)+":"+decisionSubject(r)), state, map[string]decision.Question{"relationship": q, "shared_root": anchor}, evidence, true)

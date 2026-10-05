@@ -108,7 +108,7 @@ func TestCWEMappingReviewRequiredIsOnlyProposed(t *testing.T) {
 func TestAuditAppliesCWERefinement(t *testing.T) {
 	_, doc := classificationFixture()
 	id := doc.Runs[0].Results[0].Properties.FindingID
-	out := applyAuditVerdicts(doc, AuditResult{AuditedFindings: []AuditedFinding{{FindingID: id, Verdict: "refined", Confidence: .9, RefinedCWEID: "CWE-89", RefinedTechnicalDetails: "SQL injection"}}}, ingest.FileMap{}, .3)
+	out := applyAuditVerdicts(doc, AuditResult{AuditedFindings: []AuditedFinding{{FindingID: id, Verdict: "refined", ClaimCoverage: "complete", Confidence: .9, RefinedCWEID: "CWE-89", RefinedTechnicalDetails: "SQL injection"}}}, ingest.FileMap{}, .3)
 	if sarif.CWEForRule(out.Runs[0].Tool.Driver.Rules[0]) != "CWE-89" || out.Runs[0].Results[0].Properties.CWEChanges[0].Source != "generative_audit" {
 		t.Fatal("ignored refined CWE")
 	}

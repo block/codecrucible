@@ -11,6 +11,7 @@ import (
 )
 
 type scanDecisions struct {
+	auditEvidence        map[string][]decision.Evidence
 	evidenceIndex        *decision.EvidenceIndex
 	auditPolicySupported bool
 	supplementary        string
@@ -158,4 +159,19 @@ func (d *scanDecisions) observedFeatures() []string {
 		}
 	}
 	return out
+}
+
+func (d *scanDecisions) finishStage(stage string) {
+	if d == nil || d.recorder == nil {
+		return
+	}
+	if client, ok := d.recorder.Client.(interface{ CompleteStage(string) }); ok {
+		client.CompleteStage(stage)
+	}
+}
+func (d *scanDecisions) auditContext() map[string][]decision.Evidence {
+	if d == nil {
+		return nil
+	}
+	return d.auditEvidence
 }

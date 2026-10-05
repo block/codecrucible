@@ -97,6 +97,11 @@ func Candidates(text, original string, limit int) []Entry {
 	for _, t := range tokens(text) {
 		query[t] = true
 	}
+	queryTerms := make([]string, 0, len(query))
+	for term := range query {
+		queryTerms = append(queryTerms, term)
+	}
+	sort.Strings(queryTerms)
 	type hit struct {
 		e     Entry
 		score float64
@@ -108,8 +113,8 @@ func Candidates(text, original string, limit int) []Entry {
 			continue
 		}
 		score := 0.0
-		for t, weight := range searchTerms[e.ID] {
-			if query[t] {
+		for _, t := range queryTerms {
+			if weight := searchTerms[e.ID][t]; weight > 0 {
 				score += weight * math.Log(1+float64(len(catalog.Entries))/float64(termCounts[t]))
 			}
 		}

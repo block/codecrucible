@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 
@@ -86,7 +87,7 @@ pipeline and produces SARIF output suitable for GitHub Code Scanning integration
 	// Phase gates
 	cmd.Flags().Bool("skip-feature-detection", false, "skip the feature detection pre-pass (faster for small repos)")
 	cmd.Flags().Bool("skip-audit", false, "skip the CWE-specific audit phase (faster but less accurate)")
-	cmd.Flags().Float64("audit-confidence-threshold", 0.3, "reject findings below this confidence score (0.0-1.0)")
+	cmd.Flags().Float64("audit-confidence-threshold", 0.3, "mark existing findings below this score unverified; filter new audit findings (0.0-1.0)")
 	cmd.Flags().Int("audit-concurrency", 1, "max parallel audit batches (1-32); independent of analysis concurrency")
 	cmd.Flags().Int("audit-batch-size", 25, "split audit into batches of N findings (0 = single call). Default keeps each call under typical server connection-age limits (~10-12min)")
 	cmd.Flags().Int("concurrency", 3, "max number of chunks to analyze in parallel")
@@ -682,6 +683,7 @@ func runScan(cmd *cobra.Command, args []string) (scanErr error) {
 		for p := range flatResult.FileMap {
 			allPaths = append(allPaths, p)
 		}
+		sort.Strings(allPaths)
 		manifestTokens := counter.Count(strings.Join(allPaths, "\n"))
 		if manifestTokens > manifestBudget {
 			manifestTokens = manifestBudget
@@ -693,6 +695,7 @@ func runScan(cmd *cobra.Command, args []string) (scanErr error) {
 		"total_overhead", promptOverhead,
 	)
 
+	decisions.finishStage("feature-detection")
 	// Chunk if needed.
 	// Reserve budget for output tokens, measured prompt overhead, and a safety
 	// margin for tokenizer variance. The anthropic-tokenizer-go library uses
@@ -773,6 +776,7 @@ func runScan(cmd *cobra.Command, args []string) (scanErr error) {
 	// (multi-chunk). Holding it further wastes ~2x source-size bytes.
 	flatResult.XML = ""
 
+	decisions.finishStage("smart-chunking")
 	// --- Stage 5.75: Analyze chunks in parallel ---
 	maxConcurrency := cfg.Concurrency
 	if maxConcurrency <= 0 {
@@ -886,8 +890,7 @@ func runScan(cmd *cobra.Command, args []string) (scanErr error) {
 
 	// --- Stage 6.75: Audit phase (CWE-specific scrutiny) ---
 	if !cfg.SkipAudit && len(merged.Runs[0].Results) > 0 {
-		var routed routedAudit
-		merged, routed, err = decisions.routeAudit(scanCtx, merged)
+		err = decisions.selectAuditEvidence(scanCtx, merged)
 		if err != nil {
 			return err
 		}
@@ -914,7 +917,7 @@ func runScan(cmd *cobra.Command, args []string) (scanErr error) {
 				phaseUsageContext(scanCtx, "audit", *audit, auditFallback), merged, repoName,
 				auditClient, auditEndpoint, audit.ModelCfg, promptLoader,
 				auditOutputMode, flatResult.FileMap, cfg.AuditConfidenceThreshold, audit.ModelParams, auditCtx.Rendered,
-				cfg.AuditBatchSize, cfg.AuditConcurrency, !cfg.IncludeTests, counter, metadata,
+				cfg.AuditBatchSize, cfg.AuditConcurrency, !cfg.IncludeTests, counter, metadata, decisions.auditContext(),
 			)
 			if auditedDoc != nil {
 				merged = *auditedDoc
@@ -936,10 +939,6 @@ func runScan(cmd *cobra.Command, args []string) (scanErr error) {
 		} else {
 			decisions.recordPhase(metadata, "audit")
 		}
-		merged = restoreRoutedAudit(merged, routed)
-		if routed.OriginalCount > 0 {
-			slog.Info("Jev audit routing complete", "retained", len(routed.Retained), "rejected", routed.Rejected, "generative_candidates", routed.OriginalCount-len(routed.Retained)-routed.Rejected)
-		}
 		if err := artifacts.WriteSARIF("audit", merged); err != nil {
 			return fmt.Errorf("writing audit artifact: %w", err)
 		}
@@ -950,6 +949,7 @@ func runScan(cmd *cobra.Command, args []string) (scanErr error) {
 		setPhaseStatus(metadata, "audit", "skipped", "no findings")
 	}
 
+	decisions.finishStage("audit")
 	merged, err = decisions.reviewFindings(scanCtx, merged)
 	if err != nil {
 		return err
@@ -959,6 +959,7 @@ func runScan(cmd *cobra.Command, args []string) (scanErr error) {
 			return err
 		}
 	}
+	decisions.finishStage("review")
 	merged, err = decisions.mapCWEs(scanCtx, merged)
 	if err != nil {
 		return err
@@ -969,6 +970,7 @@ func runScan(cmd *cobra.Command, args []string) (scanErr error) {
 			return err
 		}
 	}
+	decisions.finishStage("cwe-mapping")
 	merged, err = decisions.deduplicateFindings(scanCtx, merged)
 	if err != nil {
 		return err
@@ -980,6 +982,7 @@ func runScan(cmd *cobra.Command, args []string) (scanErr error) {
 		}
 	}
 
+	decisions.finishStage("deduplication")
 	slog.Info("analysis complete",
 		"total_findings", len(merged.Runs[0].Results),
 		"total_rules", len(merged.Runs[0].Tool.Driver.Rules),

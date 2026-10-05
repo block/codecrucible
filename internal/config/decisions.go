@@ -66,18 +66,13 @@ func validateDecisions(v *viper.Viper, d *Decisions) error {
 	for _, mode := range []*string{&d.FeatureDetection, &d.SmartChunking, &d.Audit, &d.Review, &d.CWEMapping, &d.Deduplication} {
 		if *mode == "" {
 			*mode = "off"
-			if d.Enabled {
-				*mode = "active"
-				// New classification/merge policies begin observationally. Applying
-				// them requires an explicit per-stage active setting.
-				if mode == &d.CWEMapping || mode == &d.Deduplication {
-					*mode = "shadow"
-				}
-			}
 		}
 		if *mode != "off" && *mode != "shadow" && *mode != "active" {
 			return fmt.Errorf("invalid Jev mode %q: expected off, shadow, or active", *mode)
 		}
+	}
+	if d.Enabled && !d.AnyEnabled() {
+		return fmt.Errorf("--jev requires an explicit stage: use --jev-audit shadow or --jev-cwe-mapping shadow (off, shadow, active)")
 	}
 	if !d.AnyEnabled() {
 		return nil

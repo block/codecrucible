@@ -81,7 +81,7 @@ func (d *scanDecisions) mapCWEs(ctx context.Context, doc sarif.SARIFDocument) (s
 			case len(candidateByID) == 0:
 				d.recorder.Skip("cwe-mapping", mode, "no_mapping_candidates")
 			default:
-				q := decision.Choice("Classify the primary root-cause mechanism described by the finding using the supplied source. Choose the most specific justified definition, respecting its mapping notes. Distinguish a root cause from a consequence. This bounded candidate list may omit the correct CWE: use none_of_these then. Do not force a Base/Variant when its distinguishing condition is unproven. This classification does not validate exploitability or certify the finding.", options)
+				q := decision.CWEQuestion(options)
 				state := map[string]any{"finding": claim, "source": selection.Evidence, "coverage_scope": "cited declarations only; callers and deployment are not established", "catalog_version": cwe.Version(), "candidate_coverage": "bounded lexical retrieval, not exhaustive", "custom_requirements": d.requirements, "supplementary_context": d.supplementary}
 				response, err := d.recorder.Evaluate(ctx, "cwe-mapping", mode, decisionSubject(*r), state, map[string]decision.Question{"primary_cwe": q}, selection.Evidence, true)
 				if ctx.Err() != nil {

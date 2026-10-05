@@ -33,23 +33,6 @@ func TestFeatureCoverageGapsRetainCategories(t *testing.T) {
 	}
 }
 
-func TestAuditEveryNecessaryPrerequisiteMustBeEstablished(t *testing.T) {
-	for _, missing := range []string{"reachability", "attacker_control", "operation", "impact", "mitigation"} {
-		t.Run(missing, func(t *testing.T) {
-			d, doc := decisionFixture(t)
-			d.recorder.Client = evaluateFunc(func(_ context.Context, req decision.Request) (decision.Response, error) {
-				resp := answersFor(req, map[string]string{"coverage": "sufficient", "verdict": "supported", "blocking_evidence": "none"})
-				resp.Answers[missing] = strongAnswer(req.Questions[missing], "insufficient_evidence")
-				return resp, nil
-			})
-			queue, routed, err := d.routeAudit(context.Background(), doc)
-			if err != nil || len(queue.Runs[0].Results) != 2 || len(routed.Retained) != 0 {
-				t.Fatal("missing prerequisite became support")
-			}
-		})
-	}
-}
-
 func TestReviewChecksAssertionsAndReusesOnlyIdenticalEvidence(t *testing.T) {
 	d, doc := decisionFixture(t)
 	doc.Runs[0].Results = append(doc.Runs[0].Results[:1], doc.Runs[0].Results[0])

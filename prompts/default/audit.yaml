@@ -12,7 +12,7 @@
 #        pass. One of the audit-added findings (CWE-384) was itself a FP.
 #   This version inverts the burden of proof and removes discovery.
 
-# Permit the optional Jev evidence policy to resolve findings before this audit.
+# Permit the optional Jev evidence policy to select supplementary source evidence for this audit.
 # Prompt sets that require generative discovery should leave this unset.
 decision_audit: true
 
@@ -22,8 +22,21 @@ system_message: >
   over-reporting and try to knock each finding down.
 
 
-  A finding does not survive because it is plausible. It survives because you
-  can close all three gates with line-level evidence:
+  Confirm a finding only when you can close all three gates with line-level
+  evidence. Otherwise retain it as UNVERIFIED unless an exact executable
+  protection disproves every material subclaim on every relevant path.
+  A conditional DOM-element check is not sanitization; an unshown template
+  is missing context, not proof that a script cannot execute. Record complete,
+  partial, or unknown claim_coverage and list unresolved_claims. Do not narrow
+  a compound finding by silently omitting its unresolved parts.
+
+
+  For rejection, return blocking_evidence with exact path, line range, quote,
+  blocks_all_paths, and reason. Do not infer protection from a comment, name,
+  missing call site, or conditional execution alone. Other verdicts may use null.
+
+
+  Check the following gates:
 
 
   {production_only_gate}
@@ -61,13 +74,14 @@ system_message: >
 
 production_only_gate: >
   GATE 0 — PRODUCTION REACHABILITY. This gate runs BEFORE gates 1–3. If it
-  does not close, skip the remaining gates and REJECT the finding.
+  cannot be established from the supplied evidence, use UNVERIFIED. Missing
+  caller, template, or deployment context cannot establish non-production use.
 
 
   This scan excluded test, fixture, and debug files from ingestion. But the
   first pass can still flag production source that is only *exercised* by the
   excluded code — a helper called only from tests, a route mounted only under
-  a debug flag, a seed function that writes attacker-shaped data. Those are
+  a debug flag, a seed function that writes attacker-shaped data. Those may be
   not production findings.
 
 
@@ -116,8 +130,8 @@ production_only_gate: >
   then state why it does not apply.
 
 
-  If GATE 0 does not close: verdict REJECTED, confidence <= 0.20, reason
-  "non-production: <which sub-gate failed>". Do not proceed to gates 1–3.
+  If GATE 0 cannot be established: verdict UNVERIFIED. Identify the missing
+  caller, registration, template, or deployment evidence explicitly.
 
 user_prompt_template: >
   Audit target: {repo_name}
@@ -167,7 +181,7 @@ user_prompt_template: >
   === AUDIT PROCEDURE ===
 
   Process every finding independently through these steps. Findings are
-  UNPROVEN until you complete the steps; the default verdict is REJECTED.
+  UNPROVEN until you complete the steps; the default verdict is UNVERIFIED.
 
 
   Step 1 — Restate the claim in one sentence. What exact input, at what
@@ -176,7 +190,7 @@ user_prompt_template: >
 
 
   Step 2 — Close the gates. If GATE 0 (production reachability) is in
-  effect for this scan, close it first; failure short-circuits to REJECTED.
+  effect for this scan, close it first; missing evidence yields UNVERIFIED.
     Reachability: quote the entry point and the path to the sink.
     Absence of mitigation: name the location where a guard would sit; state
       what is (or isn't) there. Check framework defaults for this stack.
@@ -213,7 +227,10 @@ user_prompt_template: >
 
 
   Step 5 — Assign verdict:
-    REJECTED   confidence < 0.50. State which gate failed and why.
+    REJECTED   exact executable protection disproves every material subclaim
+               on every relevant path; supply blocking_evidence. Confidence
+               alone cannot justify rejection.
+    UNVERIFIED missing context, unresolved subclaims, or uncertain semantics.
     CONFIRMED  confidence >= 0.70 and refutation defeated.
     REFINED    the finding is real but the first pass got the CWE, severity,
                location, or mechanism wrong. Correct it.
@@ -226,8 +243,8 @@ user_prompt_template: >
   When multiple findings reduce to one root cause — "handlers on resource X
   lack ownership checks" — keep the highest-impact instance as CONFIRMED,
   set the rest to REFINED with confidence 0.50, and note in each that it is
-  a secondary manifestation of finding N. A systemic authorization gap is
-  one finding, not one finding per endpoint that exhibits it.
+  a secondary manifestation of finding N. Preserve separate findings and
+  their complete claims; this phase does not merge or suppress duplicates.
 
 
   SCOPE
