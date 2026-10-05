@@ -2,14 +2,22 @@
 
 This project uses **bd** (beads) for issue tracking. Run `bd onboard` to get started.
 
+## Beads stays local
+
+Keep the Beads database, Dolt storage, exports, and backups out of the Git
+repository and its history. `.beads*` is ignored and must remain ignored.
+Use `bd --sandbox` to disable automatic synchronization. Never run `bd sync`,
+`bd dolt push`, or Git-backed Beads backups, and never add a Beads/Dolt remote
+pointing at the code repository. Do not force-add ignored Beads files or push
+`refs/dolt/*`. The Git workflow below applies only to source and documentation.
+
 ## Quick Reference
 
 ```bash
-bd ready              # Find available work
-bd show <id>          # View issue details
-bd update <id> --status in_progress  # Claim work
-bd close <id>         # Complete work
-bd sync               # Sync with git
+bd --sandbox ready              # Find available work
+bd --sandbox show <id>          # View issue details
+bd --sandbox update <id> --status in_progress  # Claim work
+bd --sandbox close <id>         # Complete work locally
 ```
 
 ## Landing the Plane (Session Completion)
@@ -24,7 +32,6 @@ bd sync               # Sync with git
 4. **PUSH TO REMOTE** - This is MANDATORY:
    ```bash
    git pull --rebase
-   bd sync
    git push
    git status  # MUST show "up to date with origin"
    ```
@@ -37,4 +44,3 @@ bd sync               # Sync with git
 - NEVER stop before pushing - that leaves work stranded locally
 - NEVER say "ready to push when you are" - YOU must push
 - If push fails, resolve and retry until it succeeds
-
