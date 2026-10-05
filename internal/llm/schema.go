@@ -183,7 +183,7 @@ const auditSchemaJSON = `{
         "description": "Audit verdicts for each initial finding",
         "items": {
           "type": "object",
-          "required": ["finding_id", "original_issue", "file_path", "start_line", "end_line", "verdict", "confidence", "refined_severity", "refined_technical_details", "refined_cwe_id", "justification", "blocking_code", "claim_coverage", "unresolved_claims", "blocking_evidence", "summary", "remediation", "code_path"],
+          "required": ["finding_id", "original_issue", "file_path", "start_line", "end_line", "verdict", "confidence", "refined_severity", "refined_technical_details", "refined_cwe_id", "justification", "audit_gates", "blocking_code", "claim_coverage", "unresolved_claims", "blocking_evidence", "summary", "remediation", "code_path"],
           "additionalProperties": false,
           "properties": {
             "finding_id": {
@@ -231,6 +231,19 @@ const auditSchemaJSON = `{
             "justification": {
               "type": "string",
               "description": "Justification for the verdict, explaining why the finding was confirmed, refined, rejected, escalated, or unverified"
+            },
+            "audit_gates": {
+              "type": "array",
+              "description": "Structured outcomes for the gates required by the audit prompt. Use stable IDs production_reachability, reachability, absence_of_mitigation, material_impact where applicable. passed means evidence establishes the gate, failed means evidence disproves it, unknown means insufficient evidence, not_applicable means not required. Use an empty array when no gate assessment is available. Keep gate deliberation out of summary and refined_technical_details.",
+              "items": {
+                "type": "object", "additionalProperties": false,
+                "required": ["id", "status", "reason"],
+                "properties": {
+                  "id": {"type": "string"},
+                  "status": {"type": "string", "enum": ["passed", "failed", "unknown", "not_applicable"]},
+                  "reason": {"type": "string"}
+                }
+              }
             },
             "claim_coverage": {"type":"string","enum":["complete","partial","unknown"],"description":"Whether this verdict addresses every material part of the original claim. Partial/unknown refinements cannot replace it."},
             "unresolved_claims": {"type":"array","items":{"type":"string"},"description":"Every original subclaim that remains unresolved; never silently omit a subclaim during refinement."},

@@ -191,6 +191,13 @@ user_prompt_template: >
 
   Step 2 — Close the gates. If GATE 0 (production reachability) is in
   effect for this scan, close it first; missing evidence yields UNVERIFIED.
+  Record each outcome in audit_gates using IDs production_reachability,
+  reachability, absence_of_mitigation, and material_impact. Status is passed
+  when evidence establishes the gate, failed when evidence disproves it,
+  unknown when evidence is insufficient, or not_applicable when not required.
+  Put gate reasoning in audit_gates[].reason and verdict reasoning in
+  justification. Keep summary and refined_technical_details focused on the
+  vulnerability, its evidence, prerequisites, and remediation.
     Reachability: quote the entry point and the path to the sink.
     Absence of mitigation: name the location where a guard would sit; state
       what is (or isn't) there. Check framework defaults for this stack.

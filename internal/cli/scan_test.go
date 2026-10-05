@@ -907,8 +907,8 @@ func TestApplyAuditVerdicts_RejectedWithoutBlockingCode_CoercedToUnverified(t *t
 		t.Fatalf("expected 1 retained (unverified) result, got %d", len(out.Runs[0].Results))
 	}
 	msg := out.Runs[0].Results[0].Message.Text
-	if !strings.Contains(msg, "UNVERIFIED") {
-		t.Errorf("retained message %q missing UNVERIFIED marker", msg)
+	if strings.Contains(msg, "UNVERIFIED") || out.Runs[0].Results[0].Properties.AuditStatus != "unverified" {
+		t.Errorf("audit status must be retained in properties: %q", msg)
 	}
 }
 
@@ -938,8 +938,8 @@ func TestApplyAuditVerdicts_UnverifiedRetainedAboveThreshold(t *testing.T) {
 		t.Fatalf("expected 1 retained unverified result, got %d", len(out.Runs[0].Results))
 	}
 	msg := out.Runs[0].Results[0].Message.Text
-	if !strings.Contains(msg, "UNVERIFIED") {
-		t.Errorf("retained message %q missing UNVERIFIED marker", msg)
+	if strings.Contains(msg, "UNVERIFIED") || out.Runs[0].Results[0].Properties.AuditStatus != "unverified" {
+		t.Errorf("audit status must be retained in properties: %q", msg)
 	}
 	if confidence := out.Runs[0].Results[0].Properties.AuditConfidence; confidence == nil || *confidence != .05 {
 		t.Fatal("uncertain confidence was inflated")
@@ -1006,8 +1006,8 @@ func TestApplyAuditVerdicts_RefinesSeverityAndMessage(t *testing.T) {
 	if !strings.Contains(result.Message.Text, "new details") {
 		t.Errorf("message %q missing refined details", result.Message.Text)
 	}
-	if !strings.Contains(result.Message.Text, "90%") {
-		t.Errorf("message %q missing confidence percentage", result.Message.Text)
+	if strings.Contains(result.Message.Text, "90%") || result.Properties.AuditConfidence == nil || *result.Properties.AuditConfidence != .9 {
+		t.Errorf("confidence must be retained in properties: %+v", result)
 	}
 	rule := out.Runs[0].Tool.Driver.Rules[0]
 	if rule.Properties["security-severity"] != "8.5" {

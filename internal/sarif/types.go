@@ -150,19 +150,30 @@ type DecisionCheck struct {
 
 // FindingProperties keeps full evidence available outside the inline annotation.
 type FindingProperties struct {
-	AuditOriginal    *AuditOriginalFinding `json:"auditOriginal,omitempty"`
-	AuditRevision    json.RawMessage       `json:"auditRevision,omitempty"`
-	FindingID        string                `json:"findingId,omitempty"`
-	CWEChanges       []CWEChange           `json:"cweChanges,omitempty"`
-	DecisionCWE      *CWEAssessment        `json:"decisionCWE,omitempty"`
-	Deduplicated     []DeduplicatedFinding `json:"deduplicatedFindings,omitempty"`
-	DecisionAudit    *DecisionAssessment   `json:"decisionAudit,omitempty"`
-	DecisionReview   *DecisionAssessment   `json:"decisionReview,omitempty"`
-	Summary          string                `json:"summary,omitempty"`
-	Remediation      string                `json:"remediation,omitempty"`
-	TechnicalDetails string                `json:"technicalDetails,omitempty"`
-	AuditStatus      string                `json:"auditStatus,omitempty"`
-	AuditConfidence  *float64              `json:"auditConfidence,omitempty"`
+	AuditOriginal      *AuditOriginalFinding `json:"auditOriginal,omitempty"`
+	AuditRevision      json.RawMessage       `json:"auditRevision,omitempty"`
+	FindingID          string                `json:"findingId,omitempty"`
+	CWEChanges         []CWEChange           `json:"cweChanges,omitempty"`
+	DecisionCWE        *CWEAssessment        `json:"decisionCWE,omitempty"`
+	Deduplicated       []DeduplicatedFinding `json:"deduplicatedFindings,omitempty"`
+	DecisionAudit      *DecisionAssessment   `json:"decisionAudit,omitempty"`
+	DecisionReview     *DecisionAssessment   `json:"decisionReview,omitempty"`
+	Summary            string                `json:"summary,omitempty"`
+	Remediation        string                `json:"remediation,omitempty"`
+	TechnicalDetails   string                `json:"technicalDetails,omitempty"`
+	AuditStatus        string                `json:"auditStatus,omitempty"`
+	AuditConfidence    *float64              `json:"auditConfidence,omitempty"`
+	AuditJustification string                `json:"auditJustification,omitempty"`
+	AuditGates         []AuditGate           `json:"auditGates,omitempty"`
+	AuditReasons       []string              `json:"auditReasons,omitempty"`
+}
+
+// AuditGate is a model-reported gate assessment, not an execution failure.
+// Absence means the auditor did not supply structured gate outcomes.
+type AuditGate struct {
+	ID     string `json:"id"`
+	Status string `json:"status"`
+	Reason string `json:"reason"`
 }
 
 type CWEChange struct {

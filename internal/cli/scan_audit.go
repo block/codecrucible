@@ -45,6 +45,7 @@ type AuditedFinding struct {
 	RefinedTechnicalDetails string               `json:"refined_technical_details"`
 	RefinedCWEID            string               `json:"refined_cwe_id"`
 	Justification           string               `json:"justification"`
+	AuditGates              []sarif.AuditGate    `json:"audit_gates"`
 	BlockingCode            string               `json:"blocking_code"`
 	Summary                 string               `json:"summary"`
 	Remediation             string               `json:"remediation"`
@@ -540,6 +541,7 @@ func applyAuditVerdicts(
 		af, found := auditByID[props.FindingID]
 		if !found {
 			props.AuditStatus = "not_audited"
+			props.AuditReasons = []string{"missing_verdict"}
 			keptResults = append(keptResults, result)
 			continue
 		}
@@ -552,13 +554,26 @@ func applyAuditVerdicts(
 		props.AuditOriginal = &sarif.AuditOriginalFinding{Result: original, Rule: originalRules[result.RuleID], TechnicalDetails: props.TechnicalDetails, Summary: props.Summary, Remediation: props.Remediation}
 		revision, _ := json.Marshal(af)
 		props.AuditRevision = revision
+		props.AuditJustification = af.Justification
+		props.AuditGates = append([]sarif.AuditGate(nil), af.AuditGates...)
+		props.AuditReasons = nil
 		if af.Verdict == "rejected" && !groundedAuditRejection(af, fileMap) {
 			af.Verdict = "unverified"
+			props.AuditReasons = append(props.AuditReasons, "ungrounded_rejection")
 			coerced++
 		}
 		// Low confidence is uncertainty, not evidence against a claim. A
 		// partial refinement must not replace the original combined finding.
 		if af.Verdict != "rejected" && (af.Confidence < confidenceThreshold || af.ClaimCoverage == "partial" || af.ClaimCoverage == "unknown" || len(af.UnresolvedClaims) > 0 || (af.Verdict == "refined" && af.ClaimCoverage != "complete")) {
+			if af.Confidence < confidenceThreshold {
+				props.AuditReasons = append(props.AuditReasons, "below_confidence_threshold")
+			}
+			if af.ClaimCoverage == "partial" || af.ClaimCoverage == "unknown" || (af.Verdict == "refined" && af.ClaimCoverage != "complete") {
+				props.AuditReasons = append(props.AuditReasons, "incomplete_claim_coverage")
+			}
+			if len(af.UnresolvedClaims) > 0 {
+				props.AuditReasons = append(props.AuditReasons, "unresolved_claims")
+			}
 			af.Verdict = "unverified"
 		}
 		if af.Verdict == "rejected" {
@@ -576,7 +591,7 @@ func applyAuditVerdicts(
 			if props.TechnicalDetails != "" {
 				details = props.TechnicalDetails
 			}
-			result.Message.Text = "[UNVERIFIED — original claim retained]\n\n" + details
+			result.Message.Text = details
 			props.TechnicalDetails = details
 			keptResults = append(keptResults, result)
 			continue
@@ -623,10 +638,7 @@ func applyAuditVerdicts(
 		if af.RefinedTechnicalDetails == "" {
 			af.RefinedTechnicalDetails = result.Message.Text
 		}
-		result.Message = sarif.SARIFMessage{
-			Text: fmt.Sprintf("%s\n\n[Audit confidence: %.0f%%] %s",
-				af.RefinedTechnicalDetails, af.Confidence*100, af.Justification),
-		}
+		result.Message = sarif.SARIFMessage{Text: af.RefinedTechnicalDetails}
 
 		// Update rule severity if refined.
 		if rule, ok := ruleByID[result.RuleID]; ok && af.RefinedSeverity > 0 {
@@ -650,7 +662,7 @@ func applyAuditVerdicts(
 			FilePath:         nf.FilePath,
 			StartLine:        nf.StartLine,
 			EndLine:          nf.EndLine,
-			TechnicalDetails: fmt.Sprintf("%s\n\n[Audit confidence: %.0f%%]", nf.TechnicalDetails, nf.Confidence*100),
+			TechnicalDetails: nf.TechnicalDetails,
 			Severity:         nf.Severity,
 			CWEID:            nf.CWEID,
 			Summary:          nf.Summary,

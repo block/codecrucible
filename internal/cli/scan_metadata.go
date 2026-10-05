@@ -13,6 +13,7 @@ import (
 	"github.com/block/codecrucible/internal/decision"
 	"github.com/block/codecrucible/internal/llm"
 	"github.com/block/codecrucible/internal/sarif"
+	"github.com/block/codecrucible/internal/usage"
 )
 
 func fingerprint(data []byte) string {
@@ -217,7 +218,7 @@ func recordActualPhase(m *sarif.ScanMetadata, phase string, pc config.PhaseConfi
 
 // prepareSARIF is the output boundary shared by final and intermediate files.
 // Deep-copy metadata: audit changes must not retroactively alter analysis.
-func prepareSARIF(doc sarif.SARIFDocument, metadata *sarif.ScanMetadata, stage string) (sarif.SARIFDocument, error) {
+func prepareSARIF(doc sarif.SARIFDocument, metadata *sarif.ScanMetadata, stage string, ledgers ...*usage.Ledger) (sarif.SARIFDocument, error) {
 	doc = sarif.ReviewPresentation(doc)
 	if metadata == nil {
 		return doc, nil
@@ -236,6 +237,17 @@ func prepareSARIF(doc sarif.SARIFDocument, metadata *sarif.ScanMetadata, stage s
 	}
 	snapshot.RecipeFingerprint = fingerprint(recipe)
 	snapshot.Execution.ArtifactStage = stage
+	if len(ledgers) > 0 && ledgers[0] != nil {
+		status := "in_progress"
+		if stage == "final" {
+			status = "completed"
+			if scanExecutionError(doc) != nil {
+				status = "failed"
+			}
+		}
+		report := ledgers[0].Snapshot(status)
+		snapshot.Execution.Usage = &report
+	}
 	for i := range doc.Runs {
 		doc.Runs[i].Properties = &sarif.RunProperties{CodeCrucible: &snapshot}
 		doc.Runs[i].Tool.Driver.Version = snapshot.Recipe.ToolVersion

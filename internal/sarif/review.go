@@ -5,7 +5,9 @@ import (
 	"html"
 	"log/slog"
 	"path"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -66,6 +68,7 @@ func ReviewPresentation(doc SARIFDocument) SARIFDocument {
 			if props.TechnicalDetails == "" {
 				props.TechnicalDetails = r.Message.Text
 			}
+			separateLegacyAudit(&props)
 			if strings.TrimSpace(props.Summary) == "" {
 				props.Summary = legacySummary(props.TechnicalDetails, titles[r.RuleID])
 			}
@@ -74,9 +77,6 @@ func ReviewPresentation(doc SARIFDocument) SARIFDocument {
 			annotation := titles[r.RuleID]
 			if annotation == "" {
 				annotation = r.RuleID
-			}
-			if status := reviewStatus(props); status != "" {
-				annotation += ". " + status
 			}
 			r.Message = SARIFMessage{Text: annotation}
 			byRule[r.RuleID] = append(byRule[r.RuleID], *r)
@@ -90,9 +90,6 @@ func ReviewPresentation(doc SARIFDocument) SARIFDocument {
 			if len(findings) == 1 {
 				p := findings[0].Properties
 				text := p.Summary
-				if status := reviewStatus(*p); status != "" {
-					text = status + " " + text
-				}
 
 				rule.FullDescription = &SARIFMessage{Text: limitReviewText(text, 1024)}
 			}
@@ -111,30 +108,6 @@ func ReviewPresentation(doc SARIFDocument) SARIFDocument {
 					fmt.Fprintf(&plain, "\n\nRemediation: %s", p.Remediation)
 					fmt.Fprintf(&markdown, "\n\n**Remediation:** %s", escapeMarkdown(p.Remediation))
 				}
-				if status := reviewStatus(*p); status != "" {
-					fmt.Fprintf(&plain, "\n\n%s", status)
-					fmt.Fprintf(&markdown, "\n\n**%s**", escapeMarkdown(status))
-				}
-				if p.DecisionReview != nil {
-					for _, check := range p.DecisionReview.Checks {
-						if check.Status == "supported" || check.Status == "not_applicable" {
-							continue
-						}
-						text := limitReviewText(check.Assertion, 600)
-						fmt.Fprintf(&plain, "\n\nEvidence check (%s): %s", check.Status, text)
-						fmt.Fprintf(&markdown, "\n\nEvidence check (%s): %s", escapeMarkdown(check.Status), escapeMarkdown(text))
-					}
-				}
-				if p.DecisionCWE != nil && p.DecisionCWE.Proposed != "" {
-					text := fmt.Sprintf("CWE classification: %s (%s). Classification does not validate the finding.", p.DecisionCWE.Proposed, p.DecisionCWE.Status)
-					fmt.Fprintf(&plain, "\n\n%s", text)
-					fmt.Fprintf(&markdown, "\n\n%s", escapeMarkdown(text))
-				}
-				for _, duplicate := range p.Deduplicated {
-					text := fmt.Sprintf("Consolidated finding: %s at %s. Original evidence and assessment remain in result.properties.deduplicatedFindings.", duplicate.Rule.ShortDescription.Text, reviewLocation(duplicate.Result))
-					fmt.Fprintf(&plain, "\n\n%s", text)
-					fmt.Fprintf(&markdown, "\n\n%s", escapeMarkdown(text))
-				}
 				// Full evidence is retained even without Markdown details support.
 				plain.WriteString("\n\nFull technical details: result.properties.technicalDetails in the SARIF artifact.")
 				fmt.Fprintf(&markdown, "\n\n<details>\n<summary>Technical details</summary>\n\n<pre>%s</pre>\n</details>", html.EscapeString(p.TechnicalDetails))
@@ -143,6 +116,37 @@ func ReviewPresentation(doc SARIFDocument) SARIFDocument {
 		}
 	}
 	return doc
+}
+
+var legacyAuditConfidence = regexp.MustCompile(`(?m)^\[Audit confidence: ([0-9]+(?:\.[0-9]+)?)%\]`)
+
+// Older saved findings embedded scanner metadata in the evidence text. Move
+// only the known scanner annotations; do not interpret arbitrary source prose.
+func separateLegacyAudit(p *FindingProperties) {
+	for _, prefix := range []string{"[UNVERIFIED]\n\n", "[UNVERIFIED — original claim retained]\n\n"} {
+		if strings.HasPrefix(p.TechnicalDetails, prefix) {
+			p.TechnicalDetails = strings.TrimPrefix(p.TechnicalDetails, prefix)
+			if p.AuditStatus == "" {
+				p.AuditStatus = "unverified"
+			}
+		}
+	}
+	match := legacyAuditConfidence.FindStringSubmatchIndex(p.TechnicalDetails)
+	if match == nil {
+		return
+	}
+	confidence, err := strconv.ParseFloat(p.TechnicalDetails[match[2]:match[3]], 64)
+	if err != nil || confidence > 100 {
+		return
+	}
+	if p.AuditConfidence == nil {
+		confidence /= 100
+		p.AuditConfidence = &confidence
+	}
+	if p.AuditJustification == "" {
+		p.AuditJustification = strings.TrimSpace(p.TechnicalDetails[match[1]:])
+	}
+	p.TechnicalDetails = strings.TrimSpace(p.TechnicalDetails[:match[0]])
 }
 
 func reviewLocation(r SARIFResult) string {
@@ -154,43 +158,6 @@ func reviewLocation(r SARIFResult) string {
 		return p.ArtifactLocation.URI
 	}
 	return fmt.Sprintf("%s:%d", p.ArtifactLocation.URI, p.Region.StartLine)
-}
-
-func reviewStatus(p FindingProperties) string {
-	status := auditReviewStatus(p)
-	if p.DecisionReview != nil && p.DecisionReview.Status != "supported" {
-		if status != "" {
-			status += " "
-		}
-		switch p.DecisionReview.Status {
-		case "contradicted":
-			status += "Evidence review found a source contradiction; manual validation is required."
-		case "unsupported":
-			status += "Evidence review found an unsupported assertion; manual validation is required."
-		case "insufficient_context":
-			status += "Evidence review has insufficient context; manual validation is required."
-		case "unavailable":
-			status += "Evidence review was unavailable; manual validation is required."
-		default:
-			status += "Evidence review requires manual validation."
-		}
-	}
-	return status
-}
-
-func auditReviewStatus(p FindingProperties) string {
-	switch p.AuditStatus {
-	case "jev_supported":
-		return "Jev audit: supported by supplied evidence."
-	case "not_audited":
-		return "Not audited: audit coverage is incomplete; review this finding manually."
-	case "unverified":
-		return "Unverified: the audit could not establish the full exploit path."
-	}
-	if p.AuditConfidence != nil {
-		return fmt.Sprintf("Audit %s; confidence %.0f%%.", p.AuditStatus, *p.AuditConfidence*100)
-	}
-	return ""
 }
 
 // Older/custom prompts may omit summary. Keep the first narrative paragraph,

@@ -881,7 +881,8 @@ each worker retains the same request timeout and retry bounds.
 
 Audit is best effort. If any audit batch remains unavailable, completed audit
 verdicts are preserved and the remaining findings are retained with
-`properties.auditStatus: "not_audited"` and a visible review warning. The run
+`properties.auditStatus: "not_audited"` and
+`properties.auditReasons: ["missing_verdict"]`. The run
 contains a warning notification and its audit phase metadata has status
 `incomplete`. This does not fail CI, even when all audit batches are unavailable.
 It does not turn an analysis failure or cancellation into a successful scan.
@@ -905,16 +906,58 @@ exhaustion does not start a second audit-level HTTP retry cycle.
 
 GitHub's issue panel shows a concise description of attacker control, impact,
 prerequisites, and remediation in `rule.help`. Inline `result.message.text`
-annotations contain the issue title and audit status. Findings that share a
-rule have separate, location-labelled sections in its help. Rejected findings
+annotations contain the issue title. Audit and review metadata stay in properties.
+Findings that share a rule have separate, location-labelled sections in its help. Rejected findings
 are excluded before these sections are built. Existing rule IDs stay unchanged.
 
-Full evidence and audit justification are available under the help's
-**Technical details** disclosure and verbatim in
-`result.properties.technicalDetails`. Markdown help escapes source text so
-payloads remain literal. Viewers without disclosure support can read the SARIF
+Technical evidence is available under the help's **Technical details** disclosure
+and in `result.properties.technicalDetails`. Audit justification is preserved
+separately in `result.properties.auditJustification`. Markdown help escapes source
+text so payloads remain literal. Viewers without disclosure support can read the SARIF
 property. Older/custom prompts without a reviewer summary use the first
 narrative paragraph, limited to 1000 characters, before audit justification.
+
+Finding metadata uses the standard SARIF `result.properties` extension point.
+Consumers can filter or badge these typed values without parsing descriptions.
+No HTML-comment convention is required. Existing property names and finding IDs
+are retained.
+
+| Result property | Meaning |
+|-----------------|---------|
+| `findingId` | Immutable scanner finding identity, separate from the category's `ruleId` |
+| `auditStatus` | Effective verdict: `confirmed`, `refined`, `escalated`, `unverified`, `new`, or `not_audited` |
+| `auditConfidence` | Auditor's numeric confidence from 0 to 1, including explicit zero. Omitted when unavailable. This is a model assessment, not a calibrated probability. |
+| `auditGates[]` | Model-reported gate `id`, `status` (`passed`, `failed`, `unknown`, `not_applicable`), and `reason`. Standard IDs: `production_reachability`, `reachability`, `absence_of_mitigation`, `material_impact`. Omitted when the auditor supplies no structured gates. |
+| `auditReasons[]` | Scanner reasons: `missing_verdict`, `ungrounded_rejection`, `below_confidence_threshold`, `incomplete_claim_coverage`, `unresolved_claims` |
+| `auditJustification` | Full verdict reasoning, including legacy free-text gates |
+| `auditOriginal`, `auditRevision` | Original claim and complete proposed audit revision, including claim coverage, unresolved claims and blocking evidence. The proposed verdict can differ from the effective `auditStatus`. |
+| `decisionAudit`, `decisionReview` | Bounded evidence assessments and individual assertion checks, with status, model, policy and evidence IDs |
+| `decisionCWE`, `cweChanges`, `deduplicatedFindings` | Classification and consolidation provenance |
+
+Gate results describe the model's assessment of a vulnerability. Operational
+failures use `run.invocations[].toolExecutionNotifications` and
+`run.properties.codecrucible.execution.phases` and `.chunks`. A missing verdict
+marks a finding as unaudited without guessing which provider error caused it.
+Rejected findings remain excluded from the final result set.
+
+Request token usage, retries, categorical failure reasons and known costs are
+available in `run.properties.codecrucible.execution.usage`, using the same schema
+as the usage sidecar. Each artifact captures usage to that point in the scan.
+Counts remain scoped to requests and phases: analysis chunks and audit batches
+can cover multiple findings, so there is no invented per-finding allocation.
+Check `usage_status` and the unknown/partial attempt counts before treating zeros
+as measured values. Older artifacts and scans without a usage ledger omit it.
+The usage report's status describes execution at serialization time, before any
+later output-write error or severity-based exit decision.
+
+For example, select findings needing audit review:
+
+```bash
+jq '.runs[].results[] | select(.properties.auditStatus == "not_audited" or .properties.auditStatus == "unverified") | {id: .properties.findingId, audit: .properties.auditStatus, confidence: .properties.auditConfidence, gates: .properties.auditGates}' results.sarif
+```
+
+Downstream tools must read these properties to build filters or badges. GitHub's
+alert UI does not automatically display custom properties.
 
 Analysis and audit schemas request an ordered `code_path` of exact files,
 line ranges, and step explanations. Valid paths become

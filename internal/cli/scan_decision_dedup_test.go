@@ -124,7 +124,7 @@ func TestSemanticDedupDirectComparisonsPreserveRecords(t *testing.T) {
 					t.Fatal("unreconciled finding flow")
 				}
 				view := sarif.ReviewPresentation(out)
-				if !strings.Contains(view.Runs[0].Tool.Driver.Rules[0].Help.Text, "Consolidated finding") {
+				if strings.Contains(view.Runs[0].Tool.Driver.Rules[0].Help.Text, "Consolidated finding") || len(view.Runs[0].Results[0].Properties.Deduplicated) != 1 {
 					t.Fatal("merge hidden from reviewer")
 				}
 			}

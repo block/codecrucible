@@ -332,8 +332,8 @@ func TestAuditDescriptionsFollowFinalVerdicts(t *testing.T) {
 		}
 		switch result.Locations[0].PhysicalLocation.ArtifactLocation.URI {
 		case "b.go":
-			if !strings.Contains(result.Message.Text, "Unverified") {
-				t.Fatal("uncertainty missing from annotation", result.Message)
+			if result.Properties.AuditStatus != "unverified" || strings.Contains(result.Message.Text, "Unverified") {
+				t.Fatal("uncertainty must be metadata", result.Message)
 			}
 			for _, evidence := range []string{"OLD DETAILS"} {
 				if !strings.Contains(message, evidence) {
@@ -344,7 +344,7 @@ func TestAuditDescriptionsFollowFinalVerdicts(t *testing.T) {
 				t.Fatal("new finding leaked into existing result", message)
 			}
 		case "c.go":
-			if message != "NEW EVIDENCE\n\n[Audit confidence: 90%]" {
+			if message != "NEW EVIDENCE" {
 				t.Fatal("incorrect new finding evidence", message)
 			}
 		default:
@@ -455,7 +455,7 @@ func TestScanArtifactsIncludeFinalEvidenceAndMetadata(t *testing.T) {
 							t.Fatal("unaudited finding is not marked")
 						}
 					} else {
-						want = "Final evidence: <script>alert(1)</script> bypasses \\*.\n\n[Audit confidence: 90%] Validated chain"
+						want = "Final evidence: <script>alert(1)</script> bypasses \\*."
 						if state.Status != "completed" {
 							t.Fatal(state)
 						}

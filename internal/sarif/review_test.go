@@ -7,13 +7,38 @@ import (
 	"testing"
 )
 
-func TestReviewPresentationShowsEscapedAssertionDisagreement(t *testing.T) {
-	doc := Build(AnalysisResult{SecurityIssues: []SecurityIssue{{Issue: "Unsafe output", FilePath: "a.go", StartLine: 1, Summary: "A source assertion needs checking."}}}, nil, BuilderConfig{})
-	doc.Runs[0].Results[0].Properties.DecisionReview = &DecisionAssessment{Status: "contradicted", Checks: []DecisionCheck{{Assertion: "The output includes <script>.", Status: "contradicted"}}}
+func TestReviewPresentationKeepsAssessmentsInProperties(t *testing.T) {
+	doc := WithFindingIDs(Build(AnalysisResult{SecurityIssues: []SecurityIssue{{Issue: "Unsafe output", FilePath: "a.go", StartLine: 1, Summary: "A source assertion needs checking."}}}, nil, BuilderConfig{}))
+	p := doc.Runs[0].Results[0].Properties
+	confidence := 0.0
+	p.AuditStatus = "unverified"
+	p.AuditConfidence = &confidence
+	p.AuditJustification = "GATE 0: unknown"
+	p.AuditGates = []AuditGate{{ID: "production_reachability", Status: "unknown", Reason: "Missing caller"}}
+	p.AuditReasons = []string{"below_confidence_threshold"}
+	p.DecisionReview = &DecisionAssessment{Status: "contradicted", Checks: []DecisionCheck{{Assertion: "The output includes <script>.", Status: "contradicted"}}}
+	p.DecisionCWE = &CWEAssessment{Status: "uncertain", Proposed: "CWE-79"}
 	got := ReviewPresentation(doc)
-	help := got.Runs[0].Tool.Driver.Rules[0].Help.Markdown
-	if !strings.Contains(help, "Evidence check (contradicted)") || !strings.Contains(help, "&lt;script&gt;") || strings.Contains(help, "<script>") {
-		t.Fatalf("missing or unsafe evidence check: %s", help)
+	rule := got.Runs[0].Tool.Driver.Rules[0]
+	visible := got.Runs[0].Results[0].Message.Text + rule.FullDescription.Text + rule.Help.Text + rule.Help.Markdown
+	for _, metadata := range []string{"unverified", "GATE 0", "contradicted", "<script>", "CWE classification", p.FindingID} {
+		if strings.Contains(visible, metadata) {
+			t.Fatalf("metadata %q in description: %s", metadata, visible)
+		}
+	}
+	data, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var roundTrip SARIFDocument
+	if err := json.Unmarshal(data, &roundTrip); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(roundTrip.Runs[0].Results[0].Properties, got.Runs[0].Results[0].Properties) {
+		t.Fatal("metadata lost during serialization")
+	}
+	if !reflect.DeepEqual(p.AuditGates, got.Runs[0].Results[0].Properties.AuditGates) || got.Runs[0].Results[0].Properties.FindingID != p.FindingID {
+		t.Fatal("assessment or identity lost")
 	}
 }
 
@@ -37,11 +62,11 @@ func TestReviewPresentation(t *testing.T) {
 			t.Fatal("missing issue description", want, rule.Help)
 		}
 	}
-	if strings.Contains(rule.Help.Text, "GATE 0") || strings.Contains(rule.Help.Markdown, "<script>") ||
+	if strings.Contains(rule.Help.Text+rule.Help.Markdown, "GATE 0") || strings.Contains(rule.Help.Markdown, "<script>") ||
 		!strings.Contains(rule.Help.Markdown, "<details>") || !strings.Contains(rule.Help.Markdown, "&lt;script&gt;") {
 		t.Fatal("verbose evidence not safely separated", rule.Help)
 	}
-	if got.Runs[0].Results[0].Properties.TechnicalDetails != details ||
+	if got.Runs[0].Results[0].Properties.TechnicalDetails != strings.Split(details, "\n\n")[0] || got.Runs[0].Results[0].Properties.AuditJustification != "GATE 0: verbose reasoning." ||
 		got.Runs[0].Results[1].Properties.TechnicalDetails != "Other location details" {
 		t.Fatal("evidence lost or mixed")
 	}
@@ -84,11 +109,11 @@ func TestReviewLegacyFallbackAndUncertainty(t *testing.T) {
 	doc := Build(AnalysisResult{SecurityIssues: []SecurityIssue{{Issue: "Issue", TechnicalDetails: "[UNVERIFIED]\n\nRelevant explanation.\n\n[Audit confidence: 30%] GATE 0: full audit."}}}, nil, BuilderConfig{})
 	doc.Runs[0].Results[0].Properties.AuditStatus = "unverified"
 	got := ReviewPresentation(doc)
-	if got.Runs[0].Results[0].Properties.Summary != "Relevant explanation." || !strings.Contains(got.Runs[0].Results[0].Message.Text, "Unverified") {
+	if got.Runs[0].Results[0].Properties.Summary != "Relevant explanation." || got.Runs[0].Results[0].Message.Text != "Issue" || got.Runs[0].Results[0].Properties.AuditStatus != "unverified" {
 		t.Fatal(got)
 	}
 	doc.Runs[0].Results[0].Properties.AuditStatus = "not_audited"
-	if !strings.Contains(ReviewPresentation(doc).Runs[0].Results[0].Message.Text, "Not audited") {
-		t.Fatal("unaudited finding not visible")
+	if got := ReviewPresentation(doc); got.Runs[0].Results[0].Message.Text != "Issue" || got.Runs[0].Results[0].Properties.AuditStatus != "not_audited" {
+		t.Fatal("unaudited status lost or leaked into annotation")
 	}
 }

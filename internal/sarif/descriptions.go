@@ -3,7 +3,7 @@ package sarif
 import "strings"
 
 const ruleGuidance = "Review the individual finding's message and source location for evidence, " +
-	"audit confidence, and uncertainty markers. Validate the reported input, unsafe operation, " +
+	"and consult result properties for audit assessments. Validate the reported input, unsafe operation, " +
 	"and missing control in context before applying a fix."
 
 // RefreshDescriptions fills rule descriptions and empty result messages.

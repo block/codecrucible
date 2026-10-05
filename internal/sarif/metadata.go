@@ -1,5 +1,7 @@
 package sarif
 
+import "github.com/block/codecrucible/internal/usage"
+
 // RunProperties contains the versioned CodeCrucible extension to SARIF.
 // Authentication material must never be copied into these types.
 type RunProperties struct {
@@ -100,6 +102,7 @@ type ContextIdentity struct {
 }
 
 type ScanExecution struct {
+	Usage            *usage.Report             `json:"usage,omitempty"`
 	ArtifactStage    string                    `json:"artifactStage"`
 	Phases           map[string]PhaseExecution `json:"phases"`
 	RetainedFeatures []string                  `json:"retainedFeatures,omitempty"`

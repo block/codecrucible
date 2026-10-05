@@ -8,10 +8,12 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
 
+	"github.com/block/codecrucible/internal/sarif"
 	"github.com/block/codecrucible/internal/usage"
 )
 
@@ -104,6 +106,39 @@ func TestScanUsageIncludesEveryPhaseAndSurvivesAuditFailure(t *testing.T) {
 	if report.Status != "completed" || report.SchemaVersion != 1 || report.RunID == "" || report.Total.Complete {
 		t.Fatalf("bad report: %+v", report)
 	}
+	// The standalone SARIF must preserve every measured attempt, including failed
+	// calls and repairs, without allocating batch tokens to individual findings.
+	var analysisAttempts int
+	for _, stage := range []string{"analysis", "audit", "final"} {
+		path := strings.TrimSuffix(out, ".sarif") + "." + stage + ".sarif"
+		if stage == "final" {
+			path = out
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var doc sarif.SARIFDocument
+		if err := json.Unmarshal(data, &doc); err != nil {
+			t.Fatal(err)
+		}
+		got := doc.Runs[0].Properties.CodeCrucible.Execution.Usage
+		if got == nil || got.RunID != report.RunID {
+			t.Fatal("missing run usage", stage)
+		}
+		if stage == "analysis" {
+			analysisAttempts = got.Total.Attempts
+			if got.Phases["audit"].Attempts != 0 || got.Status != "in_progress" {
+				t.Fatal("analysis snapshot contains future usage")
+			}
+		} else if !reflect.DeepEqual(got.Total, report.Total) || !reflect.DeepEqual(got.Requests, report.Requests) {
+			t.Fatal("SARIF usage differs from sidecar", stage)
+		}
+	}
+	if analysisAttempts >= report.Total.Attempts {
+		t.Fatal("audit attempts missing")
+	}
+
 	total := 0
 	mu.Lock()
 	for model, count := range calls {

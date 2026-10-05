@@ -181,8 +181,8 @@ func TestJevReviewRetainsUncertainFindingsAndEvidenceProvenance(t *testing.T) {
 		}
 	}
 	presented := sarif.ReviewPresentation(reviewed)
-	if !strings.Contains(presented.Runs[0].Results[0].Message.Text, "manual validation") {
-		t.Fatal("review uncertainty invisible")
+	if strings.Contains(presented.Runs[0].Results[0].Message.Text, "manual validation") || presented.Runs[0].Results[0].Properties.DecisionReview.Status != "contradicted" {
+		t.Fatal("review uncertainty must remain in properties")
 	}
 	report, _ := json.Marshal(d.recorder.Report())
 	if strings.Contains(string(report), "execute(input)") {

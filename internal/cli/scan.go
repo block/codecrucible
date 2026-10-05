@@ -455,6 +455,7 @@ func runScan(cmd *cobra.Command, args []string) (scanErr error) {
 	}
 	artifacts := newPhaseArtifactWriter(cfg)
 	artifacts.metadata = metadata
+	artifacts.ledger = ledger
 	recordActualPhase(metadata, "analysis", *analysis, cfg, false)
 	scanCtx := usage.WithLedger(cmd.Context(), ledger)
 	defer func() {
@@ -989,7 +990,7 @@ func runScan(cmd *cobra.Command, args []string) (scanErr error) {
 	)
 
 	// --- Stage 7: Output ---
-	merged, err = prepareSARIF(sarif.WithFindingIDs(merged), metadata, "final")
+	merged, err = prepareSARIF(sarif.WithFindingIDs(merged), metadata, "final", ledger)
 	if err != nil {
 		return err
 	}
