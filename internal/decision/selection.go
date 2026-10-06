@@ -35,14 +35,22 @@ type sourceUnit struct {
 	function    bool
 	header      bool
 	codeStart   int
+	// Non-Go structure: enclosing type or namespace, a type header,
+	// router/app middleware registrations that guard later handlers, and
+	// decorated definitions, which register themselves (@app.route).
+	parent    *sourceUnit
+	container bool
+	guard     bool
+	annotated bool
 }
 type indexedSource struct {
 	units  []*sourceUnit
 	parsed bool
 }
 
-// EvidenceIndex parses admitted sources once. Go declarations support focused
-// selection; other languages and parse failures conservatively use full files.
+// EvidenceIndex parses admitted sources once. Go declarations and the
+// statements of other structural languages support focused selection; other
+// languages and parse failures conservatively use full files.
 // Symbol matching is best effort, never proof of reachability or mitigation.
 type EvidenceIndex struct {
 	files          map[string]string
@@ -127,6 +135,9 @@ func NewEvidenceIndex(files map[string]string, graph map[string][]string) *Evide
 					source.units = append(source.units, unit)
 				}
 			}
+		} else if units, ok := structuralUnits(path, content); ok {
+			source.parsed = true
+			source.units = units
 		}
 		if !source.parsed {
 			source.units = []*sourceUnit{{SourceRange: SourceRange{path, 1, len(strings.Split(strings.TrimSuffix(content, "\n"), "\n"))}}}
@@ -166,6 +177,14 @@ func (index *EvidenceIndex) selectEvidence(cited []SourceRange, budget int, supp
 			seen[unit] = true
 			queue = append(queue, unit)
 		}
+	}
+	// Middleware registrations contribute the guards they install, not every
+	// handler their router references.
+	addGuard := func(unit *sourceUnit) {
+		if !seen[unit] {
+			callerContext[unit] = true
+		}
+		add(unit)
 	}
 	for _, span := range cited {
 		if span.End == 0 {
@@ -242,6 +261,31 @@ func (index *EvidenceIndex) selectEvidence(cited []SourceRange, budget int, supp
 		for _, header := range source.units {
 			if header.header {
 				add(header)
+			}
+		}
+		// Members need their type declaration: annotations, base types, and
+		// class-level decorators can decide whether a method is reachable.
+		for parent := unit.parent; parent != nil; parent = parent.parent {
+			add(parent)
+		}
+		// Guards apply to registrations after them. A plain named definition
+		// is guarded through its registration, reached below as a caller.
+		if followCallers[unit] && (callerContext[unit] || unit.annotated || len(unit.names) == 0) {
+			for _, guard := range source.units {
+				if guard.guard && guard.parent == unit.parent && guard.Start < unit.Start {
+					addGuard(guard)
+				}
+			}
+			if unit.parent == nil {
+				importers := append([]string{}, index.reverse[unit.Path]...)
+				sort.Strings(importers)
+				for _, path := range importers {
+					for _, guard := range index.sources[path].units {
+						if guard.guard && guard.parent == nil {
+							addGuard(guard)
+						}
+					}
+				}
 			}
 		}
 		// Ancestor scopes preserve registration and guard ordering. Following all

@@ -14,6 +14,7 @@ import (
 // Only files already admitted to the scan can become dependency edges.
 func ResolveDependencies(files []SourceFile) map[string][]string {
 	graph := ResolveImports(files)
+	languages := newSourceIndex(files)
 	known := map[string]bool{}
 	packages := map[string][]string{}
 	modules := map[string]string{}
@@ -56,19 +57,8 @@ func ResolveDependencies(files []SourceFile) map[string][]string {
 					graph[f.Path] = append(graph[f.Path], packages[local]...)
 				}
 			}
-		case ".py":
-			for _, line := range strings.Split(f.Content, "\n") {
-				words := strings.Fields(line)
-				if len(words) < 2 || (words[0] != "from" && words[0] != "import") || strings.HasPrefix(words[1], ".") {
-					continue
-				}
-				module := strings.ReplaceAll(strings.TrimSuffix(words[1], ","), ".", "/")
-				for _, p := range []string{module + ".py", path.Join(module, "__init__.py")} {
-					if known[p] {
-						graph[f.Path] = append(graph[f.Path], p)
-					}
-				}
-			}
+		default:
+			graph[f.Path] = append(graph[f.Path], languages.languageDependencies(f)...)
 		}
 	}
 	for from, to := range graph {
