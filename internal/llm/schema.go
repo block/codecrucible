@@ -183,7 +183,7 @@ const auditSchemaJSON = `{
         "description": "Audit verdicts for each initial finding",
         "items": {
           "type": "object",
-          "required": ["finding_id", "original_issue", "file_path", "start_line", "end_line", "verdict", "confidence", "refined_severity", "refined_technical_details", "refined_cwe_id", "justification", "audit_gates", "blocking_code", "claim_coverage", "unresolved_claims", "blocking_evidence", "summary", "remediation", "code_path"],
+          "required": ["finding_id", "original_issue", "file_path", "start_line", "end_line", "verdict", "confidence", "refined_severity", "refined_technical_details", "refined_cwe_id", "justification", "audit_gates", "deployment_exposure", "blocking_code", "claim_coverage", "unresolved_claims", "blocking_evidence", "summary", "remediation", "code_path"],
           "additionalProperties": false,
           "properties": {
             "finding_id": {
@@ -234,7 +234,7 @@ const auditSchemaJSON = `{
             },
             "audit_gates": {
               "type": "array",
-              "description": "Structured outcomes for the gates required by the audit prompt. Use stable IDs production_reachability, reachability, absence_of_mitigation, material_impact where applicable. passed means evidence establishes the gate, failed means evidence disproves it, unknown means insufficient evidence, not_applicable means not required. Use an empty array when no gate assessment is available. Keep gate deliberation out of summary and refined_technical_details.",
+              "description": "Structured outcomes for the gates required by the audit prompt. Use stable IDs reachability, absence_of_mitigation, material_impact where applicable. Deployment exposure is recorded in deployment_exposure, not as a gate. passed means evidence establishes the gate, failed means evidence disproves it, unknown means insufficient evidence, not_applicable means not required. Use an empty array when no gate assessment is available. Keep gate deliberation out of summary and refined_technical_details.",
               "items": {
                 "type": "object", "additionalProperties": false,
                 "required": ["id", "status", "reason"],
@@ -243,6 +243,25 @@ const auditSchemaJSON = `{
                   "status": {"type": "string", "enum": ["passed", "failed", "unknown", "not_applicable"]},
                   "reason": {"type": "string"}
                 }
+              }
+            },
+            "deployment_exposure": {
+              "type": "object", "additionalProperties": false,
+              "required": ["status", "enabling_key", "evidence", "reason"],
+              "description": "Whether the flagged code runs in a deployed service, assessed separately from validity. It never changes the verdict, severity, or confidence.",
+              "properties": {
+                "status": {"type": "string", "enum": ["default_on", "config_enabled", "config_dependent", "not_deployed", "unknown"]},
+                "enabling_key": {"type": "string", "description": "Configuration key, feature flag, build tag, or profile that enables the path. Empty when no guard applies."},
+                "evidence": {
+                  "type": ["object", "null"], "additionalProperties": false,
+                  "required": ["path", "start_line", "end_line", "quote"],
+                  "description": "The guard, setting, or build constraint that decides exposure, quoted exactly. Required for not_deployed. Null when no guard was found.",
+                  "properties": {
+                    "path": {"type": "string"}, "start_line": {"type": "integer"}, "end_line": {"type": "integer"},
+                    "quote": {"type": "string", "description": "Exact complete source lines at this range, without line-number prefixes."}
+                  }
+                },
+                "reason": {"type": "string"}
               }
             },
             "claim_coverage": {"type":"string","enum":["complete","partial","unknown"],"description":"Whether this verdict addresses every material part of the original claim. Partial/unknown refinements cannot replace it."},

@@ -943,8 +943,9 @@ are retained.
 | `findingId` | Immutable scanner finding identity, separate from the category's `ruleId` |
 | `auditStatus` | Effective verdict: `confirmed`, `refined`, `escalated`, `unverified`, `new`, or `not_audited` |
 | `auditConfidence` | Auditor's numeric confidence from 0 to 1, including explicit zero. Omitted when unavailable. This is a model assessment, not a calibrated probability. |
-| `auditGates[]` | Model-reported gate `id`, `status` (`passed`, `failed`, `unknown`, `not_applicable`), and `reason`. Standard IDs: `production_reachability`, `reachability`, `absence_of_mitigation`, `material_impact`. Omitted when the auditor supplies no structured gates. |
-| `auditReasons[]` | Scanner reasons: `missing_verdict`, `ungrounded_rejection`, `below_confidence_threshold`, `incomplete_claim_coverage`, `unresolved_claims` |
+| `auditGates[]` | Model-reported gate `id`, `status` (`passed`, `failed`, `unknown`, `not_applicable`), and `reason`. Standard IDs: `reachability`, `absence_of_mitigation`, `material_impact`. Omitted when the auditor supplies no structured gates. |
+| `auditReasons[]` | Scanner reasons: `missing_verdict`, `ungrounded_rejection`, `below_confidence_threshold`, `incomplete_claim_coverage`, `unresolved_claims`, `ungrounded_not_deployed`, `missing_deployment_exposure`, `invalid_deployment_exposure` |
+| `deploymentExposure` | Whether the code runs in a deployed service, assessed separately from validity and never changing verdict or severity. `status` is `default_on`, `config_enabled`, `config_dependent`, `not_deployed`, `unknown`, or `not_assessed` (no verdict). Includes the `enablingKey`, quoted `evidence` (`grounded` when it matches the source exactly; `not_deployed` requires it), and the deterministic `trace` summary (`entryPointFound`, `configKeys`, `gaps`). Gaps such as `no_callers_found` are retrieval limits, not evidence of non-deployment. |
 | `auditJustification` | Full verdict reasoning, including legacy free-text gates |
 | `auditOriginal`, `auditRevision` | Original claim and complete proposed audit revision, including claim coverage, unresolved claims and blocking evidence. The proposed verdict can differ from the effective `auditStatus`. |
 | `decisionAudit`, `decisionReview` | Bounded evidence assessments and individual assertion checks, with status, model, policy and evidence IDs |

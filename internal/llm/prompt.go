@@ -529,7 +529,7 @@ func (l *PromptLoader) AssembleAuditMessages(params AuditParams) ([]Message, err
 	}
 	userContent = strings.ReplaceAll(userContent, "{supplementary_context}", supSection)
 
-	system := strings.ReplaceAll(ap.SystemMessage, "{production_only_gate}", prodGate)
+	system := strings.ReplaceAll(ap.SystemMessage, "{production_only_gate}", prodGate) + "\n\n" + deploymentExposureGuidance
 
 	userContent += "\nAUDIT IDENTITY CONTRACT: Return exactly one verdict for each supplied finding_id, copied verbatim. Never identify a finding by its title or source location. You may refine file_path, start_line and end_line while retaining finding_id. Do not repeat already-resolved findings absent from this request.\n"
 
@@ -545,6 +545,16 @@ func (l *PromptLoader) AssembleAuditMessages(params AuditParams) ([]Message, err
 		{Role: "user", Content: userContent},
 	}, nil
 }
+
+// deploymentExposureGuidance applies to every audit prompt set: exposure is
+// recorded per claim and kept out of the validity verdict.
+const deploymentExposureGuidance = `DEPLOYMENT EXPOSURE. Whether a vulnerability is real and whether its code runs in a deployed service are separate questions. Decide validity from the vulnerability gates alone, then classify every claim in deployment_exposure. The classification never changes the verdict, severity, or confidence: debug or administrative code that configuration can enable is a production risk.
+  default_on        an entry point reaches the code with no deployment guard, or the flaw ships in the artifact whether or not anything calls it (hardcoded secrets, served pages and templates, deployment configuration).
+  config_enabled    a runtime guard (environment variable, config value, feature flag, profile) controls the path, and configuration in this repository enables it. Cite the setting.
+  config_dependent  a runtime guard controls the path and its value comes from outside the repository (unset key, remote flag service, operator input). Name the key in enabling_key.
+  not_deployed      the release artifact cannot contain or run the code: a compile-time constraint absent from release builds (build tag, cfg(test), #ifdef the release build does not define), a file the build or image excludes, or a symbol used only by test code. Quote the deciding lines in evidence. Runtime switches are config_enabled or config_dependent, never not_deployed.
+  unknown           the evidence does not settle it. This does not block confirmation.
+Claims may come with a deployment_trace retrieved deterministically from the repository. Use its steps as evidence. no_callers_found, entry_point_not_found, and a missing step mean unknown, never not_deployed: dynamic dispatch and other repositories are not traced. Path and function names (debug, dev, example, test) are hints, not evidence. Quote the guard or setting that decides exposure in evidence, or use null when there is none.`
 
 // buildCWESection assembles the CWE-specific analysis prompts for the given CWE IDs.
 func (l *PromptLoader) buildCWESection(cweIDs []string) (string, error) {

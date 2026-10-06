@@ -73,65 +73,16 @@ system_message: >
   not the probability that the described pattern appears in the code.
 
 production_only_gate: >
-  GATE 0 — PRODUCTION REACHABILITY. This gate runs BEFORE gates 1–3. If it
-  cannot be established from the supplied evidence, use UNVERIFIED. Missing
-  caller, template, or deployment context cannot establish non-production use.
+  SCAN SCOPE. This scan excluded test, fixture, and example files, so code
+  that only they exercise can still be flagged. Record that in
+  deployment_exposure; it does not decide whether the vulnerability is real.
 
 
-  This scan excluded test, fixture, and debug files from ingestion. But the
-  first pass can still flag production source that is only *exercised* by the
-  excluded code — a helper called only from tests, a route mounted only under
-  a debug flag, a seed function that writes attacker-shaped data. Those may be
-  not production findings.
-
-
-  NULL HYPOTHESIS: the finding is non-production. You must DISPROVE this to
-  proceed. "It's in a .go file, not a _test.go file" is not disproof — that
-  only means the file was ingested, not that the code path runs in prod.
-
-
-  To close GATE 0 you must establish ALL of the following:
-
-
-  0a. PRODUCTION CALL SITE. Name a caller that is itself production code.
-      A route registered in the main router. A handler wired into the server
-      startup. A cron job in the deployment manifest. If the only callers you
-      can find are in test files, seed scripts, migrations, or files you
-      cannot see because they were excluded — the gate stays open.
-
-
-  0b. NO ENVIRONMENT GUARD. The path from the production call site to the
-      sink is not fenced by NODE_ENV/RAILS_ENV/GO_ENV checks, DEBUG flags,
-      feature flags defaulting to off, or build tags (//go:build debug,
-      #ifdef DEBUG, if (process.env.NODE_ENV !== 'production')). Quote the
-      guard location you checked and state what is there.
-
-
-  0c. SHIPS IN THE ARTIFACT. The file is included in the production build.
-      It is not under examples/, scripts/, tools/, cmd/*-dev/, or a directory
-      the Dockerfile/build config excludes. It is not a mock, stub, fake, or
-      fixture that shadows a real implementation.
-
-
-  SIGNALS THAT GATE 0 IS OPEN (any one of these, unrefuted, fails the gate):
-    - Path or filename contains mock, stub, fake, fixture, seed, sample,
-      example, demo, dev, local, debug, sandbox, playground, harness
-    - Function name contains Test, Mock, Fake, Stub, Seed, Fixture, Debug
-    - Hardcoded credential in a file matching the above — assume test cred
-      unless you show production startup reads it
-    - Route mounted under /debug, /_dev, /internal, or localhost-only
-    - Comment near the sink says "test only", "TODO remove", "for local dev"
-    - The only import path to this symbol is from an excluded file
-
-
-  SIGNALS ARE REBUTTABLE. A seed.go invoked by main() on every startup is
-  production. A /debug endpoint on 0.0.0.0 with no auth is a production
-  finding *because* it is a debug endpoint in production. State the signal,
-  then state why it does not apply.
-
-
-  If GATE 0 cannot be established: verdict UNVERIFIED. Identify the missing
-  caller, registration, template, or deployment evidence explicitly.
+  Signals such as mock, stub, fixture, seed, sample, debug, or dev in a
+  path or function name are hints to check, not evidence. A seed function
+  invoked by main() on every startup is default_on. A /debug endpoint on
+  0.0.0.0 with no auth is a production finding *because* it is a debug
+  endpoint in production.
 
 user_prompt_template: >
   Audit target: {repo_name}
@@ -168,9 +119,7 @@ user_prompt_template: >
   is a finding you cannot validate.
 
 
-  Step 2 — Close the gates. If GATE 0 (production reachability) is in
-  effect for this scan, close it first; missing evidence yields UNVERIFIED.
-  Record each outcome in audit_gates using IDs production_reachability,
+  Step 2 — Close the gates. Record each outcome in audit_gates using IDs
   reachability, absence_of_mitigation, and material_impact. Status is passed
   when evidence establishes the gate, failed when evidence disproves it,
   unknown when evidence is insufficient, or not_applicable when not required.
@@ -194,8 +143,9 @@ user_prompt_template: >
       that do not by themselves give an attacker a new capability.
     - Is the operation too low-impact to matter? Adding a comment to a
       resource you cannot read is real but may sit below the reporting floor.
-    - Is the "vulnerable" code unreachable — dead, test-only, behind a build
-      flag, or in a file the deployment excludes?
+    - Is the "vulnerable" code unreachable from any attacker-controlled
+      input? (Deployment exposure is classified separately and does not
+      answer this.)
 
 
   Step 4 — Score confidence as the probability all three gates hold:

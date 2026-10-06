@@ -125,10 +125,11 @@ json_formatting_rules: >
   {schema}
 
 production_only_gate: >
-  IMPORTANT: Findings must be reachable from production code paths
-  triggerable by an untrusted party. REJECT if:
-    - the bug is in test / fixture / example / sample code not shipped;
-    - the path is gated behind compile-time debug flags not enabled in
-      release;
-    - the only callers are trusted internal code with no untrusted input
-      reaching them.
+  SCAN SCOPE. This scan excluded test, fixture, and example files, so code
+  that only they exercise can still be flagged. Record that in
+  deployment_exposure; it does not decide whether the vulnerability is real.
+
+  Compile-time debug flags absent from release builds are not_deployed.
+  Paths whose only callers are trusted internal code with no untrusted
+  input fail reachability; that is a validity question, not exposure.
+

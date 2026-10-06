@@ -166,6 +166,38 @@ type FindingProperties struct {
 	AuditJustification string                `json:"auditJustification,omitempty"`
 	AuditGates         []AuditGate           `json:"auditGates,omitempty"`
 	AuditReasons       []string              `json:"auditReasons,omitempty"`
+	DeploymentExposure *DeploymentExposure   `json:"deploymentExposure,omitempty"`
+}
+
+// DeploymentExposure records whether a finding's code runs in a deployed
+// service. It is assessed separately from validity and never changes the
+// verdict or severity: code that configuration can enable is still a risk.
+type DeploymentExposure struct {
+	// Status is default_on, config_enabled, config_dependent, not_deployed,
+	// unknown, or not_assessed (no audit verdict). not_deployed requires
+	// grounded evidence.
+	Status      string          `json:"status"`
+	EnablingKey string          `json:"enablingKey,omitempty"`
+	Evidence    *SourceCitation `json:"evidence,omitempty"`
+	// Grounded means Evidence quotes the cited source lines exactly.
+	Grounded bool                    `json:"grounded,omitempty"`
+	Reason   string                  `json:"reason,omitempty"`
+	Trace    *DeploymentTraceSummary `json:"trace,omitempty"`
+}
+
+type SourceCitation struct {
+	Path      string `json:"path"`
+	StartLine int    `json:"startLine"`
+	EndLine   int    `json:"endLine"`
+	Quote     string `json:"quote"`
+}
+
+// DeploymentTraceSummary is the deterministic backward trace the auditor
+// was given; gaps are retrieval limits, not evidence of non-deployment.
+type DeploymentTraceSummary struct {
+	EntryPointFound bool     `json:"entryPointFound"`
+	ConfigKeys      []string `json:"configKeys,omitempty"`
+	Gaps            []string `json:"gaps,omitempty"`
 }
 
 // AuditGate is a model-reported gate assessment, not an execution failure.

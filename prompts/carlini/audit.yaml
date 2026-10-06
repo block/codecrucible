@@ -89,5 +89,7 @@ json_formatting_rules: >
   {schema}
 
 production_only_gate: >
-  IMPORTANT: Findings must be reachable from production code paths. If a vulnerability
-  only exists in test code and cannot affect production, REJECT it.
+  SCAN SCOPE. This scan excluded test, fixture, and example files, so code
+  that only they exercise can still be flagged. Record that in
+  deployment_exposure; it does not decide whether the vulnerability is real.
+

@@ -79,7 +79,7 @@ func auditRan(meta *sarif.ScanMetadata) bool {
 
 func audited(p sarif.FindingProperties) bool {
 	return p.AuditStatus != "" || p.AuditConfidence != nil || p.AuditOriginal != nil || p.AuditJustification != "" ||
-		len(p.AuditGates) > 0 || len(p.AuditReasons) > 0 || len(p.AuditRevision) > 0 || p.DecisionAudit != nil
+		len(p.AuditGates) > 0 || len(p.AuditReasons) > 0 || len(p.AuditRevision) > 0 || p.DecisionAudit != nil || p.DeploymentExposure != nil
 }
 
 // replayDrift counts findings whose file is no longer scanned and snippets

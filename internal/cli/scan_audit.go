@@ -46,6 +46,7 @@ type AuditedFinding struct {
 	RefinedCWEID            string               `json:"refined_cwe_id"`
 	Justification           string               `json:"justification"`
 	AuditGates              []sarif.AuditGate    `json:"audit_gates"`
+	DeploymentExposure      *AuditExposure       `json:"deployment_exposure"`
 	BlockingCode            string               `json:"blocking_code"`
 	Summary                 string               `json:"summary"`
 	Remediation             string               `json:"remediation"`
@@ -74,6 +75,22 @@ func groundedAuditRejection(af AuditedFinding, files ingest.FileMap) bool {
 	}
 	e, valid := decision.SourceEvidence(b.Path, source, b.Start, b.End)
 	return valid && strings.TrimSpace(b.Quote) != "" && strings.TrimSpace(e.Text) == strings.TrimSpace(b.Quote)
+}
+
+// AuditExposure is the auditor's deployment classification, kept apart
+// from the verdict.
+type AuditExposure struct {
+	Status      string         `json:"status"`
+	EnablingKey string         `json:"enabling_key"`
+	Evidence    *AuditCitation `json:"evidence"`
+	Reason      string         `json:"reason"`
+}
+
+type AuditCitation struct {
+	Path  string `json:"path"`
+	Start int    `json:"start_line"`
+	End   int    `json:"end_line"`
+	Quote string `json:"quote"`
 }
 
 // NewFinding is an additional finding discovered during the audit phase.
@@ -447,6 +464,7 @@ func runAuditPhase(
 
 	// Apply audit verdicts to produce the final SARIF document.
 	auditedDoc := applyAuditVerdicts(doc, auditResult, fileMap, confidenceThreshold)
+	auditedDoc = applyDeploymentExposure(auditedDoc, auditResult, fileMap, traces)
 	if err := ctx.Err(); err != nil {
 		return &auditedDoc, usage, cost, fmt.Errorf("audit cancelled: %w", err)
 	}

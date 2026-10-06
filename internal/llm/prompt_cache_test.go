@@ -62,6 +62,10 @@ func TestAssembleAuditMessages_BatchesShareStaticPrefix(t *testing.T) {
 			first := batch(`{"claims_to_verify":[{"finding_id":"a"}]}`, `<file path="a.go">a</file>`, "CWE-89")
 			second := batch(`{"claims_to_verify":[{"finding_id":"b"}]}`, `<file path="b.go">b</file>`, "CWE-78")
 			prefix := commonPrefix(first, second)
+			// Exposure is classified for every claim and never gates validity.
+			if !strings.Contains(prefix, "DEPLOYMENT EXPOSURE") || strings.Contains(first, "production_reachability") || strings.Contains(first, "GATE 0") {
+				t.Error("prompt still gates validity on production reachability")
+			}
 			for _, static := range []string{"schema-marker", "supplementary-spec"} {
 				if !strings.Contains(prefix, static) {
 					t.Errorf("static content %q is outside the shared prefix", static)
