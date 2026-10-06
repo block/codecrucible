@@ -90,6 +90,7 @@ pipeline and produces SARIF output suitable for GitHub Code Scanning integration
 	cmd.Flags().Bool("skip-audit", false, "skip the CWE-specific audit phase (faster but less accurate)")
 	cmd.Flags().Float64("audit-confidence-threshold", 0.3, "mark existing findings below this score unverified; filter new audit findings (0.0-1.0)")
 	cmd.Flags().Int("audit-concurrency", 1, "max parallel audit batches (1-32); independent of analysis concurrency")
+	cmd.Flags().String("audit-from", "", "audit the findings of a saved analysis SARIF (the analysis phase artifact) instead of running analysis")
 	cmd.Flags().Int("audit-batch-size", 25, "split audit into batches of N findings (0 = single call). Default keeps each call under typical server connection-age limits (~10-12min)")
 	cmd.Flags().Int("concurrency", 3, "max number of chunks to analyze in parallel")
 
@@ -156,7 +157,7 @@ func bindScanFlags(cmd *cobra.Command) {
 		"skip-feature-detection", "concurrency", "max-file-size",
 		"context-limit", "max-output-tokens", "request-timeout",
 		"skip-audit", "audit-confidence-threshold", "audit-batch-size", "audit-concurrency",
-		"context-budget-pct",
+		"audit-from", "context-budget-pct",
 	}
 	for _, f := range flags {
 		_ = v.BindPFlag(f, cmd.Flags().Lookup(f))
@@ -315,6 +316,9 @@ func runScan(cmd *cobra.Command, args []string) (scanErr error) {
 	}
 	if err := config.ResolvePhases(cfg); err != nil {
 		return fmt.Errorf("loading config: %w", err)
+	}
+	if cfg.AuditFrom != "" && cfg.SkipAudit {
+		return fmt.Errorf("--audit-from replays only the audit; it cannot be combined with --skip-audit")
 	}
 
 	// Determine repo root.
@@ -521,375 +525,393 @@ func runScan(cmd *cobra.Command, args []string) (scanErr error) {
 		decisions.supplementary = auditCtx.Rendered
 	}
 
-	// --- Stage 5.5: Estimate whether we need chunking ---
-	// Measure prompt overhead assuming all sections (worst-case) to decide if
-	// feature detection is worth the extra LLM round-trip.
-	worstCaseMsgs, err := promptLoader.AssembleMessages(llm.PromptParams{
-		RepoName:             repoName,
-		XML:                  "",
-		Schema:               string(*schema),
-		ChunkTotal:           1,
-		CustomRequirements:   cfg.CustomRequirements,
-		EnabledFeatures:      nil, // nil = all sections included
-		SupplementaryContext: analysisCtx.Rendered,
-	})
-	if err != nil {
-		return fmt.Errorf("measuring prompt overhead: %w", err)
-	}
-	worstCaseOverhead := 0
-	for _, msg := range worstCaseMsgs {
-		worstCaseOverhead += counter.Count(msg.Content)
-	}
-	if outputMode == llm.OutputModeToolUse && schema != nil {
-		worstCaseOverhead += counter.Count(string(*schema))
-	}
-
-	// If the repo fits in a single chunk even with all sections, skip feature
-	// detection entirely — it's a full LLM round-trip for no benefit.
-	const tokenizerSafetyMargin = 0.20
-	outputReserve := modelCfg.MaxOutputTokens
-	worstCaseEffective := int(float64(modelCfg.ContextLimit) * (1 - tokenizerSafetyMargin))
-	worstCaseBudget := worstCaseEffective - worstCaseOverhead - outputReserve
-
-	var detectedFeatures []string
-	var tokenCorrection tokenestimate.Calibration
-	if !cfg.SkipFeatureDetection && totalTokens > worstCaseBudget {
-		var handled bool
-		detectedFeatures, handled, err = decisions.featureDetection(scanCtx, promptLoader)
+	var merged sarif.SARIFDocument
+	if cfg.AuditFrom != "" {
+		// Audit replay: saved findings stand in for feature detection and
+		// analysis, so prompt variants are compared on identical claims.
+		replayed, source, err := loadAuditReplay(cfg.AuditFrom, flatResult.FileMap)
 		if err != nil {
 			return err
 		}
-		if handled {
-			decisions.recordPhase(metadata, "feature-detection")
-			state := metadata.Execution.Phases["feature-detection"]
-			actualModel := ""
-			if state.Actual != nil {
-				actualModel = state.Actual.Model
-			}
-			if err := artifacts.WriteFeatureDetection(featureDetectionArtifact{Phase: "feature-detection", Status: state.Status, Reason: state.Reason, Fallback: state.Fallback, Repo: repoName, Provider: "typesafe", Model: actualModel, DetectedFeatures: decisions.observedFeatures(), RetainedFeatures: detectedFeatures, FeatureObservations: decisions.featureObservations()}); err != nil {
-				return err
-			}
-		} else {
-			// Multi-chunk scenario: feature detection trims sections and saves tokens.
-			fd := &cfg.Phases.FeatureDetection
-			fdClient, fdEndpoint, fdErr := buildPhaseClient(*fd, cfg)
-			if fdErr != nil {
-				slog.Warn("failed to build feature-detection client; falling back to analysis client",
-					"error", fdErr, "provider", fd.Provider)
-				fdClient, fdEndpoint = client, endpoint
-				fd = analysis
-			} else if fd.ModelCfg.Name != modelCfg.Name || fd.Provider != analysis.Provider {
-				slog.Info("feature detection uses separate configuration",
-					"provider", fd.Provider, "model", fd.ModelCfg.Name)
-			}
-			recordActualPhase(metadata, "feature-detection", *fd, cfg, fdErr != nil)
-			fdOutputMode := llm.OutputModeForConfig(fd.ModelCfg)
-			var fdCorrection tokenestimate.Calibration
-			fdFallback := ""
-			if fdErr != nil {
-				fdFallback = "analysis_client"
-			}
-			detectedFeatures, fdCorrection, err = runFeatureDetection(phaseUsageContext(scanCtx, "feature-detection", *fd, fdFallback), filtered, repoName, fdClient, fdEndpoint, fd.ModelCfg, promptLoader, fdOutputMode, fd.ModelParams, newPhaseTokenEstimator(*fd))
-			if err != nil {
-				setPhaseStatus(metadata, "feature-detection", "failed", "using all sections")
-				if wErr := artifacts.WriteFeatureDetection(featureDetectionArtifact{
-					Phase:    "feature-detection",
-					Status:   "failed",
-					Repo:     repoName,
-					Provider: fd.Provider,
-					Model:    fd.ModelCfg.Name,
-					Error:    err.Error(),
-					Fallback: "all_sections",
-				}); wErr != nil {
-					return fmt.Errorf("writing feature-detection artifact: %w", wErr)
-				}
-				slog.Warn("feature detection failed, using all sections", "error", err)
-			} else {
-				setPhaseStatus(metadata, "feature-detection", "completed", "")
-				if wErr := artifacts.WriteFeatureDetection(featureDetectionArtifact{
-					Phase:            "feature-detection",
-					Status:           "completed",
-					Repo:             repoName,
-					Provider:         fd.Provider,
-					Model:            fd.ModelCfg.Name,
-					DetectedFeatures: detectedFeatures,
-					TokenCorrection:  fdCorrection.Ratio,
-				}); wErr != nil {
-					return fmt.Errorf("writing feature-detection artifact: %w", wErr)
-				}
-				slog.Info("feature detection complete", "features", detectedFeatures)
-			}
-			// Calibration is only valid when feature detection hit the same
-			// model and deployment as chunk analysis.
-			if counter.Applies(fdCorrection) {
-				tokenCorrection = fdCorrection
-			}
-		}
-	} else if cfg.SkipFeatureDetection {
-		slog.Info("feature detection skipped (--skip-feature-detection)")
-		if wErr := artifacts.WriteFeatureDetection(featureDetectionArtifact{
-			Phase:  "feature-detection",
-			Status: "skipped",
-			Repo:   repoName,
-			Reason: "--skip-feature-detection",
-		}); wErr != nil {
-			return fmt.Errorf("writing feature-detection artifact: %w", wErr)
-		}
+		merged = replayed
+		metadata.Recipe.AuditReplay = source
+		setPhaseStatus(metadata, "feature-detection", "skipped", "audit replay")
+		setPhaseStatus(metadata, "analysis", "skipped", "audit replay")
+		decisions.finishStage("feature-detection")
+		decisions.finishStage("smart-chunking")
+		slog.Info("audit replay loaded saved findings",
+			"findings", source.Findings, "sha256", source.SHA256, "source_stage", source.ArtifactStage)
 	} else {
-		slog.Info("feature detection skipped (repo fits in single chunk)")
-		setPhaseStatus(metadata, "feature-detection", "skipped", "repo fits in single chunk")
-		if wErr := artifacts.WriteFeatureDetection(featureDetectionArtifact{
-			Phase:  "feature-detection",
-			Status: "skipped",
-			Repo:   repoName,
-			Reason: "repo fits in single chunk",
-		}); wErr != nil {
-			return fmt.Errorf("writing feature-detection artifact: %w", wErr)
-		}
-	}
-
-	metadata.Execution.DetectedFeatures = append([]string{}, detectedFeatures...)
-	if decisions != nil && decisions.cfg.FeatureDetection == "active" && len(decisions.featureObservations()) > 0 {
-		metadata.Execution.RetainedFeatures = append([]string{}, detectedFeatures...)
-		metadata.Execution.DetectedFeatures = decisions.observedFeatures()
-	}
-	metadata.Execution.TokenCorrection = tokenCorrection.Ratio
-
-	// Measure actual prompt token overhead with the resolved features.
-	// If features are nil (same as worst-case), reuse the already-computed value
-	// to avoid a redundant BPE encoding pass.
-	promptOverhead := worstCaseOverhead
-	if detectedFeatures != nil {
-		measureMsgs, mErr := promptLoader.AssembleMessages(llm.PromptParams{
+		// --- Stage 5.5: Estimate whether we need chunking ---
+		// Measure prompt overhead assuming all sections (worst-case) to decide if
+		// feature detection is worth the extra LLM round-trip.
+		worstCaseMsgs, err := promptLoader.AssembleMessages(llm.PromptParams{
 			RepoName:             repoName,
 			XML:                  "",
 			Schema:               string(*schema),
 			ChunkTotal:           1,
 			CustomRequirements:   cfg.CustomRequirements,
-			EnabledFeatures:      detectedFeatures,
+			EnabledFeatures:      nil, // nil = all sections included
 			SupplementaryContext: analysisCtx.Rendered,
 		})
-		if mErr != nil {
-			return fmt.Errorf("measuring prompt overhead: %w", mErr)
-		}
-		promptOverhead = 0
-		for _, msg := range measureMsgs {
-			promptOverhead += counter.Count(msg.Content)
-		}
-		toolOverhead := 0
-		if outputMode == llm.OutputModeToolUse && schema != nil {
-			toolOverhead = counter.Count(string(*schema))
-		}
-		promptOverhead += toolOverhead
-	}
-
-	// For multi-chunk scenarios, the prompt includes a manifest of all other
-	// file paths (injected by AssembleMessages when ChunkTotal > 1). Account
-	// for this in the overhead so the chunk budget isn't over-allocated.
-	// Cap the manifest to 10% of the context limit so it doesn't crowd out
-	// the actual file content in large repos.
-	manifestBudget := modelCfg.ContextLimit / 10
-	if totalTokens > worstCaseBudget {
-		allPaths := make([]string, 0, len(flatResult.FileMap))
-		for p := range flatResult.FileMap {
-			allPaths = append(allPaths, p)
-		}
-		sort.Strings(allPaths)
-		manifestTokens := counter.Count(strings.Join(allPaths, "\n"))
-		if manifestTokens > manifestBudget {
-			manifestTokens = manifestBudget
-		}
-		promptOverhead += manifestTokens
-	}
-
-	slog.Info("prompt overhead measured",
-		"total_overhead", promptOverhead,
-	)
-
-	decisions.finishStage("feature-detection")
-	// Chunk if needed.
-	// Reserve budget for output tokens, measured prompt overhead, and a safety
-	// margin for tokenizer variance. Models without a configured local encoding
-	// use the content-aware heuristic, and sampled BPE counts are approximate.
-	// Also accounts for API-side overhead (tool definitions, message framing,
-	// internal prompt formatting).
-	effectiveLimit := int(float64(modelCfg.ContextLimit) * (1 - tokenizerSafetyMargin))
-	chunkBudget := effectiveLimit - promptOverhead - outputReserve
-	// When supplementary context is configured, a too-small chunk budget
-	// means the user has starved the scan target. Fail loudly rather than
-	// producing tiny chunks with poor coverage.
-	const minChunkBudget = 5000
-	if analysisCtx.Tokens > 0 && chunkBudget < minChunkBudget {
-		return fmt.Errorf("supplementary context (%d tokens) leaves only %d tokens for source code; reduce --context-budget-pct or enable compress:true on large sources",
-			analysisCtx.Tokens, chunkBudget)
-	}
-	if chunkBudget <= 0 {
-		chunkBudget = modelCfg.ContextLimit / 2
-	}
-
-	// Apply the measured correction from feature detection. Only shrink —
-	// if the estimate overcounted (correction < 1), we're already safe.
-	if adjusted := counter.ChunkBudget(chunkBudget, tokenCorrection); adjusted != chunkBudget {
-		slog.Info("shrinking chunk budget to match measured tokenizer density",
-			"before", chunkBudget,
-			"after", adjusted,
-			"correction_factor", fmt.Sprintf("%.3f", tokenCorrection.Ratio),
-		)
-		chunkBudget = adjusted
-	}
-
-	if decisions != nil && totalTokens > chunkBudget {
-		importGraph, err = decisions.smartGrouping(scanCtx, importGraph)
 		if err != nil {
-			return err
+			return fmt.Errorf("measuring prompt overhead: %w", err)
 		}
-	}
-	chunker := chunk.NewChunker(counter, slog.Default())
-	chunkOpts := &chunk.ChunkOptions{
-		ImportGraph:     importGraph,
-		ExportSummaries: exportSummaries,
-	}
-	chunks, err := chunker.Chunk(flatResult, chunkBudget, chunkOpts)
-	if err != nil {
-		return fmt.Errorf("chunking: %w", err)
-	}
+		worstCaseOverhead := 0
+		for _, msg := range worstCaseMsgs {
+			worstCaseOverhead += counter.Count(msg.Content)
+		}
+		if outputMode == llm.OutputModeToolUse && schema != nil {
+			worstCaseOverhead += counter.Count(string(*schema))
+		}
 
-	if decisions != nil && decisions.hasAppliedGroupingEdges() {
-		baselineOptions := *chunkOpts
-		baselineOptions.ImportGraph = decisions.groupingBaseline
-		baselineChunks, baselineErr := chunker.Chunk(flatResult, chunkBudget, &baselineOptions)
-		if baselineErr != nil {
-			slog.Warn("grouping placement comparison unavailable", "error", baselineErr)
-			decisions.recorder.Skip("smart-chunking", decisions.cfg.SmartChunking, "placement_comparison_unavailable")
+		// If the repo fits in a single chunk even with all sections, skip feature
+		// detection entirely — it's a full LLM round-trip for no benefit.
+		const tokenizerSafetyMargin = 0.20
+		outputReserve := modelCfg.MaxOutputTokens
+		worstCaseEffective := int(float64(modelCfg.ContextLimit) * (1 - tokenizerSafetyMargin))
+		worstCaseBudget := worstCaseEffective - worstCaseOverhead - outputReserve
+
+		var detectedFeatures []string
+		var tokenCorrection tokenestimate.Calibration
+		if !cfg.SkipFeatureDetection && totalTokens > worstCaseBudget {
+			var handled bool
+			detectedFeatures, handled, err = decisions.featureDetection(scanCtx, promptLoader)
+			if err != nil {
+				return err
+			}
+			if handled {
+				decisions.recordPhase(metadata, "feature-detection")
+				state := metadata.Execution.Phases["feature-detection"]
+				actualModel := ""
+				if state.Actual != nil {
+					actualModel = state.Actual.Model
+				}
+				if err := artifacts.WriteFeatureDetection(featureDetectionArtifact{Phase: "feature-detection", Status: state.Status, Reason: state.Reason, Fallback: state.Fallback, Repo: repoName, Provider: "typesafe", Model: actualModel, DetectedFeatures: decisions.observedFeatures(), RetainedFeatures: detectedFeatures, FeatureObservations: decisions.featureObservations()}); err != nil {
+					return err
+				}
+			} else {
+				// Multi-chunk scenario: feature detection trims sections and saves tokens.
+				fd := &cfg.Phases.FeatureDetection
+				fdClient, fdEndpoint, fdErr := buildPhaseClient(*fd, cfg)
+				if fdErr != nil {
+					slog.Warn("failed to build feature-detection client; falling back to analysis client",
+						"error", fdErr, "provider", fd.Provider)
+					fdClient, fdEndpoint = client, endpoint
+					fd = analysis
+				} else if fd.ModelCfg.Name != modelCfg.Name || fd.Provider != analysis.Provider {
+					slog.Info("feature detection uses separate configuration",
+						"provider", fd.Provider, "model", fd.ModelCfg.Name)
+				}
+				recordActualPhase(metadata, "feature-detection", *fd, cfg, fdErr != nil)
+				fdOutputMode := llm.OutputModeForConfig(fd.ModelCfg)
+				var fdCorrection tokenestimate.Calibration
+				fdFallback := ""
+				if fdErr != nil {
+					fdFallback = "analysis_client"
+				}
+				detectedFeatures, fdCorrection, err = runFeatureDetection(phaseUsageContext(scanCtx, "feature-detection", *fd, fdFallback), filtered, repoName, fdClient, fdEndpoint, fd.ModelCfg, promptLoader, fdOutputMode, fd.ModelParams, newPhaseTokenEstimator(*fd))
+				if err != nil {
+					setPhaseStatus(metadata, "feature-detection", "failed", "using all sections")
+					if wErr := artifacts.WriteFeatureDetection(featureDetectionArtifact{
+						Phase:    "feature-detection",
+						Status:   "failed",
+						Repo:     repoName,
+						Provider: fd.Provider,
+						Model:    fd.ModelCfg.Name,
+						Error:    err.Error(),
+						Fallback: "all_sections",
+					}); wErr != nil {
+						return fmt.Errorf("writing feature-detection artifact: %w", wErr)
+					}
+					slog.Warn("feature detection failed, using all sections", "error", err)
+				} else {
+					setPhaseStatus(metadata, "feature-detection", "completed", "")
+					if wErr := artifacts.WriteFeatureDetection(featureDetectionArtifact{
+						Phase:            "feature-detection",
+						Status:           "completed",
+						Repo:             repoName,
+						Provider:         fd.Provider,
+						Model:            fd.ModelCfg.Name,
+						DetectedFeatures: detectedFeatures,
+						TokenCorrection:  fdCorrection.Ratio,
+					}); wErr != nil {
+						return fmt.Errorf("writing feature-detection artifact: %w", wErr)
+					}
+					slog.Info("feature detection complete", "features", detectedFeatures)
+				}
+				// Calibration is only valid when feature detection hit the same
+				// model and deployment as chunk analysis.
+				if counter.Applies(fdCorrection) {
+					tokenCorrection = fdCorrection
+				}
+			}
+		} else if cfg.SkipFeatureDetection {
+			slog.Info("feature detection skipped (--skip-feature-detection)")
+			if wErr := artifacts.WriteFeatureDetection(featureDetectionArtifact{
+				Phase:  "feature-detection",
+				Status: "skipped",
+				Repo:   repoName,
+				Reason: "--skip-feature-detection",
+			}); wErr != nil {
+				return fmt.Errorf("writing feature-detection artifact: %w", wErr)
+			}
 		} else {
-			decisions.recordGroupingPlacement(baselineChunks, chunks)
-		}
-	}
-
-	slog.Info("chunking complete",
-		"chunks", len(chunks),
-		"chunk_budget", chunkBudget,
-		"effective_limit", effectiveLimit,
-	)
-
-	metadata.Execution.Chunks.Initial = len(chunks)
-	metadata.Execution.Chunks.Budget = chunkBudget
-
-	// Release the full XML string — the chunker has either returned it
-	// verbatim (single-chunk) or built per-file XML from FileMap
-	// (multi-chunk). Holding it further wastes ~2x source-size bytes.
-	flatResult.XML = ""
-
-	decisions.finishStage("smart-chunking")
-	// --- Stage 5.75: Analyze chunks in parallel ---
-	maxConcurrency := cfg.Concurrency
-	if maxConcurrency <= 0 {
-		maxConcurrency = 3
-	}
-
-	type chunkResult struct {
-		index int
-		doc   sarif.SARIFDocument
-		err   error
-	}
-
-	results := make([]chunkResult, len(chunks))
-	var wg sync.WaitGroup
-	sem := make(chan struct{}, maxConcurrency)
-
-	for i, c := range chunks {
-		wg.Add(1)
-		go func(idx int, ch chunk.Chunk) {
-			defer wg.Done()
-			sem <- struct{}{}        // acquire
-			defer func() { <-sem }() // release
-
-			doc, _, _, aErr := analyzeChunk(
-				phaseUsageContext(scanCtx, "analysis", *analysis, ""), ch, repoName, client, endpoint,
-				modelCfg, promptLoader, schema, outputMode,
-				cfg.CustomRequirements, analysisCtx.Rendered, detectedFeatures, flatResult.FileMap, analysis.ModelParams,
-			)
-			results[idx] = chunkResult{index: idx, doc: doc, err: aErr}
-		}(i, c)
-	}
-	wg.Wait()
-
-	// Collect results in order.
-	var sarifDocs []sarif.SARIFDocument
-	var overflowPaths []string
-	for i, r := range results {
-		if errors.Is(r.err, llm.ErrContextLengthExceeded) {
-			overflowPaths = append(overflowPaths, chunks[i].Paths...)
-			metadata.Execution.Chunks.Overflowed++
-			continue
-		}
-		recordChunkOutcome(metadata, r.doc, r.err)
-		sarifDocs = append(sarifDocs, r.doc)
-	}
-
-	// Recovery pass: any chunk that hit the server-side context limit gets
-	// re-chunked at 60% budget and retried once. Overflow 400s fail fast
-	// with unknown billing unless the provider explicitly reports usage.
-	// One round is enough when calibration is working — if 60% still
-	// overflows, the heuristic is off by >40% and we'd rather fail loudly.
-	if len(overflowPaths) > 0 {
-		retryBudget := chunkBudget * 6 / 10
-		metadata.Execution.Chunks.RecoveryBudget = retryBudget
-		slog.Warn("re-chunking files from overflowed chunks at reduced budget",
-			"files", len(overflowPaths),
-			"original_budget", chunkBudget,
-			"retry_budget", retryBudget,
-		)
-
-		retryMap := make(ingest.FileMap, len(overflowPaths))
-		for _, p := range overflowPaths {
-			if content, ok := flatResult.FileMap[p]; ok {
-				retryMap[p] = content
+			slog.Info("feature detection skipped (repo fits in single chunk)")
+			setPhaseStatus(metadata, "feature-detection", "skipped", "repo fits in single chunk")
+			if wErr := artifacts.WriteFeatureDetection(featureDetectionArtifact{
+				Phase:  "feature-detection",
+				Status: "skipped",
+				Repo:   repoName,
+				Reason: "repo fits in single chunk",
+			}); wErr != nil {
+				return fmt.Errorf("writing feature-detection artifact: %w", wErr)
 			}
 		}
-		retryChunks, rErr := chunker.Chunk(ingest.FlattenResult{FileMap: retryMap}, retryBudget, chunkOpts)
-		if rErr != nil {
-			slog.Error("overflow recovery re-chunking failed; files skipped", "error", rErr, "files", len(overflowPaths))
-			metadata.Execution.Chunks.Failed += metadata.Execution.Chunks.Overflowed
-		} else {
-			slog.Info("overflow recovery pass starting", "chunks", len(retryChunks))
-			metadata.Execution.Chunks.Recovery = len(retryChunks)
-			for _, rc := range retryChunks {
+
+		metadata.Execution.DetectedFeatures = append([]string{}, detectedFeatures...)
+		if decisions != nil && decisions.cfg.FeatureDetection == "active" && len(decisions.featureObservations()) > 0 {
+			metadata.Execution.RetainedFeatures = append([]string{}, detectedFeatures...)
+			metadata.Execution.DetectedFeatures = decisions.observedFeatures()
+		}
+		metadata.Execution.TokenCorrection = tokenCorrection.Ratio
+
+		// Measure actual prompt token overhead with the resolved features.
+		// If features are nil (same as worst-case), reuse the already-computed value
+		// to avoid a redundant BPE encoding pass.
+		promptOverhead := worstCaseOverhead
+		if detectedFeatures != nil {
+			measureMsgs, mErr := promptLoader.AssembleMessages(llm.PromptParams{
+				RepoName:             repoName,
+				XML:                  "",
+				Schema:               string(*schema),
+				ChunkTotal:           1,
+				CustomRequirements:   cfg.CustomRequirements,
+				EnabledFeatures:      detectedFeatures,
+				SupplementaryContext: analysisCtx.Rendered,
+			})
+			if mErr != nil {
+				return fmt.Errorf("measuring prompt overhead: %w", mErr)
+			}
+			promptOverhead = 0
+			for _, msg := range measureMsgs {
+				promptOverhead += counter.Count(msg.Content)
+			}
+			toolOverhead := 0
+			if outputMode == llm.OutputModeToolUse && schema != nil {
+				toolOverhead = counter.Count(string(*schema))
+			}
+			promptOverhead += toolOverhead
+		}
+
+		// For multi-chunk scenarios, the prompt includes a manifest of all other
+		// file paths (injected by AssembleMessages when ChunkTotal > 1). Account
+		// for this in the overhead so the chunk budget isn't over-allocated.
+		// Cap the manifest to 10% of the context limit so it doesn't crowd out
+		// the actual file content in large repos.
+		manifestBudget := modelCfg.ContextLimit / 10
+		if totalTokens > worstCaseBudget {
+			allPaths := make([]string, 0, len(flatResult.FileMap))
+			for p := range flatResult.FileMap {
+				allPaths = append(allPaths, p)
+			}
+			sort.Strings(allPaths)
+			manifestTokens := counter.Count(strings.Join(allPaths, "\n"))
+			if manifestTokens > manifestBudget {
+				manifestTokens = manifestBudget
+			}
+			promptOverhead += manifestTokens
+		}
+
+		slog.Info("prompt overhead measured",
+			"total_overhead", promptOverhead,
+		)
+
+		decisions.finishStage("feature-detection")
+		// Chunk if needed.
+		// Reserve budget for output tokens, measured prompt overhead, and a safety
+		// margin for tokenizer variance. Models without a configured local encoding
+		// use the content-aware heuristic, and sampled BPE counts are approximate.
+		// Also accounts for API-side overhead (tool definitions, message framing,
+		// internal prompt formatting).
+		effectiveLimit := int(float64(modelCfg.ContextLimit) * (1 - tokenizerSafetyMargin))
+		chunkBudget := effectiveLimit - promptOverhead - outputReserve
+		// When supplementary context is configured, a too-small chunk budget
+		// means the user has starved the scan target. Fail loudly rather than
+		// producing tiny chunks with poor coverage.
+		const minChunkBudget = 5000
+		if analysisCtx.Tokens > 0 && chunkBudget < minChunkBudget {
+			return fmt.Errorf("supplementary context (%d tokens) leaves only %d tokens for source code; reduce --context-budget-pct or enable compress:true on large sources",
+				analysisCtx.Tokens, chunkBudget)
+		}
+		if chunkBudget <= 0 {
+			chunkBudget = modelCfg.ContextLimit / 2
+		}
+
+		// Apply the measured correction from feature detection. Only shrink —
+		// if the estimate overcounted (correction < 1), we're already safe.
+		if adjusted := counter.ChunkBudget(chunkBudget, tokenCorrection); adjusted != chunkBudget {
+			slog.Info("shrinking chunk budget to match measured tokenizer density",
+				"before", chunkBudget,
+				"after", adjusted,
+				"correction_factor", fmt.Sprintf("%.3f", tokenCorrection.Ratio),
+			)
+			chunkBudget = adjusted
+		}
+
+		if decisions != nil && totalTokens > chunkBudget {
+			importGraph, err = decisions.smartGrouping(scanCtx, importGraph)
+			if err != nil {
+				return err
+			}
+		}
+		chunker := chunk.NewChunker(counter, slog.Default())
+		chunkOpts := &chunk.ChunkOptions{
+			ImportGraph:     importGraph,
+			ExportSummaries: exportSummaries,
+		}
+		chunks, err := chunker.Chunk(flatResult, chunkBudget, chunkOpts)
+		if err != nil {
+			return fmt.Errorf("chunking: %w", err)
+		}
+
+		if decisions != nil && decisions.hasAppliedGroupingEdges() {
+			baselineOptions := *chunkOpts
+			baselineOptions.ImportGraph = decisions.groupingBaseline
+			baselineChunks, baselineErr := chunker.Chunk(flatResult, chunkBudget, &baselineOptions)
+			if baselineErr != nil {
+				slog.Warn("grouping placement comparison unavailable", "error", baselineErr)
+				decisions.recorder.Skip("smart-chunking", decisions.cfg.SmartChunking, "placement_comparison_unavailable")
+			} else {
+				decisions.recordGroupingPlacement(baselineChunks, chunks)
+			}
+		}
+
+		slog.Info("chunking complete",
+			"chunks", len(chunks),
+			"chunk_budget", chunkBudget,
+			"effective_limit", effectiveLimit,
+		)
+
+		metadata.Execution.Chunks.Initial = len(chunks)
+		metadata.Execution.Chunks.Budget = chunkBudget
+
+		// Release the full XML string — the chunker has either returned it
+		// verbatim (single-chunk) or built per-file XML from FileMap
+		// (multi-chunk). Holding it further wastes ~2x source-size bytes.
+		flatResult.XML = ""
+
+		decisions.finishStage("smart-chunking")
+		// --- Stage 5.75: Analyze chunks in parallel ---
+		maxConcurrency := cfg.Concurrency
+		if maxConcurrency <= 0 {
+			maxConcurrency = 3
+		}
+
+		type chunkResult struct {
+			index int
+			doc   sarif.SARIFDocument
+			err   error
+		}
+
+		results := make([]chunkResult, len(chunks))
+		var wg sync.WaitGroup
+		sem := make(chan struct{}, maxConcurrency)
+
+		for i, c := range chunks {
+			wg.Add(1)
+			go func(idx int, ch chunk.Chunk) {
+				defer wg.Done()
+				sem <- struct{}{}        // acquire
+				defer func() { <-sem }() // release
+
 				doc, _, _, aErr := analyzeChunk(
-					phaseUsageContext(scanCtx, "analysis", *analysis, "context_length_recovery"), rc, repoName, client, endpoint,
+					phaseUsageContext(scanCtx, "analysis", *analysis, ""), ch, repoName, client, endpoint,
 					modelCfg, promptLoader, schema, outputMode,
 					cfg.CustomRequirements, analysisCtx.Rendered, detectedFeatures, flatResult.FileMap, analysis.ModelParams,
 				)
-				recordChunkOutcome(metadata, doc, aErr)
-				if errors.Is(aErr, llm.ErrContextLengthExceeded) {
-					slog.Error("overflow recovery chunk still exceeds context; files skipped",
-						"files", len(rc.Paths),
-						"estimated_tokens", rc.Tokens,
-						"hint", "lower --context-limit or raise the tokenizer safety margin",
-					)
-					continue
+				results[idx] = chunkResult{index: idx, doc: doc, err: aErr}
+			}(i, c)
+		}
+		wg.Wait()
+
+		// Collect results in order.
+		var sarifDocs []sarif.SARIFDocument
+		var overflowPaths []string
+		for i, r := range results {
+			if errors.Is(r.err, llm.ErrContextLengthExceeded) {
+				overflowPaths = append(overflowPaths, chunks[i].Paths...)
+				metadata.Execution.Chunks.Overflowed++
+				continue
+			}
+			recordChunkOutcome(metadata, r.doc, r.err)
+			sarifDocs = append(sarifDocs, r.doc)
+		}
+
+		// Recovery pass: any chunk that hit the server-side context limit gets
+		// re-chunked at 60% budget and retried once. Overflow 400s fail fast
+		// with unknown billing unless the provider explicitly reports usage.
+		// One round is enough when calibration is working — if 60% still
+		// overflows, the heuristic is off by >40% and we'd rather fail loudly.
+		if len(overflowPaths) > 0 {
+			retryBudget := chunkBudget * 6 / 10
+			metadata.Execution.Chunks.RecoveryBudget = retryBudget
+			slog.Warn("re-chunking files from overflowed chunks at reduced budget",
+				"files", len(overflowPaths),
+				"original_budget", chunkBudget,
+				"retry_budget", retryBudget,
+			)
+
+			retryMap := make(ingest.FileMap, len(overflowPaths))
+			for _, p := range overflowPaths {
+				if content, ok := flatResult.FileMap[p]; ok {
+					retryMap[p] = content
 				}
-				sarifDocs = append(sarifDocs, doc)
+			}
+			retryChunks, rErr := chunker.Chunk(ingest.FlattenResult{FileMap: retryMap}, retryBudget, chunkOpts)
+			if rErr != nil {
+				slog.Error("overflow recovery re-chunking failed; files skipped", "error", rErr, "files", len(overflowPaths))
+				metadata.Execution.Chunks.Failed += metadata.Execution.Chunks.Overflowed
+			} else {
+				slog.Info("overflow recovery pass starting", "chunks", len(retryChunks))
+				metadata.Execution.Chunks.Recovery = len(retryChunks)
+				for _, rc := range retryChunks {
+					doc, _, _, aErr := analyzeChunk(
+						phaseUsageContext(scanCtx, "analysis", *analysis, "context_length_recovery"), rc, repoName, client, endpoint,
+						modelCfg, promptLoader, schema, outputMode,
+						cfg.CustomRequirements, analysisCtx.Rendered, detectedFeatures, flatResult.FileMap, analysis.ModelParams,
+					)
+					recordChunkOutcome(metadata, doc, aErr)
+					if errors.Is(aErr, llm.ErrContextLengthExceeded) {
+						slog.Error("overflow recovery chunk still exceeds context; files skipped",
+							"files", len(rc.Paths),
+							"estimated_tokens", rc.Tokens,
+							"hint", "lower --context-limit or raise the tokenizer safety margin",
+						)
+						continue
+					}
+					sarifDocs = append(sarifDocs, doc)
+				}
 			}
 		}
-	}
 
-	// --- Stage 6: Merge ---
-	merged := sarif.Merge(sarifDocs)
+		// --- Stage 6: Merge ---
+		merged = sarif.Merge(sarifDocs)
 
-	// --- Stage 6.5: Post-process (dedup + deprioritize non-source) ---
-	merged = sarif.WithFindingIDs(sarif.PostProcess(merged))
+		// --- Stage 6.5: Post-process (dedup + deprioritize non-source) ---
+		merged = sarif.WithFindingIDs(sarif.PostProcess(merged))
 
-	slog.Info("initial analysis complete",
-		"total_findings", len(merged.Runs[0].Results),
-		"total_rules", len(merged.Runs[0].Tool.Driver.Rules),
-	)
-	setPhaseStatus(metadata, "analysis", "completed", "")
-	if metadata.Execution.Chunks.Failed > 0 {
-		setPhaseStatus(metadata, "analysis", "failed", "one or more chunks failed")
-	}
-	if err := artifacts.WriteSARIF("analysis", merged); err != nil {
-		return fmt.Errorf("writing analysis artifact: %w", err)
+		slog.Info("initial analysis complete",
+			"total_findings", len(merged.Runs[0].Results),
+			"total_rules", len(merged.Runs[0].Tool.Driver.Rules),
+		)
+		setPhaseStatus(metadata, "analysis", "completed", "")
+		if metadata.Execution.Chunks.Failed > 0 {
+			setPhaseStatus(metadata, "analysis", "failed", "one or more chunks failed")
+		}
+		if err := artifacts.WriteSARIF("analysis", merged); err != nil {
+			return fmt.Errorf("writing analysis artifact: %w", err)
+		}
 	}
 
 	// --- Stage 6.75: Audit phase (CWE-specific scrutiny) ---

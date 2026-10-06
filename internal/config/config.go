@@ -47,6 +47,7 @@ type Config struct {
 	AuditConfidenceThreshold float64 `mapstructure:"audit-confidence-threshold"`
 	AuditBatchSize           int     `mapstructure:"audit-batch-size"`
 	AuditConcurrency         int     `mapstructure:"audit-concurrency"`
+	AuditFrom                string  `mapstructure:"audit-from"` // replay the audit on a saved analysis SARIF
 
 	// Supplementary context: reference material injected into analysis and
 	// audit prompts. See internal/supctx.

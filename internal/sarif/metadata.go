@@ -37,6 +37,20 @@ type ScanRecipe struct {
 	Prompts                       PromptIdentity         `json:"prompts"`
 	CustomRequirementsFingerprint string                 `json:"customRequirementsFingerprint,omitempty"`
 	ContextSources                []ContextIdentity      `json:"contextSources"`
+	// AuditReplay identifies the saved analysis whose findings this scan
+	// audited instead of running analysis.
+	AuditReplay *AuditReplaySource `json:"auditReplay,omitempty"`
+}
+
+// AuditReplaySource identifies replayed analysis findings by content, not path.
+// Drift counts findings whose source no longer matches the current checkout.
+type AuditReplaySource struct {
+	SHA256            string `json:"sha256"`
+	RecipeFingerprint string `json:"recipeFingerprint,omitempty"`
+	ArtifactStage     string `json:"artifactStage,omitempty"`
+	Findings          int    `json:"findings"`
+	MissingFiles      int    `json:"missingFiles"`
+	ChangedSnippets   int    `json:"changedSnippets"`
 }
 
 type PhaseRecipe struct {

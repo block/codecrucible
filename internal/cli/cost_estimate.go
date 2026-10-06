@@ -26,13 +26,16 @@ func estimateScanCost(sourceTokens scanTokenCounts, cfg *config.Config) scanCost
 	analysis := cfg.Phases.Analysis.ModelCfg
 	audit := cfg.Phases.Audit.ModelCfg
 	estimate := scanCostEstimate{
-		AnalysisInput: analysis.EstimateInputCost(sourceTokens.Analysis),
-		auditEnabled:  !cfg.SkipAudit,
-		auditModel:    audit.Name,
+		auditEnabled: !cfg.SkipAudit,
+		auditModel:   audit.Name,
 	}
 	// Illustrative input+output scenario, not a quota reservation or worst-case
 	// bound. Audit is one repository-sized pass; actual batches depend on findings.
-	estimate.Planning = estimatePlanningCost(analysis, sourceTokens.Analysis)
+	// An audit replay reuses saved findings and sends no analysis requests.
+	if cfg.AuditFrom == "" {
+		estimate.AnalysisInput = analysis.EstimateInputCost(sourceTokens.Analysis)
+		estimate.Planning = estimatePlanningCost(analysis, sourceTokens.Analysis)
+	}
 	if estimate.auditEnabled {
 		estimate.AuditInput = audit.EstimateInputCost(sourceTokens.Audit)
 		estimate.Planning += estimatePlanningCost(audit, sourceTokens.Audit)
