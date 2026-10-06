@@ -367,6 +367,7 @@ Per-phase flags follow the pattern `--{phase}-{flag}` (e.g. `--audit-model`, `--
   --audit-batch-size int               split audit into N-finding batches (default 25)
   --audit-concurrency int              max parallel audit batches, 1-32 (default 1)
   --audit-confidence-threshold float   mark existing findings below this confidence unverified (default 0.3)
+  --audit-deployment-trace             trace each finding back to entry points, guards, and deploy config (default true)
   --audit-from string                  audit a saved analysis SARIF instead of running analysis
   --base-url string                    override default provider URL
   --compress                           compress whitespace in source files to save tokens

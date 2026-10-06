@@ -798,6 +798,18 @@ func (p *braceParser) declarationBody(close, e int, member bool) bool {
 			return p.lang.newlineEnds && !p.lang.regex // Kotlin/Scala/Swift expression bodies
 		case ";":
 			return member || p.lang.cLike
+		case "throws", "where":
+			// Java exception lists and C# generic constraints contain commas
+			// and calls (where T : new()) before the body.
+			for ; k <= e; k++ {
+				switch p.toks[k].text {
+				case "{", "=>":
+					return true
+				case ";":
+					return member || p.lang.cLike
+				}
+			}
+			return false
 		case "(", ".", "?.", ",":
 			return false
 		}

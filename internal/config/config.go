@@ -47,6 +47,7 @@ type Config struct {
 	AuditConfidenceThreshold float64 `mapstructure:"audit-confidence-threshold"`
 	AuditBatchSize           int     `mapstructure:"audit-batch-size"`
 	AuditConcurrency         int     `mapstructure:"audit-concurrency"`
+	AuditDeploymentTrace     bool    `mapstructure:"audit-deployment-trace"`
 	AuditFrom                string  `mapstructure:"audit-from"` // replay the audit on a saved analysis SARIF
 
 	// Supplementary context: reference material injected into analysis and
@@ -177,6 +178,7 @@ func SetDefaults(v *viper.Viper) {
 	v.SetDefault("audit-confidence-threshold", 0.3)
 	v.SetDefault("audit-batch-size", 25)
 	v.SetDefault("audit-concurrency", 1)
+	v.SetDefault("audit-deployment-trace", true)
 	v.SetDefault("context-budget-pct", 15)
 	v.SetDefault("context-sources-raw", []string{})
 }

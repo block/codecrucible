@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 )
 
 // SourceRange and CoverageGap contain locations and categorical reasons only.
@@ -56,6 +57,8 @@ type EvidenceIndex struct {
 	files          map[string]string
 	graph, reverse map[string][]string
 	sources        map[string]indexedSource
+	packagesOnce   sync.Once
+	packages       map[string][]string
 }
 
 func NewEvidenceIndex(files map[string]string, graph map[string][]string) *EvidenceIndex {

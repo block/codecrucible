@@ -50,7 +50,7 @@ func TestAuditConcurrencyBoundAndCancellation(t *testing.T) {
 			done := make(chan outcome, 1)
 			go func() {
 				got, usage, _, err := runAuditPhase(ctx, doc, "fixture", client, "", config.ModelConfig{Name: "test"}, llm.NewPromptLoader(os.DirFS("../../prompts/default")), llm.OutputModeNone,
-					ingest.FileMap{"a.go": "sink()", "b.go": "sink()"}, .3, nil, "", 1, 2, true, tokenestimate.New(tokenestimate.Model{}, nil), nil)
+					ingest.FileMap{"a.go": "sink()", "b.go": "sink()"}, .3, nil, "", 1, 2, true, tokenestimate.New(tokenestimate.Model{}, nil), nil, nil)
 				done <- outcome{got, usage, err}
 			}()
 			for i := 0; i < 2; i++ {
@@ -117,7 +117,7 @@ func TestAuditCancellationPreservesCompletedConcurrentBatch(t *testing.T) {
 		return nil, ctx.Err()
 	})
 	doc, _, _, err := runAuditPhase(ctx, auditFixture(), "fixture", client, "", config.ModelConfig{Name: "test"}, llm.NewPromptLoader(os.DirFS("../../prompts/default")), llm.OutputModeNone,
-		ingest.FileMap{"a.go": "sink()", "b.go": "sink()"}, .3, nil, "", 1, 2, true, tokenestimate.New(tokenestimate.Model{}, nil), nil)
+		ingest.FileMap{"a.go": "sink()", "b.go": "sink()"}, .3, nil, "", 1, 2, true, tokenestimate.New(tokenestimate.Model{}, nil), nil, nil)
 	if !errors.Is(err, context.Canceled) || doc == nil || len(doc.Runs[0].Results) != 2 {
 		t.Fatalf("err=%v doc=%+v", err, doc)
 	}

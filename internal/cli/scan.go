@@ -90,6 +90,7 @@ pipeline and produces SARIF output suitable for GitHub Code Scanning integration
 	cmd.Flags().Bool("skip-audit", false, "skip the CWE-specific audit phase (faster but less accurate)")
 	cmd.Flags().Float64("audit-confidence-threshold", 0.3, "mark existing findings below this score unverified; filter new audit findings (0.0-1.0)")
 	cmd.Flags().Int("audit-concurrency", 1, "max parallel audit batches (1-32); independent of analysis concurrency")
+	cmd.Flags().Bool("audit-deployment-trace", true, "give the audit a backward trace from each finding to entry points, guards, and deployment configuration")
 	cmd.Flags().String("audit-from", "", "audit the findings of a saved analysis SARIF (the analysis phase artifact) instead of running analysis")
 	cmd.Flags().Int("audit-batch-size", 25, "split audit into batches of N findings (0 = single call). Default keeps each call under typical server connection-age limits (~10-12min)")
 	cmd.Flags().Int("concurrency", 3, "max number of chunks to analyze in parallel")
@@ -157,7 +158,7 @@ func bindScanFlags(cmd *cobra.Command) {
 		"skip-feature-detection", "concurrency", "max-file-size",
 		"context-limit", "max-output-tokens", "request-timeout",
 		"skip-audit", "audit-confidence-threshold", "audit-batch-size", "audit-concurrency",
-		"audit-from", "context-budget-pct",
+		"audit-deployment-trace", "audit-from", "context-budget-pct",
 	}
 	for _, f := range flags {
 		_ = v.BindPFlag(f, cmd.Flags().Lookup(f))
@@ -943,7 +944,8 @@ func runScan(cmd *cobra.Command, args []string) (scanErr error) {
 				phaseUsageContext(scanCtx, "audit", *audit, auditFallback), merged, repoName,
 				auditClient, auditEndpoint, audit.ModelCfg, promptLoader,
 				auditOutputMode, flatResult.FileMap, cfg.AuditConfidenceThreshold, audit.ModelParams, auditCtx.Rendered,
-				cfg.AuditBatchSize, cfg.AuditConcurrency, !cfg.IncludeTests, newPhaseTokenEstimator(*audit), metadata, decisions.auditContext(),
+				cfg.AuditBatchSize, cfg.AuditConcurrency, !cfg.IncludeTests, newPhaseTokenEstimator(*audit), metadata,
+				auditDeploymentTraces(cfg, merged, files, filtered, flatResult.FileMap, decisions), decisions.auditContext(),
 			)
 			if auditedDoc != nil {
 				merged = *auditedDoc

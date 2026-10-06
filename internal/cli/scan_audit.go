@@ -112,6 +112,7 @@ func runAuditPhase(
 	productionOnly bool,
 	counter tokenestimate.Counter,
 	metadata *sarif.ScanMetadata,
+	traces map[string]decision.DeploymentTrace,
 	additionalEvidence ...map[string][]decision.Evidence,
 ) (*sarif.SARIFDocument, llm.TokenUsage, float64, error) {
 	if len(doc.Runs) == 0 || len(doc.Runs[0].Results) == 0 {
@@ -242,6 +243,13 @@ func runAuditPhase(
 			if content, ok := fileMap[path]; ok {
 				fmt.Fprintf(&codeCtx, "<file path=\"%s\">\n%s\n</file>\n\n", path, content)
 			}
+		}
+		if len(traces) > 0 {
+			ids := make([]string, len(batch))
+			for i, f := range batch {
+				ids[i] = f.FindingID
+			}
+			codeCtx.WriteString(renderDeploymentTraces(ids, traces, filesNeeded, seenEvidence))
 		}
 
 		messages, err := promptLoader.AssembleAuditMessages(llm.AuditParams{
