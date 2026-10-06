@@ -19,7 +19,7 @@ phases, and preserves phase artifacts for debugging and review.
 - **Streaming responses** — SSE for Anthropic keeps long generations alive past edge idle timeouts
 - **Token-aware chunking** — large repos are split into budget-safe chunks with cross-file manifests
 - **Retry with backoff** — exponential backoff on 429/5xx, `Retry-After` header respect
-- **Aggressive filtering** — test, vendor, binary, and doc file exclusion saves 20–40% token budget
+- **Aggressive filtering** — test, vendor, binary, and doc file exclusion saves 20–40% token budget; copied third-party libraries (versioned directories, minified bundles, license-banner scripts) and non-English translation catalogs are excluded too
 - **Valid SARIF every time** — even on LLM failure, partial results produce schema-valid SARIF
 
 ## Quick Start
@@ -150,6 +150,7 @@ codecrucible scan ./my-repo --jev-cwe-mapping active
 
 | Flag | Active behavior | Uncertainty or failure |
 | --- | --- | --- |
+| `--jev-file-triage` | Asks two Noul questions per admitted file (security-relevant behaviour; plausible weakness) and removes files scoring below `--jev-file-triage-threshold` (default 0.2) on both before token counting and chunking. Uses its own call budget of one request per file, outside `--jev-max-calls`. | Failed requests and files truncated to fit the request limit are kept. Shadow mode records proposed drops and analyzes every file. Dry runs make no requests. |
 | `--jev-feature-detection` | Uses Noul for positive feature evidence and Choice for presence/absence. Aggregates bounded source batches; only strong absence in every batch can authorize omission. | Coverage gaps, failed requests, or exhausted quotas retain uncertain categories. Shadow mode runs the existing detector. |
 | `--jev-smart-chunking` | Scores the additional context of candidate source scopes, then adds accepted grouping hints to the existing import graph. | Missing scopes skip the request. Failed batches keep earlier hints. File boundaries and token limits remain enforced. |
 | `--jev-audit` | Uses independent Noul relevance questions to select optional caller, guard, input-source and template evidence. Every finding still reaches the configured generative auditor. | Mandatory source stays intact. Unknown answers add nothing. Jev never issues a finding verdict. |

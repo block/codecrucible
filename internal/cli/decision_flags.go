@@ -5,9 +5,10 @@ import "github.com/spf13/cobra"
 func registerDecisionFlags(cmd *cobra.Command) {
 	cmd.Flags().Bool("dependency-grouping", false, "group admitted local dependencies without requiring Jev")
 	cmd.Flags().Bool("jev", false, "require explicit Jev stage settings; prefer --jev-audit shadow or --jev-cwe-mapping shadow")
-	for _, stage := range []string{"feature-detection", "smart-chunking", "audit", "review", "cwe-mapping", "deduplication"} {
+	for _, stage := range []string{"feature-detection", "smart-chunking", "audit", "review", "cwe-mapping", "deduplication", "file-triage"} {
 		cmd.Flags().String("jev-"+stage, "", "Jev "+stage+" mode: off, shadow, or active (default off)")
 	}
+	cmd.Flags().Float64("jev-file-triage-threshold", 0.2, "drop files Jev scores below this probability of handling security-relevant behaviour or containing a weakness (file-triage active only)")
 	cmd.Flags().String("jev-model", "", "TypeSafe decision model (default jev-1.13.0)")
 	cmd.Flags().String("jev-base-url", "", "TypeSafe evaluation endpoint")
 	cmd.Flags().Int("jev-request-timeout", 30, "Jev request timeout in seconds")
@@ -16,7 +17,7 @@ func registerDecisionFlags(cmd *cobra.Command) {
 func bindDecisionFlags(cmd *cobra.Command) {
 	_ = v.BindPFlag("decisions.dependency-grouping", cmd.Flags().Lookup("dependency-grouping"))
 	_ = v.BindPFlag("decisions.enabled", cmd.Flags().Lookup("jev"))
-	for _, name := range []string{"feature-detection", "smart-chunking", "audit", "review", "cwe-mapping", "deduplication", "model", "base-url", "request-timeout", "max-calls"} {
+	for _, name := range []string{"feature-detection", "smart-chunking", "audit", "review", "cwe-mapping", "deduplication", "file-triage", "file-triage-threshold", "model", "base-url", "request-timeout", "max-calls"} {
 		_ = v.BindPFlag("decisions."+name, cmd.Flags().Lookup("jev-"+name))
 	}
 }

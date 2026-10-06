@@ -960,3 +960,68 @@ func TestFilterFiles_MaxFileSize_BoundaryValues(t *testing.T) {
 		t.Errorf("expected 1 oversized, got %d", stats.Oversized)
 	}
 }
+
+func TestFilterFiles_VendoredLibrariesOutsideVendorDirs(t *testing.T) {
+	minified := strings.Repeat("var a=function(b){return b+1};", 200)
+	banner := "/*! jQuery v3.6.0 | (c) OpenJS Foundation and other contributors | jquery.org/license */\n!function(e){}\n"
+	files := []SourceFile{
+		makeFileWithContent("public/plugins/pdfjs-5.2.133/web/viewer.js", "function viewer() {}\n"),
+		makeFileWithContent("public/js/libs/clipboard-2.0.4.min.js", "x\n"),
+		makeFileWithContent("public/css/app.min.css", "a{}\n"),
+		makeFileWithContent("static/lib.bundle.js", "x\n"),
+		makeFileWithContent("static/packed.js", minified),
+		makeFileWithContent("static/jquery.js", banner),
+		makeFileWithContent("third_party/lib/util.go", "package lib\n"),
+		makeFileWithContent("web/bower_components/x/index.js", "x\n"),
+		// First-party code that must be kept.
+		makeFileWithContent("public/js/gogs.js", "function init() {\n  return 1;\n}\n"),
+		makeFileWithContent("internal/route/api/v1/repo.go", "package v1\n"),
+		makeFileWithContent("api/v1.2/handler.go", "package handler\n"),
+		makeFileWithContent("plugins/auth/plugin.js", "module.exports = {};\n"),
+		makeFileWithContent("static/notice.js", "/*! first-party build note */\nrun();\n"),
+	}
+	kept, stats := FilterFiles(files, FilterConfig{})
+	got := map[string]bool{}
+	for _, f := range kept {
+		got[f.Path] = true
+	}
+	for _, path := range []string{"public/js/gogs.js", "internal/route/api/v1/repo.go", "api/v1.2/handler.go", "plugins/auth/plugin.js", "static/notice.js"} {
+		if !got[path] {
+			t.Errorf("expected first-party %s to be kept", path)
+		}
+	}
+	if len(kept) != 5 || stats.Vendor != 8 {
+		t.Errorf("expected 5 kept and 8 vendored, got %d kept, stats %+v", len(kept), stats)
+	}
+}
+
+func TestFilterFiles_TranslationCatalogs(t *testing.T) {
+	files := []SourceFile{
+		makeFile("conf/locale/locale_en-US.ini"),
+		makeFile("conf/locale/locale_de-DE.ini"),
+		makeFile("web/src/locales/pt_BR.json"),
+		makeFile("web/src/locales/en.json"),
+		makeFile("config/locales/fr.yml"),
+		makeFile("web/src/locales/index.ts"),
+		makeFile("i18n/messages.properties"),
+		makeFile("lang/api.json"),
+		makeFile("settings/de.json"),
+	}
+	kept, stats := FilterFiles(files, FilterConfig{})
+	if len(kept) != 6 || stats.LowValue != 3 {
+		t.Fatalf("expected 6 kept and 3 translation catalogs excluded, got %d kept, stats %+v", len(kept), stats)
+	}
+	for _, f := range kept {
+		if strings.Contains(f.Path, "de-DE") || strings.Contains(f.Path, "pt_BR") || strings.Contains(f.Path, "fr.yml") {
+			t.Errorf("expected %s to be excluded", f.Path)
+		}
+	}
+}
+
+func TestFilterFiles_IncludeOverridesVendoredLibrary(t *testing.T) {
+	files := []SourceFile{makeFileWithContent("public/js/app.min.js", "x\n")}
+	kept, _ := FilterFiles(files, FilterConfig{Include: []string{"public/js/**"}})
+	if len(kept) != 1 {
+		t.Fatalf("expected include pattern to keep minified file, got %d", len(kept))
+	}
+}

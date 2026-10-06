@@ -12,25 +12,27 @@ import (
 // Decisions is separate from generative phases. Credentials never appear in
 // scan recipes or decision artifacts, and a key alone never enables Jev.
 type Decisions struct {
-	Enabled            bool    `mapstructure:"enabled"`
-	DependencyGrouping bool    `mapstructure:"dependency-grouping"`
-	FeatureDetection   string  `mapstructure:"feature-detection"`
-	SmartChunking      string  `mapstructure:"smart-chunking"`
-	Audit              string  `mapstructure:"audit"`
-	Review             string  `mapstructure:"review"`
-	CWEMapping         string  `mapstructure:"cwe-mapping"`
-	Deduplication      string  `mapstructure:"deduplication"`
-	Model              string  `mapstructure:"model"`
-	URL                string  `mapstructure:"base-url"`
-	APIKey             string  `mapstructure:"api-key" json:"-"`
-	Timeout            int     `mapstructure:"request-timeout"`
-	MaxCalls           int     `mapstructure:"max-calls"`
-	Retries            int     `mapstructure:"retries"`
-	InputPrice         float64 `mapstructure:"input-price-per-million"`
+	Enabled             bool    `mapstructure:"enabled"`
+	DependencyGrouping  bool    `mapstructure:"dependency-grouping"`
+	FeatureDetection    string  `mapstructure:"feature-detection"`
+	SmartChunking       string  `mapstructure:"smart-chunking"`
+	Audit               string  `mapstructure:"audit"`
+	Review              string  `mapstructure:"review"`
+	CWEMapping          string  `mapstructure:"cwe-mapping"`
+	Deduplication       string  `mapstructure:"deduplication"`
+	FileTriage          string  `mapstructure:"file-triage"`
+	FileTriageThreshold float64 `mapstructure:"file-triage-threshold"`
+	Model               string  `mapstructure:"model"`
+	URL                 string  `mapstructure:"base-url"`
+	APIKey              string  `mapstructure:"api-key" json:"-"`
+	Timeout             int     `mapstructure:"request-timeout"`
+	MaxCalls            int     `mapstructure:"max-calls"`
+	Retries             int     `mapstructure:"retries"`
+	InputPrice          float64 `mapstructure:"input-price-per-million"`
 }
 
 func (d Decisions) Modes() map[string]string {
-	return map[string]string{"feature-detection": d.FeatureDetection, "smart-chunking": d.SmartChunking, "audit": d.Audit, "review": d.Review, "cwe-mapping": d.CWEMapping, "deduplication": d.Deduplication}
+	return map[string]string{"feature-detection": d.FeatureDetection, "smart-chunking": d.SmartChunking, "audit": d.Audit, "review": d.Review, "cwe-mapping": d.CWEMapping, "deduplication": d.Deduplication, "file-triage": d.FileTriage}
 }
 func (d Decisions) AnyEnabled() bool {
 	for _, mode := range d.Modes() {
@@ -43,19 +45,21 @@ func (d Decisions) AnyEnabled() bool {
 func decisionDefaults(v *viper.Viper) {
 	v.SetDefault("decisions.cwe-mapping", "")
 	v.SetDefault("decisions.deduplication", "")
+	v.SetDefault("decisions.file-triage", "")
+	v.SetDefault("decisions.file-triage-threshold", 0.2)
 	for k, val := range map[string]any{"enabled": false, "dependency-grouping": false, "feature-detection": "", "smart-chunking": "", "audit": "", "review": "", "model": decision.Model, "base-url": "https://api.typesafe.ai/v1/systemone", "request-timeout": 30, "max-calls": 128, "retries": 2, "input-price-per-million": decision.InputPricePerMillion} {
 		v.SetDefault("decisions."+k, val)
 	}
 }
 func decisionEnv(v *viper.Viper) {
-	for _, key := range []string{"enabled", "dependency-grouping", "feature-detection", "smart-chunking", "audit", "review", "cwe-mapping", "deduplication", "model", "base-url", "request-timeout", "max-calls", "retries", "input-price-per-million"} {
+	for _, key := range []string{"enabled", "dependency-grouping", "feature-detection", "smart-chunking", "audit", "review", "cwe-mapping", "deduplication", "file-triage", "file-triage-threshold", "model", "base-url", "request-timeout", "max-calls", "retries", "input-price-per-million"} {
 		_ = v.BindEnv("decisions." + key)
 	}
 	_ = v.BindEnv("decisions.api-key", "TYPESAFE_API_KEY")
 }
 func validateDecisions(v *viper.Viper, d *Decisions) error {
 	allowed := map[string]bool{}
-	for _, key := range []string{"enabled", "dependency-grouping", "feature-detection", "smart-chunking", "audit", "review", "cwe-mapping", "deduplication", "model", "base-url", "api-key", "request-timeout", "max-calls", "retries", "input-price-per-million"} {
+	for _, key := range []string{"enabled", "dependency-grouping", "feature-detection", "smart-chunking", "audit", "review", "cwe-mapping", "deduplication", "file-triage", "file-triage-threshold", "model", "base-url", "api-key", "request-timeout", "max-calls", "retries", "input-price-per-million"} {
 		allowed[key] = true
 	}
 	for key := range v.GetStringMap("decisions") {
@@ -63,7 +67,7 @@ func validateDecisions(v *viper.Viper, d *Decisions) error {
 			return fmt.Errorf("unknown decisions setting %q", key)
 		}
 	}
-	for _, mode := range []*string{&d.FeatureDetection, &d.SmartChunking, &d.Audit, &d.Review, &d.CWEMapping, &d.Deduplication} {
+	for _, mode := range []*string{&d.FeatureDetection, &d.SmartChunking, &d.Audit, &d.Review, &d.CWEMapping, &d.Deduplication, &d.FileTriage} {
 		if *mode == "" {
 			*mode = "off"
 		}
@@ -79,6 +83,9 @@ func validateDecisions(v *viper.Viper, d *Decisions) error {
 	}
 	if d.Timeout <= 0 || d.Timeout > 600 || d.MaxCalls <= 0 || d.MaxCalls > 10000 || d.Retries < 0 || d.Retries > 5 || math.IsNaN(d.InputPrice) || math.IsInf(d.InputPrice, 0) || d.InputPrice < 0 {
 		return fmt.Errorf("invalid Jev request bounds or pricing")
+	}
+	if math.IsNaN(d.FileTriageThreshold) || d.FileTriageThreshold <= 0 || d.FileTriageThreshold >= 1 {
+		return fmt.Errorf("Jev file-triage threshold must be between 0 and 1")
 	}
 	if strings.TrimSpace(d.Model) == "" {
 		return fmt.Errorf("Jev model is required")

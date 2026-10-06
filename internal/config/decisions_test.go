@@ -101,3 +101,26 @@ func TestDependencyGroupingDoesNotEnableJevOrRequireCredential(t *testing.T) {
 		t.Fatalf("dependency control enabled model: %+v %v", cfg, err)
 	}
 }
+
+func TestFileTriageConfiguration(t *testing.T) {
+	t.Setenv("TYPESAFE_API_KEY", "test")
+	v := viper.New()
+	SetDefaults(v)
+	BindEnvVars(v)
+	v.Set("decisions.file-triage", "active")
+	cfg, err := Load(v)
+	if err != nil || cfg.Decisions.FileTriage != "active" || cfg.Decisions.FileTriageThreshold != 0.2 || !cfg.Decisions.AnyEnabled() {
+		t.Fatalf("config %+v: %v", cfg.Decisions, err)
+	}
+	for _, bad := range []float64{0, 1, -0.1} {
+		v.Set("decisions.file-triage-threshold", bad)
+		if _, err := Load(v); err == nil {
+			t.Fatalf("threshold %v accepted", bad)
+		}
+	}
+	v.Set("decisions.file-triage-threshold", 0.2)
+	v.Set("decisions.file-triage", "sometimes")
+	if _, err := Load(v); err == nil {
+		t.Fatal("invalid file-triage mode accepted")
+	}
+}

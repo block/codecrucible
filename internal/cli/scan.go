@@ -13,6 +13,7 @@ import (
 
 	"github.com/block/codecrucible/internal/chunk"
 	"github.com/block/codecrucible/internal/config"
+	"github.com/block/codecrucible/internal/decision"
 	"github.com/block/codecrucible/internal/ingest"
 	"github.com/block/codecrucible/internal/llm"
 	"github.com/block/codecrucible/internal/sarif"
@@ -362,6 +363,15 @@ func runScan(cmd *cobra.Command, args []string) (scanErr error) {
 		"files_kept", stats.Kept,
 	)
 
+	// --- Stage 2.5: Jev file triage (no requests during dry runs) ---
+	var triageRecords []decision.Record
+	if !cfg.DryRun {
+		filtered, triageRecords, err = applyFileTriage(cmd.Context(), cfg.Decisions, filtered)
+		if err != nil {
+			return err
+		}
+	}
+
 	// --- Stage 3: Build FileMap (defer full XML generation) ---
 	flattenCfg := ingest.FlattenConfig{Compress: cfg.Compress}
 	flatResult := ingest.FlattenFileMapOnly(filtered)
@@ -487,6 +497,7 @@ func runScan(cmd *cobra.Command, args []string) (scanErr error) {
 		return fmt.Errorf("configuring Jev: %w", err)
 	}
 	if decisions != nil {
+		decisions.recorder.Records = append(triageRecords, decisions.recorder.Records...)
 		decisions.requirements = cfg.CustomRequirements
 		decisions.productionOnly = !cfg.IncludeTests
 		if decisions.enabled("audit") && !cfg.SkipAudit {

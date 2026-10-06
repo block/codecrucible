@@ -46,6 +46,8 @@ func newScanDecisions(cfg config.Decisions, files ingest.FileMap, sources []inge
 
 func decisionStageLimits(cfg config.Decisions) map[string]int {
 	stages := []string{}
+	// File triage needs one call per admitted file, so it has its own client
+	// and does not draw on this shared budget.
 	for _, stage := range []string{"feature-detection", "smart-chunking", "audit", "review", "cwe-mapping", "deduplication"} {
 		if mode := cfg.Modes()[stage]; mode == "active" || mode == "shadow" {
 			stages = append(stages, stage)

@@ -3,6 +3,7 @@ package ingest
 import (
 	"log/slog"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -65,7 +66,50 @@ var vendorDirNames = map[string]bool{
 	"__pycache__":  true,
 	".venv":        true,
 	"venv":         true,
+	// Third-party and package-manager directories for bundled libraries.
+	"bower_components": true,
+	"jspm_packages":    true,
+	"third_party":      true,
+	"third-party":      true,
+	"thirdparty":       true,
+	"3rdparty":         true,
 }
+
+// versionedPackageDir matches directory names that pin a library version, such
+// as pdfjs-5.2.133 or jquery-3.6.0, which indicate copied third-party code.
+var versionedPackageDir = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_.+-]*?[-_.]v?\d+\.\d+(\.\d+)?([-.+][A-Za-z0-9.]+)?$`)
+
+// versionPattern finds a version number in a library license banner.
+var versionPattern = regexp.MustCompile(`v?\d+\.\d+`)
+
+// localeDirNames are directories holding translation catalogs.
+var localeDirNames = map[string]bool{
+	"locale":       true,
+	"locales":      true,
+	"i18n":         true,
+	"l10n":         true,
+	"lang":         true,
+	"langs":        true,
+	"translations": true,
+}
+
+// localeCatalogExtensions are data formats used for translation catalogs.
+var localeCatalogExtensions = map[string]bool{
+	".ini": true, ".json": true, ".yml": true, ".yaml": true, ".po": true, ".properties": true,
+	".ftl": true, ".toml": true, ".xlf": true, ".xliff": true, ".strings": true, ".arb": true,
+}
+
+// localeTag extracts a language tag such as en-US, pt_BR, or fr from a catalog filename.
+var localeTag = regexp.MustCompile(`(?:^|[_.-])([a-z]{2})(?:[-_][A-Za-z]{2,4})?$`)
+
+// languageCodes are ISO 639-1 codes, so names like api.json are not mistaken for catalogs.
+var languageCodes = func() map[string]bool {
+	codes := map[string]bool{}
+	for _, code := range strings.Fields("aa ab ae af ak am an ar as av ay az ba be bg bh bi bm bn bo br bs ca ce ch co cr cs cu cv cy da de dv dz ee el en eo es et eu fa ff fi fj fo fr fy ga gd gl gn gu gv ha he hi ho hr ht hu hy hz ia id ie ig ii ik io is it iu ja jv ka kg ki kj kk kl km kn ko kr ks ku kv kw ky la lb lg li ln lo lt lu lv mg mh mi mk ml mn mr ms mt my na nb nd ne ng nl nn no nr nv ny oc oj om or os pa pi pl ps pt qu rm rn ro ru rw sa sc sd se sg si sk sl sm sn so sq sr ss st su sv sw ta te tg th ti tk tl tn to tr ts tt tw ty ug uk ur uz ve vi vo wa wo xh yi yo za zh zu") {
+		codes[code] = true
+	}
+	return codes
+}()
 
 // lowValueDirNames are directories containing CI/CD, tooling, or data files
 // that produce noisy, low-value security findings and dilute LLM analysis.
@@ -91,6 +135,7 @@ var lowValueExtensions = map[string]bool{
 	".tsv":   true,
 	".csv":   true,
 	".ipynb": true,
+	".map":   true, // generated source maps
 }
 
 // lowValueFilenames are specific filenames that are build/config artifacts.
@@ -277,8 +322,13 @@ func classifyFile(f SourceFile, cfg FilterConfig) fileCategory {
 		return categoryVendor
 	}
 
-	// Low-value file check (CI/CD, tooling, key files).
-	if isLowValueFile(f.Path) {
+	// Copied, minified, or bundled third-party code outside vendor directories.
+	if isVendoredLibrary(f.Path, f.Content) {
+		return categoryVendor
+	}
+
+	// Low-value file check (CI/CD, tooling, key files, translations).
+	if isLowValueFile(f.Path) || isTranslationCatalog(f.Path) {
 		return categoryLowValue
 	}
 
@@ -327,6 +377,62 @@ func isInVendorDir(path string) bool {
 		}
 	}
 	return false
+}
+
+// isVendoredLibrary detects third-party code copied outside a vendor
+// directory: versioned package directories, minified or bundled assets, and
+// scripts or stylesheets that open with a library license banner.
+func isVendoredLibrary(path, content string) bool {
+	parts := strings.Split(filepath.ToSlash(path), "/")
+	for _, dir := range parts[:len(parts)-1] {
+		if versionedPackageDir.MatchString(dir) {
+			return true
+		}
+	}
+	base := strings.ToLower(parts[len(parts)-1])
+	ext := filepath.Ext(base)
+	if ext != ".js" && ext != ".mjs" && ext != ".cjs" && ext != ".css" {
+		return false
+	}
+	stem := strings.TrimSuffix(base, ext)
+	if strings.HasSuffix(stem, ".min") || strings.HasSuffix(stem, "-min") || strings.HasSuffix(stem, ".bundle") {
+		return true
+	}
+	// Minified output has very long lines; hand-written source rarely does.
+	if len(content) >= 2048 && len(content)/(strings.Count(content, "\n")+1) > 300 {
+		return true
+	}
+	// Libraries preserve "/*!" license banners through minification.
+	header := strings.TrimLeft(content, " \t\r\n\ufeff")
+	if strings.HasPrefix(header, "/*!") {
+		header = header[:min(len(header), 512)]
+		lower := strings.ToLower(header)
+		if versionPattern.MatchString(header) && (strings.Contains(lower, "license") || strings.Contains(lower, "(c)") || strings.Contains(lower, "copyright")) {
+			return true
+		}
+	}
+	return false
+}
+
+// isTranslationCatalog reports non-English translation catalogs. The English
+// or untagged base catalog is kept because templates may render its strings
+// unescaped; the other languages repeat the same keys.
+func isTranslationCatalog(path string) bool {
+	parts := strings.Split(filepath.ToSlash(path), "/")
+	inLocaleDir := false
+	for _, dir := range parts[:len(parts)-1] {
+		if localeDirNames[strings.ToLower(dir)] {
+			inLocaleDir = true
+			break
+		}
+	}
+	base := parts[len(parts)-1]
+	ext := strings.ToLower(filepath.Ext(base))
+	if !inLocaleDir || !localeCatalogExtensions[ext] {
+		return false
+	}
+	m := localeTag.FindStringSubmatch(strings.TrimSuffix(base, filepath.Ext(base)))
+	return m != nil && languageCodes[m[1]] && m[1] != "en"
 }
 
 // isBinaryFile checks file content for null bytes in the first 512 bytes.
