@@ -136,15 +136,8 @@ production_only_gate: >
 user_prompt_template: >
   Audit target: {repo_name}
 
-
-  === CLAIMS TO VERIFY (unverified leads from the recall-tuned first pass) ===
-
-  ---
-  {findings_json}
-  ---
-
-
-  The JSON above is a `{"claims_to_verify": [...]}` wrapper. Each claim
+  The CLAIMS TO VERIFY JSON below is a `{"claims_to_verify": [...]}`
+  wrapper. Each claim
   contains an `unverified_exploit_sketch` — a HYPOTHESIS from the first
   pass, NOT a verified fact. First-pass narratives often hedge, self-
   reject, or cite defensive guards that may not actually exist at the
@@ -161,21 +154,7 @@ user_prompt_template: >
   reason on its own.
 
 
-  === CWE-SPECIFIC VALIDATION GUIDANCE ===
-
-  For each CWE below, use false_positive_indicators as a checklist: if any
-  indicator matches this finding's code context, the finding's confidence
-  drops below 0.5 unless you can articulate why the indicator does not apply.
-
-  {cwe_analysis_prompts}
-
-
   {supplementary_context}
-
-
-  === SOURCE CODE ===
-
-  {code_context}
 
 
   === AUDIT PROCEDURE ===
@@ -285,6 +264,35 @@ user_prompt_template: >
   ---
   {schema}
   ---
+
+
+  === CWE-SPECIFIC VALIDATION GUIDANCE ===
+
+  For each CWE below, use false_positive_indicators as a checklist: if any
+  indicator matches this finding's code context, the finding's confidence
+  drops below 0.5 unless you can articulate why the indicator does not apply.
+
+  {cwe_analysis_prompts}
+
+
+  === CLAIMS TO VERIFY (unverified leads from the recall-tuned first pass) ===
+
+  ---
+  {findings_json}
+  ---
+
+
+  === SOURCE CODE ===
+
+  {code_context}
+
+
+  === END OF BATCH DATA ===
+
+  Apply the instructions above to every claim in CLAIMS TO VERIFY, using
+  the SOURCE CODE as evidence, and return one JSON object conforming to
+  the schema.
+
 
 json_formatting_rules: >
   Respond with ONLY a valid JSON object that strictly adheres to the schema.

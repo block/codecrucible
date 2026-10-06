@@ -11,18 +11,11 @@ system_message: >
 user_prompt_template: >
   Audit target: {repo_name}
 
-  === CLAIMS TO VERIFY (unverified leads from the analysis phase) ===
-  {findings_json}
-
-  The JSON above is a `{"claims_to_verify": [...]}` wrapper. Each claim
+  The CLAIMS TO VERIFY JSON below is a `{"claims_to_verify": [...]}`
+  wrapper. Each claim
   contains an `unverified_exploit_sketch` — a HYPOTHESIS from the analysis
   phase, NOT a verified fact. Verify against the SOURCE CODE below.
 
-  === CWE GUIDANCE ===
-  {cwe_analysis_prompts}
-
-  === SOURCE CODE ===
-  {code_context}
 
   {supplementary_context}
 
@@ -103,6 +96,26 @@ user_prompt_template: >
   Return results as JSON per the schema below.
 
   {schema}
+
+
+  === CWE GUIDANCE ===
+  {cwe_analysis_prompts}
+
+
+  === CLAIMS TO VERIFY (unverified leads from the analysis phase) ===
+  {findings_json}
+
+
+  === SOURCE CODE ===
+  {code_context}
+
+
+  === END OF BATCH DATA ===
+
+  Apply the instructions above to every claim in CLAIMS TO VERIFY, using
+  the SOURCE CODE as evidence, and return one JSON object conforming to
+  the schema.
+
 
 json_formatting_rules: >
   Return ONLY valid JSON. No markdown fences, no commentary.

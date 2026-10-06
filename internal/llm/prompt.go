@@ -193,16 +193,7 @@ func (l *PromptLoader) AssembleMessages(params PromptParams) ([]Message, error) 
 	user.WriteString(bp.AnalysisIntro)
 	user.WriteString("\n")
 
-	// 2. Chunk manifest note (only for multi-chunk).
-	if params.ChunkTotal > 1 {
-		fmt.Fprintf(&user, "NOTE: This is chunk %d of %d. Files in this chunk are shown below. Other files in the repository:\n%s\nFocus your analysis on the files shown in this chunk.\n\n",
-			params.ChunkIndex+1,
-			params.ChunkTotal,
-			strings.Join(params.Manifest, "\n"),
-		)
-	}
-
-	// 3. Analysis requirements header and sections.
+	// 2. Analysis requirements header and sections.
 	sections, err := l.LoadAnalysisSections()
 	if err == nil && len(sections.Sections) > 0 {
 		user.WriteString(bp.AnalysisRequirementsHeader)
@@ -222,29 +213,40 @@ func (l *PromptLoader) AssembleMessages(params PromptParams) ([]Message, error) 
 		user.WriteString("\n")
 	}
 
-	// 4. Custom requirements.
+	// 3. Custom requirements.
 	if params.CustomRequirements != "" {
 		fmt.Fprintf(&user, "ADDITIONAL REQUIREMENTS:\n%s\n\n", params.CustomRequirements)
 	}
 
-	// 4.5. Supplementary context. Placed before the repo so the model reads
+	// 4. Supplementary context. Placed before the repo so the model reads
 	// reference material first, then the actual scan target — matching how a
 	// human reviewer would skim the API spec before diving into handlers.
 	if params.SupplementaryContext != "" {
 		fmt.Fprintf(&user, "SUPPLEMENTARY CONTEXT — reference material, do NOT report findings against it:\n%s\n\n", params.SupplementaryContext)
 	}
 
-	// 5. Repo info with placeholders replaced.
+	// 5. Chunk manifest note (only for multi-chunk). Everything above is
+	// identical across the chunks of a scan, so providers can serve it from
+	// their prompt prefix cache; per-chunk content starts here.
+	if params.ChunkTotal > 1 {
+		fmt.Fprintf(&user, "NOTE: This is chunk %d of %d. Files in this chunk are shown below. Other files in the repository:\n%s\nFocus your analysis on the files shown in this chunk.\n\n",
+			params.ChunkIndex+1,
+			params.ChunkTotal,
+			strings.Join(params.Manifest, "\n"),
+		)
+	}
+
+	// 6. Repo info with placeholders replaced.
 	repoInfo := strings.ReplaceAll(bp.RepoInfo, "{repo_name}", params.RepoName)
 	repoInfo = strings.ReplaceAll(repoInfo, "{xml_content}", params.XML)
 	user.WriteString(repoInfo)
 	user.WriteString("\n")
 
-	// 6. Critical instructions.
+	// 7. Critical instructions.
 	user.WriteString(bp.CriticalInstructions)
 	user.WriteString("\n")
 
-	// 7. JSON formatting rules with schema replaced.
+	// 8. JSON formatting rules with schema replaced.
 	jsonRules := strings.ReplaceAll(bp.JSONFormattingRules, "{schema}", params.Schema)
 	user.WriteString(jsonRules)
 

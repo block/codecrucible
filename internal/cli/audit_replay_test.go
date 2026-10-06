@@ -38,7 +38,7 @@ func (s *replayServer) handler(t *testing.T) http.HandlerFunc {
 			prompt += m.Content + "\n"
 		}
 		var content []byte
-		if i := strings.Index(prompt, `{"claims_to_verify":`); i >= 0 {
+		if i := strings.LastIndex(prompt, `{"claims_to_verify":`); i >= 0 {
 			s.auditPrompts = append(s.auditPrompts, prompt)
 			var envelope struct {
 				Claims []struct {

@@ -17,7 +17,7 @@ import (
 func requestedClaims(t *testing.T, req llm.ChatRequest) []AuditedFinding {
 	t.Helper()
 	for _, message := range req.Messages {
-		if i := strings.Index(message.Content, `{"claims_to_verify":`); i >= 0 {
+		if i := strings.LastIndex(message.Content, `{"claims_to_verify":`); i >= 0 {
 			var envelope struct {
 				Claims []struct {
 					ID    string `json:"finding_id"`
