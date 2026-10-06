@@ -11,10 +11,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/block/codecrucible/internal/chunk"
 	"github.com/block/codecrucible/internal/config"
 	"github.com/block/codecrucible/internal/ingest"
 	"github.com/block/codecrucible/internal/sarif"
+	"github.com/block/codecrucible/internal/tokenestimate"
 )
 
 // createTestRepo creates a temp directory with a few Go source files for testing.
@@ -1085,7 +1085,7 @@ func TestStreamingTokenCount_MatchesFullXMLCount(t *testing.T) {
 
 	cfg := ingest.FlattenConfig{Compress: false}
 	full := ingest.Flatten(files, cfg)
-	counter := chunk.NewTokenCounter("cl100k_base", nil)
+	counter := tokenestimate.New(tokenestimate.Model{}, nil)
 
 	fullCount := counter.Count(full.XML)
 	streamCount := streamingTokenCount(full.FileMap, counter, cfg)

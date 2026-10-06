@@ -14,6 +14,7 @@ import (
 	"github.com/block/codecrucible/internal/ingest"
 	"github.com/block/codecrucible/internal/llm"
 	"github.com/block/codecrucible/internal/sarif"
+	"github.com/block/codecrucible/internal/tokenestimate"
 )
 
 // analyzeChunk processes a single chunk: assembles the prompt, calls the LLM, parses
@@ -299,8 +300,8 @@ func runFeatureDetection(
 	promptLoader *llm.PromptLoader,
 	outputMode llm.OutputMode,
 	modelParams map[string]any,
-	counter *chunk.TokenCounter,
-) ([]string, float64, error) {
+	counter *tokenestimate.Estimator,
+) ([]string, tokenestimate.Calibration, error) {
 	// Build file manifest, capped to fit within the model's context.
 	// Reserve ~50% of context for the manifest, rest for samples + prompt overhead.
 	manifestCharBudget := modelCfg.ContextLimit / 2 * 4 // tokens → chars
@@ -323,7 +324,7 @@ func runFeatureDetection(
 		Samples:  samples,
 	})
 	if err != nil {
-		return nil, 0, fmt.Errorf("assembling feature detection prompt: %w", err)
+		return nil, tokenestimate.Calibration{}, fmt.Errorf("assembling feature detection prompt: %w", err)
 	}
 
 	featureSchema := llm.FeatureDetectionSchema()
@@ -357,19 +358,19 @@ func runFeatureDetection(
 		ModelParams:            modelParams,
 	})
 	if err != nil {
-		return nil, 0, fmt.Errorf("feature detection LLM call: %w", err)
+		return nil, tokenestimate.Calibration{}, fmt.Errorf("feature detection LLM call: %w", err)
 	}
 
-	// Correction factor: actual/estimated. 1.0 means the heuristic is exact;
+	// Correction factor: actual/estimated. 1.0 means the estimate is exact;
 	// >1.0 means we undercount and need to shrink chunks; <1.0 means we're
-	// conservative already. 0 signals "no calibration available".
-	var correction float64
-	if localEstimate > 0 && resp.Usage.PromptTokens > 0 {
-		correction = float64(resp.Usage.PromptTokens) / float64(localEstimate)
+	// conservative already. A zero ratio signals "no calibration available".
+	correction := counter.Calibrate(localEstimate, resp.Usage.PromptTokens)
+	if correction.Ratio > 0 {
 		slog.Info("tokenizer calibration measured",
 			"local_estimate", localEstimate,
 			"api_actual", resp.Usage.PromptTokens,
-			"correction_factor", fmt.Sprintf("%.3f", correction),
+			"correction_factor", fmt.Sprintf("%.3f", correction.Ratio),
+			"method", counter.Method(),
 		)
 	}
 

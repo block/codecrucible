@@ -1,4 +1,4 @@
-package chunk
+package tokenestimate
 
 import (
 	"log/slog"
@@ -6,22 +6,22 @@ import (
 	"testing"
 )
 
-func TestNewTokenCounter_NilLogger(t *testing.T) {
-	tc := NewTokenCounter("cl100k_base", nil)
+func TestNew_NilLogger(t *testing.T) {
+	tc := New(Model{Encoding: "heuristic"}, nil)
 	if tc.logger == nil {
 		t.Error("nil logger should be replaced with default")
 	}
 }
 
 func TestCount_EmptyString(t *testing.T) {
-	tc := NewTokenCounter("cl100k_base", slog.Default())
+	tc := New(Model{Encoding: "heuristic"}, slog.Default())
 	if got := tc.Count(""); got != 0 {
 		t.Errorf("Count(\"\") = %d, want 0", got)
 	}
 }
 
 func TestCount_NonEmpty(t *testing.T) {
-	tc := NewTokenCounter("cl100k_base", slog.Default())
+	tc := New(Model{Encoding: "heuristic"}, slog.Default())
 	got := tc.Count("hello world")
 	if got <= 0 {
 		t.Errorf("Count(\"hello world\") should be > 0, got %d", got)
@@ -89,7 +89,7 @@ func TestCharsPerTokenRatio(t *testing.T) {
 }
 
 func TestCount_LargeInput(t *testing.T) {
-	tc := NewTokenCounter("cl100k_base", slog.Default())
+	tc := New(Model{Encoding: "heuristic"}, slog.Default())
 
 	// Generate a large input.
 	var b strings.Builder

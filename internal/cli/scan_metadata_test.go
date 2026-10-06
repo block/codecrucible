@@ -13,11 +13,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/block/codecrucible/internal/chunk"
 	"github.com/block/codecrucible/internal/config"
 	"github.com/block/codecrucible/internal/ingest"
 	"github.com/block/codecrucible/internal/llm"
 	"github.com/block/codecrucible/internal/sarif"
+	"github.com/block/codecrucible/internal/tokenestimate"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
@@ -269,7 +269,7 @@ func TestMetadataContextFingerprintsAndPacking(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := newScanMetadata(cfg)
-	counter := chunk.NewTokenCounter("cl100k_base", nil)
+	counter := tokenestimate.New(tokenestimate.Model{}, nil)
 	_, _, err = loadSupplementaryContext(context.Background(), cfg, counter, loader, 1000, m)
 	if err != nil {
 		t.Fatal(err)

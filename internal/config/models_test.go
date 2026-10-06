@@ -361,8 +361,8 @@ func TestUnknownModelDefaults(t *testing.T) {
 	if m.Temperature != 0.0 {
 		t.Errorf("Temperature: got %f, want %f", m.Temperature, 0.0)
 	}
-	if m.Encoding != "cl100k_base" {
-		t.Errorf("Encoding: got %q, want %q", m.Encoding, "cl100k_base")
+	if m.Encoding != "heuristic" {
+		t.Errorf("Encoding: got %q, want %q", m.Encoding, "heuristic")
 	}
 	if m.SupportsStructuredOutput {
 		t.Error("SupportsStructuredOutput: got true, want false")

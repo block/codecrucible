@@ -1,38 +1,6 @@
-package chunk
+package tokenestimate
 
-import (
-	"log/slog"
-	"math"
-)
-
-// TokenCounter counts tokens using a fast content-aware heuristic.
-// The pipeline's 20% tokenizer safety margin on the context limit absorbs
-// estimation error, making expensive BPE encoding unnecessary.
-type TokenCounter struct {
-	logger *slog.Logger
-}
-
-// NewTokenCounter creates a TokenCounter. The encoding parameter is accepted
-// for API compatibility but is not used; all counting uses the fast heuristic.
-func NewTokenCounter(encoding string, logger *slog.Logger) *TokenCounter {
-	if logger == nil {
-		logger = slog.Default()
-	}
-
-	return &TokenCounter{
-		logger: logger,
-	}
-}
-
-// Count returns the estimated number of tokens in the given text.
-// Uses a fast heuristic (3-4 chars per token + 10% safety margin) that avoids
-// the extreme cost of BPE encoding through tiktoken-go's regexp2 engine.
-func (tc *TokenCounter) Count(text string) int {
-	if text == "" {
-		return 0
-	}
-	return heuristicCount(text)
-}
+import "math"
 
 // heuristicCount estimates token count using a content-aware chars/token ratio
 // plus a 10% safety margin. Code tokenizes much more densely than prose — every

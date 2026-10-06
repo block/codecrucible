@@ -16,6 +16,7 @@ import (
 	"github.com/block/codecrucible/internal/ingest"
 	"github.com/block/codecrucible/internal/llm"
 	"github.com/block/codecrucible/internal/sarif"
+	"github.com/block/codecrucible/internal/tokenestimate"
 	"github.com/block/codecrucible/internal/usage"
 	"github.com/spf13/cobra"
 )
@@ -376,10 +377,15 @@ func runScan(cmd *cobra.Command, args []string) (scanErr error) {
 	)
 
 	// --- Stage 4: Count tokens and chunk ---
-	counter := chunk.NewTokenCounter(modelCfg.Encoding, slog.Default())
+	counter := newPhaseTokenEstimator(*analysis)
+	var auditCounter tokenestimate.Counter
+	if !cfg.SkipAudit {
+		auditCounter = newPhaseTokenEstimator(cfg.Phases.Audit)
+	}
 	// Streaming count: iterate FileMap one file at a time so peak memory is
 	// max(single file XML) rather than the full concatenated document.
-	totalTokens := streamingTokenCount(flatResult.FileMap, counter, flattenCfg)
+	sourceTokens := estimateSourceTokens(flatResult.FileMap, flattenCfg, counter, auditCounter)
+	totalTokens := sourceTokens.Analysis
 	flatResult.Tokens = totalTokens
 
 	// Only build the full XML when the repo likely fits in a single chunk.
@@ -390,10 +396,11 @@ func runScan(cmd *cobra.Command, args []string) (scanErr error) {
 		flatResult.BuildFullXML(filtered, flattenCfg)
 	}
 
-	costEstimate := estimateScanCost(totalTokens, cfg)
+	costEstimate := estimateScanCost(sourceTokens, cfg)
 	scopeAttrs := []any{
 		"files", len(filtered),
 		"tokens", totalTokens,
+		"token_method", counter.Method(),
 		"model", modelCfg.Name,
 		"context_limit", modelCfg.ContextLimit,
 	}
@@ -412,7 +419,10 @@ func runScan(cmd *cobra.Command, args []string) (scanErr error) {
 		}
 		fmt.Printf("Dry run — analysis scope:\n")
 		fmt.Printf("  Files: %d (of %d total)\n", stats.Kept, stats.Total)
-		fmt.Printf("  Tokens: %d\n", totalTokens)
+		fmt.Printf("  Tokens: %d (estimate: %s)\n", totalTokens, counter.Method())
+		if !cfg.SkipAudit && sourceTokens.Audit != totalTokens {
+			fmt.Printf("  Audit-model tokens: %d\n", sourceTokens.Audit)
+		}
 		fmt.Printf("  Model: %s (context limit: %d)\n", modelCfg.Name, modelCfg.ContextLimit)
 		costEstimate.writeSummary(os.Stdout)
 		for _, warning := range modelWarnings {
@@ -542,7 +552,7 @@ func runScan(cmd *cobra.Command, args []string) (scanErr error) {
 	worstCaseBudget := worstCaseEffective - worstCaseOverhead - outputReserve
 
 	var detectedFeatures []string
-	var tokenCorrection float64
+	var tokenCorrection tokenestimate.Calibration
 	if !cfg.SkipFeatureDetection && totalTokens > worstCaseBudget {
 		var handled bool
 		detectedFeatures, handled, err = decisions.featureDetection(scanCtx, promptLoader)
@@ -574,12 +584,12 @@ func runScan(cmd *cobra.Command, args []string) (scanErr error) {
 			}
 			recordActualPhase(metadata, "feature-detection", *fd, cfg, fdErr != nil)
 			fdOutputMode := llm.OutputModeForConfig(fd.ModelCfg)
-			var fdCorrection float64
+			var fdCorrection tokenestimate.Calibration
 			fdFallback := ""
 			if fdErr != nil {
 				fdFallback = "analysis_client"
 			}
-			detectedFeatures, fdCorrection, err = runFeatureDetection(phaseUsageContext(scanCtx, "feature-detection", *fd, fdFallback), filtered, repoName, fdClient, fdEndpoint, fd.ModelCfg, promptLoader, fdOutputMode, fd.ModelParams, counter)
+			detectedFeatures, fdCorrection, err = runFeatureDetection(phaseUsageContext(scanCtx, "feature-detection", *fd, fdFallback), filtered, repoName, fdClient, fdEndpoint, fd.ModelCfg, promptLoader, fdOutputMode, fd.ModelParams, newPhaseTokenEstimator(*fd))
 			if err != nil {
 				setPhaseStatus(metadata, "feature-detection", "failed", "using all sections")
 				if wErr := artifacts.WriteFeatureDetection(featureDetectionArtifact{
@@ -603,15 +613,15 @@ func runScan(cmd *cobra.Command, args []string) (scanErr error) {
 					Provider:         fd.Provider,
 					Model:            fd.ModelCfg.Name,
 					DetectedFeatures: detectedFeatures,
-					TokenCorrection:  fdCorrection,
+					TokenCorrection:  fdCorrection.Ratio,
 				}); wErr != nil {
 					return fmt.Errorf("writing feature-detection artifact: %w", wErr)
 				}
 				slog.Info("feature detection complete", "features", detectedFeatures)
 			}
-			// Calibration is only valid when feature detection hit the same model
-			// as chunk analysis — a different model means a different tokenizer.
-			if fd.ModelCfg.Name == modelCfg.Name {
+			// Calibration is only valid when feature detection hit the same
+			// model and deployment as chunk analysis.
+			if counter.Applies(fdCorrection) {
 				tokenCorrection = fdCorrection
 			}
 		}
@@ -643,7 +653,7 @@ func runScan(cmd *cobra.Command, args []string) (scanErr error) {
 		metadata.Execution.RetainedFeatures = append([]string{}, detectedFeatures...)
 		metadata.Execution.DetectedFeatures = decisions.observedFeatures()
 	}
-	metadata.Execution.TokenCorrection = tokenCorrection
+	metadata.Execution.TokenCorrection = tokenCorrection.Ratio
 
 	// Measure actual prompt token overhead with the resolved features.
 	// If features are nil (same as worst-case), reuse the already-computed value
@@ -699,10 +709,10 @@ func runScan(cmd *cobra.Command, args []string) (scanErr error) {
 	decisions.finishStage("feature-detection")
 	// Chunk if needed.
 	// Reserve budget for output tokens, measured prompt overhead, and a safety
-	// margin for tokenizer variance. The anthropic-tokenizer-go library uses
-	// Claude 2-era BPE vocabulary which undercounts ~17% vs Claude 4's actual
-	// tokenizer. Also accounts for API-side overhead (tool definitions, message
-	// framing, internal prompt formatting).
+	// margin for tokenizer variance. Models without a configured local encoding
+	// use the content-aware heuristic, and sampled BPE counts are approximate.
+	// Also accounts for API-side overhead (tool definitions, message framing,
+	// internal prompt formatting).
 	effectiveLimit := int(float64(modelCfg.ContextLimit) * (1 - tokenizerSafetyMargin))
 	chunkBudget := effectiveLimit - promptOverhead - outputReserve
 	// When supplementary context is configured, a too-small chunk budget
@@ -718,19 +728,12 @@ func runScan(cmd *cobra.Command, args []string) (scanErr error) {
 	}
 
 	// Apply the measured correction from feature detection. Only shrink —
-	// if the heuristic overcounted (correction < 1), we're already safe.
-	// Clamp to 2× to guard against noisy measurements where framing overhead
-	// dominates a small feature-detection payload.
-	if tokenCorrection > 1.0 {
-		clamp := tokenCorrection
-		if clamp > 2.0 {
-			clamp = 2.0
-		}
-		adjusted := int(float64(chunkBudget) / clamp)
+	// if the estimate overcounted (correction < 1), we're already safe.
+	if adjusted := counter.ChunkBudget(chunkBudget, tokenCorrection); adjusted != chunkBudget {
 		slog.Info("shrinking chunk budget to match measured tokenizer density",
 			"before", chunkBudget,
 			"after", adjusted,
-			"correction_factor", fmt.Sprintf("%.3f", tokenCorrection),
+			"correction_factor", fmt.Sprintf("%.3f", tokenCorrection.Ratio),
 		)
 		chunkBudget = adjusted
 	}
@@ -918,7 +921,7 @@ func runScan(cmd *cobra.Command, args []string) (scanErr error) {
 				phaseUsageContext(scanCtx, "audit", *audit, auditFallback), merged, repoName,
 				auditClient, auditEndpoint, audit.ModelCfg, promptLoader,
 				auditOutputMode, flatResult.FileMap, cfg.AuditConfidenceThreshold, audit.ModelParams, auditCtx.Rendered,
-				cfg.AuditBatchSize, cfg.AuditConcurrency, !cfg.IncludeTests, counter, metadata, decisions.auditContext(),
+				cfg.AuditBatchSize, cfg.AuditConcurrency, !cfg.IncludeTests, newPhaseTokenEstimator(*audit), metadata, decisions.auditContext(),
 			)
 			if auditedDoc != nil {
 				merged = *auditedDoc

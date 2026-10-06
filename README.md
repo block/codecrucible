@@ -758,6 +758,9 @@ replaces it wholesale (case-insensitive), a new name extends the registry.
 Empty `endpoint` defaults to `<name>/invocations` to match the built-in
 convention (Databricks serving path; other providers ignore it). `name` is
 required; other fields follow the same YAML schema as the built-in registry.
+`tokenizer_encoding` controls offline token estimates for chunking and cost
+preflight: `o200k_base` and `cl100k_base` use embedded BPE vocabularies
+(sampled on large files), and any other value uses a content-aware heuristic.
 Set `execution_warning` when a model has provisional limits, estimated
 pricing, or operational caveats that should be logged whenever a scan selects
 it.

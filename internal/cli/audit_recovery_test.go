@@ -9,11 +9,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/block/codecrucible/internal/chunk"
 	"github.com/block/codecrucible/internal/config"
 	"github.com/block/codecrucible/internal/ingest"
 	"github.com/block/codecrucible/internal/llm"
 	"github.com/block/codecrucible/internal/sarif"
+	"github.com/block/codecrucible/internal/tokenestimate"
 )
 
 type auditClientFunc func(context.Context, llm.ChatRequest) (*llm.ChatResponse, error)
@@ -41,7 +41,7 @@ func auditReply(t *testing.T, req llm.ChatRequest, issue, path string) *llm.Chat
 func runFixtureAudit(ctx context.Context, doc sarif.SARIFDocument, client llm.Client) (*sarif.SARIFDocument, llm.TokenUsage, float64, error) {
 	return runAuditPhase(ctx, doc, "fixture", client, "", config.ModelConfig{Name: "test", InputPricePerM: 1, OutputPricePerM: 2},
 		llm.NewPromptLoader(os.DirFS("../../prompts/default")), llm.OutputModeNone,
-		ingest.FileMap{"a.go": "sink()", "b.go": "sink()"}, .3, nil, "", 1, 1, true, chunk.NewTokenCounter("", nil), nil)
+		ingest.FileMap{"a.go": "sink()", "b.go": "sink()"}, .3, nil, "", 1, 1, true, tokenestimate.New(tokenestimate.Model{}, nil), nil)
 }
 
 func TestAuditPartialFailureRetainsFindingsAndCompletedWork(t *testing.T) {
@@ -184,7 +184,7 @@ func TestAuditIncludesCodePathFilesAndReplacesPath(t *testing.T) {
 	})
 	got, _, _, err := runAuditPhase(context.Background(), doc, "fixture", client, "", config.ModelConfig{Name: "test"},
 		llm.NewPromptLoader(os.DirFS("../../prompts/default")), llm.OutputModeNone,
-		ingest.FileMap(files), .3, nil, "", 1, 1, true, chunk.NewTokenCounter("", nil), nil)
+		ingest.FileMap(files), .3, nil, "", 1, 1, true, tokenestimate.New(tokenestimate.Model{}, nil), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

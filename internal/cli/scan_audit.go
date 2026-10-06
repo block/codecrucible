@@ -10,12 +10,12 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/block/codecrucible/internal/chunk"
 	"github.com/block/codecrucible/internal/config"
 	"github.com/block/codecrucible/internal/decision"
 	"github.com/block/codecrucible/internal/ingest"
 	"github.com/block/codecrucible/internal/llm"
 	"github.com/block/codecrucible/internal/sarif"
+	"github.com/block/codecrucible/internal/tokenestimate"
 )
 
 // AuditResult represents the structured output from the audit phase LLM call.
@@ -110,7 +110,7 @@ func runAuditPhase(
 	supContext string,
 	batchSize, auditConcurrency int,
 	productionOnly bool,
-	counter *chunk.TokenCounter,
+	counter tokenestimate.Counter,
 	metadata *sarif.ScanMetadata,
 	additionalEvidence ...map[string][]decision.Evidence,
 ) (*sarif.SARIFDocument, llm.TokenUsage, float64, error) {

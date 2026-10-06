@@ -492,12 +492,14 @@ func DefaultModel() ModelConfig {
 // we can't know if the model supports it.
 func UnknownModelDefaults(name string) ModelConfig {
 	return ModelConfig{
-		Name:                     name,
-		Endpoint:                 name + "/invocations",
-		ContextLimit:             128000,
-		MaxOutputTokens:          8192,
-		Temperature:              0.0,
-		Encoding:                 "cl100k_base",
+		Name:            name,
+		Endpoint:        name + "/invocations",
+		ContextLimit:    128000,
+		MaxOutputTokens: 8192,
+		Temperature:     0.0,
+		// The tokenizer is unknown, so use the content-aware heuristic rather
+		// than a BPE vocabulary that could undercount for this model.
+		Encoding:                 "heuristic",
 		SupportsStructuredOutput: false,
 	}
 }

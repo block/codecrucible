@@ -20,6 +20,7 @@ import (
 	"github.com/block/codecrucible/internal/ingest"
 	"github.com/block/codecrucible/internal/llm"
 	"github.com/block/codecrucible/internal/sarif"
+	"github.com/block/codecrucible/internal/tokenestimate"
 	"github.com/block/codecrucible/internal/usage"
 )
 
@@ -238,7 +239,7 @@ func TestJevGroupingPreservesDependenciesAndFileCoverage(t *testing.T) {
 	if !strings.Contains(strings.Join(graph["route/a.go"], ","), "storage/b.go") {
 		t.Fatal("semantic relationship not grouped")
 	}
-	counter := chunk.NewTokenCounter("", nil)
+	counter := tokenestimate.New(tokenestimate.Model{}, nil)
 	chunks, err := chunk.NewChunker(counter, nil).Chunk(ingest.FlattenResult{FileMap: ingest.FileMap(d.files)}, 700, &chunk.ChunkOptions{ImportGraph: graph})
 	if err != nil {
 		t.Fatal(err)

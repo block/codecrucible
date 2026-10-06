@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/block/codecrucible/internal/ingest"
+	"github.com/block/codecrucible/internal/tokenestimate"
 )
 
 // Chunk represents a self-contained XML document with a subset of repository files.
@@ -36,13 +37,13 @@ type Chunker interface {
 
 // defaultChunker implements Chunker with directory-proximity grouping.
 type defaultChunker struct {
-	counter *TokenCounter
+	counter tokenestimate.Counter
 	logger  *slog.Logger
 }
 
 // NewChunker creates a Chunker that groups files by directory proximity
 // under the given token budget, preserving file boundaries.
-func NewChunker(counter *TokenCounter, logger *slog.Logger) Chunker {
+func NewChunker(counter tokenestimate.Counter, logger *slog.Logger) Chunker {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -155,7 +156,7 @@ func (c *defaultChunker) Chunk(input ingest.FlattenResult, budget int, opts *Chu
 		filesPerChunk = len(entries)
 	}
 	representativePaths := allPaths[:min(filesPerChunk, len(allPaths))]
-	overheadTokens := heuristicCount(buildChunkWrapper(0, 1, representativePaths, nil))
+	overheadTokens := c.counter.Count(buildChunkWrapper(0, 1, representativePaths, nil))
 
 	effectiveBudget := budget - overheadTokens
 	if effectiveBudget <= 0 {

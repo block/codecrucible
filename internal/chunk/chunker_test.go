@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/block/codecrucible/internal/ingest"
+	"github.com/block/codecrucible/internal/tokenestimate"
 )
 
 // helper to create a FlattenResult from files.
@@ -14,8 +15,8 @@ func makeFlattenResult(files []ingest.SourceFile) ingest.FlattenResult {
 	return ingest.Flatten(files, ingest.FlattenConfig{})
 }
 
-func newTestChunker(encoding string) Chunker {
-	tc := NewTokenCounter(encoding, slog.Default())
+func newTestChunker(string) Chunker {
+	tc := tokenestimate.New(tokenestimate.Model{}, slog.Default())
 	return NewChunker(tc, slog.Default())
 }
 
@@ -126,7 +127,7 @@ func TestChunk_OversizedRepoProducesMultipleChunks(t *testing.T) {
 	input := makeFlattenResult(files)
 
 	// Use a small budget that forces splitting.
-	totalTokens := NewTokenCounter("cl100k_base", slog.Default()).Count(input.XML)
+	totalTokens := tokenestimate.New(tokenestimate.Model{}, slog.Default()).Count(input.XML)
 	budget := totalTokens / 3
 
 	chunks, err := ch.Chunk(input, budget, nil)
@@ -138,7 +139,7 @@ func TestChunk_OversizedRepoProducesMultipleChunks(t *testing.T) {
 	}
 
 	// Verify each chunk is under budget.
-	tc := NewTokenCounter("cl100k_base", slog.Default())
+	tc := tokenestimate.New(tokenestimate.Model{}, slog.Default())
 	for i, c := range chunks {
 		tokens := tc.Count(c.XML)
 		if tokens > budget {
@@ -158,7 +159,7 @@ func TestChunk_FileBoundariesPreserved(t *testing.T) {
 	}
 	input := makeFlattenResult(bigFiles)
 
-	tc := NewTokenCounter("cl100k_base", slog.Default())
+	tc := tokenestimate.New(tokenestimate.Model{}, slog.Default())
 	totalTokens := tc.Count(input.XML)
 	budget := totalTokens / 2
 
@@ -191,7 +192,7 @@ func TestChunk_DirectoryProximityGrouping(t *testing.T) {
 	}
 	input := makeFlattenResult(files)
 
-	tc := NewTokenCounter("cl100k_base", slog.Default())
+	tc := tokenestimate.New(tokenestimate.Model{}, slog.Default())
 	totalTokens := tc.Count(input.XML)
 	// Budget that forces ~2 chunks.
 	budget := totalTokens / 2
@@ -289,7 +290,7 @@ func TestChunk_ManifestContainsAllPaths(t *testing.T) {
 	}
 	input := makeFlattenResult(files)
 
-	tc := NewTokenCounter("cl100k_base", slog.Default())
+	tc := tokenestimate.New(tokenestimate.Model{}, slog.Default())
 	totalTokens := tc.Count(input.XML)
 	budget := totalTokens / 3
 
@@ -337,7 +338,7 @@ func TestChunk_MetadataCorrect(t *testing.T) {
 	}
 	input := makeFlattenResult(files)
 
-	tc := NewTokenCounter("cl100k_base", slog.Default())
+	tc := tokenestimate.New(tokenestimate.Model{}, slog.Default())
 	totalTokens := tc.Count(input.XML)
 	budget := totalTokens / 4
 
@@ -370,7 +371,7 @@ func TestChunk_XMLContainsMetadata(t *testing.T) {
 	}
 	input := makeFlattenResult(files)
 
-	tc := NewTokenCounter("cl100k_base", slog.Default())
+	tc := tokenestimate.New(tokenestimate.Model{}, slog.Default())
 	totalTokens := tc.Count(input.XML)
 	budget := totalTokens / 3
 
@@ -475,7 +476,7 @@ func TestChunk_EachChunkUnderBudget(t *testing.T) {
 	}
 	input := makeFlattenResult(files)
 
-	tc := NewTokenCounter("cl100k_base", slog.Default())
+	tc := tokenestimate.New(tokenestimate.Model{}, slog.Default())
 	totalTokens := tc.Count(input.XML)
 	budget := totalTokens / 3
 
@@ -531,7 +532,7 @@ func TestChunk_ChunkXMLSelfContained(t *testing.T) {
 	}
 	input := makeFlattenResult(files)
 
-	tc := NewTokenCounter("cl100k_base", slog.Default())
+	tc := tokenestimate.New(tokenestimate.Model{}, slog.Default())
 	totalTokens := tc.Count(input.XML)
 	budget := totalTokens / 3
 
@@ -638,7 +639,7 @@ func TestChunk_MergesSmallImportGroups(t *testing.T) {
 	}
 	input := makeFlattenResult(files)
 
-	tc := NewTokenCounter("cl100k_base", slog.Default())
+	tc := tokenestimate.New(tokenestimate.Model{}, slog.Default())
 	totalTokens := tc.Count(input.XML)
 	// Budget ~1/3 of total forces chunking but allows merging groups together.
 	budget := totalTokens / 3

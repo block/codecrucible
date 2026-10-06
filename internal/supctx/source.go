@@ -72,8 +72,8 @@ type Loaded struct {
 	Phases               []string
 }
 
-// TokenCounter is the subset of chunk.TokenCounter this package needs.
-// Defined locally to avoid an import cycle if chunk ever wants supctx.
+// TokenCounter matches tokenestimate.Counter.
+// Defined locally so supctx does not depend on tokenizer selection.
 type TokenCounter interface {
 	Count(text string) int
 }

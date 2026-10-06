@@ -7,12 +7,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/block/codecrucible/internal/chunk"
 	"github.com/block/codecrucible/internal/config"
 	"github.com/block/codecrucible/internal/decision"
 	"github.com/block/codecrucible/internal/ingest"
 	"github.com/block/codecrucible/internal/llm"
 	"github.com/block/codecrucible/internal/sarif"
+	"github.com/block/codecrucible/internal/tokenestimate"
 )
 
 func TestSelectedAuditEvidenceReachesAuditorWithoutReplacingAnchor(t *testing.T) {
@@ -30,7 +30,7 @@ func TestSelectedAuditEvidenceReachesAuditorWithoutReplacingAnchor(t *testing.T)
 		}
 		return verdictResponse(requestedClaims(t, req)...), nil
 	})
-	out, _, _, err := runAuditPhase(context.Background(), doc, "fixture", client, "", config.ModelConfig{Name: "test"}, llm.NewPromptLoader(os.DirFS("../../prompts/default")), llm.OutputModeNone, files, .3, nil, "", 1, 1, true, chunk.NewTokenCounter("", nil), nil, map[string][]decision.Evidence{id: {e}})
+	out, _, _, err := runAuditPhase(context.Background(), doc, "fixture", client, "", config.ModelConfig{Name: "test"}, llm.NewPromptLoader(os.DirFS("../../prompts/default")), llm.OutputModeNone, files, .3, nil, "", 1, 1, true, tokenestimate.New(tokenestimate.Model{}, nil), nil, map[string][]decision.Evidence{id: {e}})
 	if err != nil || len(out.Runs[0].Results) != 1 {
 		t.Fatalf("audit lost finding: %v", err)
 	}

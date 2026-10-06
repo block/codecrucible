@@ -7,11 +7,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/block/codecrucible/internal/chunk"
 	"github.com/block/codecrucible/internal/config"
 	"github.com/block/codecrucible/internal/ingest"
 	"github.com/block/codecrucible/internal/llm"
 	"github.com/block/codecrucible/internal/sarif"
+	"github.com/block/codecrucible/internal/tokenestimate"
 )
 
 func requestedClaims(t *testing.T, req llm.ChatRequest) []AuditedFinding {
@@ -50,7 +50,7 @@ func runIdentityAudit(t *testing.T, client llm.Client) (*sarif.SARIFDocument, ll
 	t.Helper()
 	got, usage, _, err := runAuditPhase(context.Background(), auditFixture(), "fixture", client, "", config.ModelConfig{Name: "test"},
 		llm.NewPromptLoader(os.DirFS("../../prompts/default")), llm.OutputModeNone,
-		ingest.FileMap{"a.go": "first()\nsecond()\n", "b.go": "first()\nsecond()\n"}, .3, nil, "", 2, 1, true, chunk.NewTokenCounter("", nil), nil)
+		ingest.FileMap{"a.go": "first()\nsecond()\n", "b.go": "first()\nsecond()\n"}, .3, nil, "", 2, 1, true, tokenestimate.New(tokenestimate.Model{}, nil), nil)
 	return got, usage, err
 }
 func TestAuditIdentitySurvivesLocationRefinement(t *testing.T) {

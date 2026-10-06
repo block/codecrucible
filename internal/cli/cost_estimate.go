@@ -22,27 +22,31 @@ type scanCostEstimate struct {
 	auditModel    string
 }
 
-func estimateScanCost(sourceTokens int, cfg *config.Config) scanCostEstimate {
+func estimateScanCost(sourceTokens scanTokenCounts, cfg *config.Config) scanCostEstimate {
 	analysis := cfg.Phases.Analysis.ModelCfg
 	audit := cfg.Phases.Audit.ModelCfg
 	estimate := scanCostEstimate{
-		AnalysisInput: analysis.EstimateInputCost(sourceTokens),
+		AnalysisInput: analysis.EstimateInputCost(sourceTokens.Analysis),
 		auditEnabled:  !cfg.SkipAudit,
 		auditModel:    audit.Name,
 	}
 	// Illustrative input+output scenario, not a quota reservation or worst-case
 	// bound. Audit is one repository-sized pass; actual batches depend on findings.
-	input := int(math.Ceil(float64(sourceTokens) * 1.25))
-	output := int(math.Ceil(float64(input) / 16))
-	estimate.Planning = analysis.EstimateCost(input, output)
+	estimate.Planning = estimatePlanningCost(analysis, sourceTokens.Analysis)
 	if estimate.auditEnabled {
-		estimate.AuditInput = audit.EstimateInputCost(sourceTokens)
-		estimate.Planning += audit.EstimateCost(input, output)
+		estimate.AuditInput = audit.EstimateInputCost(sourceTokens.Audit)
+		estimate.Planning += estimatePlanningCost(audit, sourceTokens.Audit)
 	}
 	estimate.TotalInput = estimate.AnalysisInput + estimate.AuditInput
 	estimate.AllowanceLow = estimate.Planning * 2
 	estimate.AllowanceHigh = estimate.Planning * 3
 	return estimate
+}
+
+func estimatePlanningCost(model config.ModelConfig, sourceTokens int) float64 {
+	input := int(math.Ceil(float64(sourceTokens) * 1.25))
+	output := int(math.Ceil(float64(input) / 16))
+	return model.EstimateCost(input, output)
 }
 
 // checkBudget retains the existing source-input preflight gate. The planning

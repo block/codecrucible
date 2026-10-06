@@ -24,13 +24,13 @@ func TestPlanningCost(t *testing.T) {
 		{0, false, 0},
 	} {
 		cfg.SkipAudit = tc.skip
-		if got := estimateScanCost(tc.tokens, cfg).Planning; math.Abs(got-tc.want) > 1e-9 {
+		if got := estimateScanCost(scanTokenCounts{Analysis: tc.tokens, Audit: tc.tokens}, cfg).Planning; math.Abs(got-tc.want) > 1e-9 {
 			t.Errorf("tokens=%d skip=%v: got %v want %v", tc.tokens, tc.skip, got, tc.want)
 		}
 	}
 	cfg.SkipAudit = false
 	cfg.Phases.Audit.ModelCfg = config.ModelConfig{InputPricePerM: 1, OutputPricePerM: 4}
-	if got := estimateScanCost(320000, cfg).Planning; got != 1.5 {
+	if got := estimateScanCost(scanTokenCounts{Analysis: 320000, Audit: 320000}, cfg).Planning; got != 1.5 {
 		t.Fatalf("per-phase pricing ignored: %v", got)
 	}
 }
@@ -40,7 +40,7 @@ func TestScanCostEstimateMixedProvidersAndBudget(t *testing.T) {
 		Analysis: config.PhaseConfig{Provider: "anthropic", ModelCfg: config.ModelConfig{Name: "analysis", InputPricePerM: 2, OutputPricePerM: 8}},
 		Audit:    config.PhaseConfig{Provider: "google", ModelCfg: config.ModelConfig{Name: "audit", InputPricePerM: 1, OutputPricePerM: 4}},
 	}}
-	estimate := estimateScanCost(320000, cfg)
+	estimate := estimateScanCost(scanTokenCounts{Analysis: 320000, Audit: 320000}, cfg)
 	if estimate.AnalysisInput != 0.64 || estimate.AuditInput != 0.32 || estimate.TotalInput != 0.96 || estimate.Planning != 1.5 || estimate.AllowanceLow != 3 || estimate.AllowanceHigh != 4.5 {
 		t.Fatalf("unexpected estimate: %+v", estimate)
 	}
@@ -60,7 +60,7 @@ func TestScanCostEstimateMixedProvidersAndBudget(t *testing.T) {
 		}
 	}
 	cfg.SkipAudit = true
-	estimate = estimateScanCost(320000, cfg)
+	estimate = estimateScanCost(scanTokenCounts{Analysis: 320000, Audit: 320000}, cfg)
 	summary.Reset()
 	estimate.writeSummary(&summary)
 	if estimate.TotalInput != 0.64 || estimate.AuditInput != 0 || strings.Contains(summary.String(), "Estimated audit input") {

@@ -11,12 +11,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/block/codecrucible/internal/chunk"
 	"github.com/block/codecrucible/internal/config"
-	"github.com/block/codecrucible/internal/ingest"
 	"github.com/block/codecrucible/internal/llm"
 	"github.com/block/codecrucible/internal/sarif"
 	"github.com/block/codecrucible/internal/supctx"
+	"github.com/block/codecrucible/internal/tokenestimate"
 	"github.com/block/codecrucible/internal/usage"
 )
 
@@ -293,7 +292,7 @@ const maxContextBudgetPct = 40
 func loadSupplementaryContext(
 	ctx context.Context,
 	cfg *config.Config,
-	counter *chunk.TokenCounter,
+	counter tokenestimate.Counter,
 	promptLoader *llm.PromptLoader,
 	contextLimit int,
 	metadata *sarif.ScanMetadata,
@@ -418,30 +417,6 @@ func loadSupplementaryContext(
 	logPack("audit", auditCtx)
 
 	return analysisCtx, auditCtx, nil
-}
-
-// streamingTokenCount estimates the total token count of the flattened XML by
-// iterating FileMap entries one at a time. Each per-file XML string is built,
-// counted, and discarded, so peak memory is max(single file XML) rather than
-// sum(all file XML). The result closely matches counter.Count(fullXML) because
-// the heuristic token counter is linear and additive.
-func streamingTokenCount(fm ingest.FileMap, counter *chunk.TokenCounter, cfg ingest.FlattenConfig) int {
-	paths := make([]string, 0, len(fm))
-	for p := range fm {
-		paths = append(paths, p)
-	}
-
-	// Envelope: header + directory structure + <files></files> wrapper.
-	envelope := ingest.EnvelopeXML(paths, cfg)
-	total := counter.Count(envelope)
-
-	// Per-file: build XML one at a time, count, discard.
-	for _, p := range paths {
-		fileXML := chunk.BuildFileXML(p, fm[p])
-		total += counter.Count(fileXML)
-	}
-
-	return total
 }
 
 func anyCompress(loaded []supctx.Loaded) bool {
