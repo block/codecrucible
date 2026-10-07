@@ -65,6 +65,9 @@ func loadAuditReplay(path string, files ingest.FileMap) (sarif.SARIFDocument, *s
 	doc = sarif.WithFindingIDs(doc)
 	source.Findings = len(run.Results)
 	source.MissingFiles, source.ChangedSnippets = replayDrift(doc, files)
+	if source.Findings > 0 && source.MissingFiles == source.Findings {
+		return sarif.SARIFDocument{}, nil, fmt.Errorf("--audit-from: none of the %d findings' files are in the scanned source; scan the same root the analysis used", source.Findings)
+	}
 	if source.MissingFiles > 0 || source.ChangedSnippets > 0 {
 		slog.Warn("replayed findings do not match the current source; audit verdicts are not comparable for these findings",
 			"missing_files", source.MissingFiles, "changed_snippets", source.ChangedSnippets)

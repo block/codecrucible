@@ -191,7 +191,8 @@ func TestAuditReplayAcceptsSkipAuditOutputAndReportsDrift(t *testing.T) {
 	if _, source, err = loadAuditReplay(filepath.Join(first, "final.sarif"), changed); err != nil || source.ChangedSnippets != 1 || source.MissingFiles != 0 {
 		t.Fatalf("snippet drift not reported: %+v %v", source, err)
 	}
-	if _, source, err = loadAuditReplay(filepath.Join(first, "final.sarif"), ingest.FileMap{}); err != nil || source.MissingFiles != 2 {
-		t.Fatalf("missing files not reported: %+v %v", source, err)
+	// A replay against the wrong root would audit every claim without source.
+	if _, _, err = loadAuditReplay(filepath.Join(first, "final.sarif"), ingest.FileMap{}); err == nil || !strings.Contains(err.Error(), "none of the 2 findings") {
+		t.Fatalf("replay without any source accepted: %v", err)
 	}
 }
