@@ -61,7 +61,9 @@ func loadAuditReplay(path string, files ingest.FileMap) (sarif.SARIFDocument, *s
 		props.AuditReasons = nil
 		r.Properties = &props
 	}
-	doc = sarif.AssignFindingIDs(doc)
+	// Repair model paths that missed a directory prefix before the drift check,
+	// as Build now does for new findings.
+	doc = sarif.AssignFindingIDs(sarif.ResolveLocations(doc, sarif.FileMap(files)))
 	source.Findings = len(run.Results)
 	source.MissingFiles, source.ChangedSnippets = replayDrift(doc, files)
 	if source.Findings > 0 && source.MissingFiles == source.Findings {

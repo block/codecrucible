@@ -769,6 +769,7 @@ Per-finding state lives in `result.properties`:
 | `auditReasons` | Machine-readable qualifiers: `missing_verdict`, `audit_skipped`, `ungrounded_rejection`, `below_confidence_threshold` |
 | `severity`, `cwe` | This finding's own severity (0–10) and CWE, including audit refinements |
 | `summary`, `remediation`, `technicalDetails` | Reviewer summary, fix, and full evidence |
+| `reportedPath` | The model's file path, when it named no scanned file and was repaired to the one scanned file it uniquely matches (for example a dropped `app/` prefix) |
 
 The finding ID hashes the CWE (or rule ID), file path, and whitespace-normalized
 flagged source. It excludes model wording and line numbers, so rescans of

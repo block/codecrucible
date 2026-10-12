@@ -156,6 +156,9 @@ type FindingProperties struct {
 	Summary            string   `json:"summary,omitempty"`
 	Remediation        string   `json:"remediation,omitempty"`
 	TechnicalDetails   string   `json:"technicalDetails,omitempty"`
+	// ReportedPath is the model's file path when it named no scanned file and
+	// was repaired to the one scanned file it uniquely matches.
+	ReportedPath string `json:"reportedPath,omitempty"`
 }
 
 type SARIFCodeFlow struct {
