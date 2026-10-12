@@ -2,9 +2,10 @@ package sarif
 
 import "strings"
 
-const ruleGuidance = "Review the individual finding's message and source location for evidence, " +
-	"audit confidence, and uncertainty markers. Validate the reported input, unsafe operation, " +
-	"and missing control in context before applying a fix."
+const ruleGuidance = "Each finding carries its own writeup in its message and its state in " +
+	"result properties (findingId, verified, auditStatus, auditConfidence, severity, cwe, " +
+	"technicalDetails). Validate the reported input, unsafe operation, and missing control " +
+	"in context before applying a fix."
 
 // RefreshDescriptions fills rule descriptions and empty result messages.
 // Rule help is shared by every result referencing that rule, so it must not

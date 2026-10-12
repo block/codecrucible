@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -853,27 +854,36 @@ func TestApplyAuditVerdicts_RejectsAndConfirms(t *testing.T) {
 	audit := AuditResult{
 		AuditedFindings: []AuditedFinding{
 			// Rejection with a quoted blocking line — a substantiated
-			// rejection that should drop the finding.
+			// rejection that should suppress the finding, not drop it.
 			{FilePath: "src/a.go", StartLine: 10, Verdict: "rejected", Confidence: 0.9,
-				BlockingCode: "src/a.go:42: if !cap_capable(...) return -EPERM;"},
+				Justification: "capability check precedes the sink",
+				BlockingCode:  "src/a.go:42: if !cap_capable(...) return -EPERM;"},
 			{FilePath: "src/b.go", StartLine: 20, Verdict: "confirmed", Confidence: 0.95},
 		},
 	}
 
 	out := applyAuditVerdicts(doc, audit, ingest.FileMap{}, 0.5)
 
-	if len(out.Runs[0].Results) != 1 {
-		t.Fatalf("expected 1 kept result, got %d", len(out.Runs[0].Results))
+	results := out.Runs[0].Results
+	if len(results) != 2 {
+		t.Fatalf("expected both findings retained, got %d", len(results))
 	}
-	if out.Runs[0].Results[0].RuleID != "R2" {
-		t.Errorf("kept RuleID = %q, want %q", out.Runs[0].Results[0].RuleID, "R2")
+	rejected, confirmed := results[0], results[1]
+	if len(rejected.Suppressions) != 1 || rejected.Properties.AuditStatus != "rejected" {
+		t.Fatalf("rejected finding not suppressed: %+v", rejected)
 	}
-	// Only rules for kept results should survive.
-	if len(out.Runs[0].Tool.Driver.Rules) != 1 {
-		t.Fatalf("expected 1 kept rule, got %d", len(out.Runs[0].Tool.Driver.Rules))
+	if j := rejected.Suppressions[0].Justification; !strings.Contains(j, "capability check precedes the sink") || !strings.Contains(j, "cap_capable") {
+		t.Errorf("suppression justification %q missing reason or blocking code", j)
 	}
-	if out.Runs[0].Tool.Driver.Rules[0].ID != "R2" {
-		t.Errorf("kept rule ID = %q, want %q", out.Runs[0].Tool.Driver.Rules[0].ID, "R2")
+	if rejected.Properties.AuditBlockingCode == "" {
+		t.Error("blocking code not recorded on the finding")
+	}
+	if len(confirmed.Suppressions) != 0 || confirmed.Properties.AuditStatus != "confirmed" {
+		t.Errorf("confirmed finding state = %+v", confirmed)
+	}
+	// Suppressed results still reference their rule.
+	if len(out.Runs[0].Tool.Driver.Rules) != 2 {
+		t.Fatalf("expected 2 rules, got %d", len(out.Runs[0].Tool.Driver.Rules))
 	}
 }
 
@@ -906,9 +916,15 @@ func TestApplyAuditVerdicts_RejectedWithoutBlockingCode_CoercedToUnverified(t *t
 	if len(out.Runs[0].Results) != 1 {
 		t.Fatalf("expected 1 retained (unverified) result, got %d", len(out.Runs[0].Results))
 	}
-	msg := out.Runs[0].Results[0].Message.Text
-	if !strings.Contains(msg, "UNVERIFIED") {
-		t.Errorf("retained message %q missing UNVERIFIED marker", msg)
+	r := out.Runs[0].Results[0]
+	if r.Properties.AuditStatus != "unverified" || len(r.Suppressions) != 0 {
+		t.Errorf("status = %q, suppressions = %v; want active unverified", r.Properties.AuditStatus, r.Suppressions)
+	}
+	if !slices.Contains(r.Properties.AuditReasons, "ungrounded_rejection") {
+		t.Errorf("reasons = %v, want ungrounded_rejection", r.Properties.AuditReasons)
+	}
+	if strings.Contains(r.Message.Text, "UNVERIFIED") {
+		t.Errorf("status leaked into evidence text: %q", r.Message.Text)
 	}
 }
 
@@ -937,12 +953,15 @@ func TestApplyAuditVerdicts_UnverifiedRetainedAboveThreshold(t *testing.T) {
 	if len(out.Runs[0].Results) != 1 {
 		t.Fatalf("expected 1 retained unverified result, got %d", len(out.Runs[0].Results))
 	}
-	msg := out.Runs[0].Results[0].Message.Text
-	if !strings.Contains(msg, "UNVERIFIED") {
-		t.Errorf("retained message %q missing UNVERIFIED marker", msg)
+	p := out.Runs[0].Results[0].Properties
+	if p.AuditStatus != "unverified" {
+		t.Errorf("status = %q, want unverified", p.AuditStatus)
 	}
-	if !strings.Contains(msg, "30%") {
-		t.Errorf("retained message %q should show floored 30%% confidence, got: %s", msg, msg)
+	if p.AuditConfidence == nil || *p.AuditConfidence != 0.3 {
+		t.Errorf("confidence = %v, want floored 0.3", p.AuditConfidence)
+	}
+	if p.AuditJustification != "downstream sink not in this batch" {
+		t.Errorf("justification = %q", p.AuditJustification)
 	}
 }
 
@@ -959,15 +978,20 @@ func TestApplyAuditVerdicts_ConfidenceThreshold(t *testing.T) {
 	}
 	audit := AuditResult{
 		AuditedFindings: []AuditedFinding{
-			// Confirmed but below threshold — should be dropped.
+			// Confirmed but below threshold — should be suppressed.
 			{FilePath: "src/a.go", StartLine: 10, Verdict: "confirmed", Confidence: 0.3},
 		},
 	}
 
 	out := applyAuditVerdicts(doc, audit, ingest.FileMap{}, 0.7)
 
-	if len(out.Runs[0].Results) != 0 {
-		t.Fatalf("expected 0 results after confidence cutoff, got %d", len(out.Runs[0].Results))
+	if len(out.Runs[0].Results) != 1 {
+		t.Fatalf("expected the finding retained as a record, got %d", len(out.Runs[0].Results))
+	}
+	r := out.Runs[0].Results[0]
+	if len(r.Suppressions) != 1 || r.Properties.AuditStatus != "rejected" ||
+		!slices.Contains(r.Properties.AuditReasons, "below_confidence_threshold") {
+		t.Fatalf("below-threshold finding = %+v", r)
 	}
 }
 
@@ -1003,15 +1027,42 @@ func TestApplyAuditVerdicts_RefinesSeverityAndMessage(t *testing.T) {
 	if result.Level != "error" {
 		t.Errorf("Level = %q, want %q (severity 8.5)", result.Level, "error")
 	}
-	if !strings.Contains(result.Message.Text, "new details") {
-		t.Errorf("message %q missing refined details", result.Message.Text)
+	if result.Properties.TechnicalDetails != "new details" {
+		t.Errorf("technical details = %q, want refined details", result.Properties.TechnicalDetails)
 	}
-	if !strings.Contains(result.Message.Text, "90%") {
-		t.Errorf("message %q missing confidence percentage", result.Message.Text)
+	if result.Properties.Severity == nil || *result.Properties.Severity != 8.5 {
+		t.Errorf("severity = %v, want 8.5", result.Properties.Severity)
 	}
-	rule := out.Runs[0].Tool.Driver.Rules[0]
-	if rule.Properties["security-severity"] != "8.5" {
-		t.Errorf("rule security-severity = %v, want %q", rule.Properties["security-severity"], "8.5")
+	if result.Properties.AuditJustification != "because" {
+		t.Errorf("justification = %q", result.Properties.AuditJustification)
+	}
+	if _, ok := out.Runs[0].Tool.Driver.Rules[0].Properties["security-severity"]; ok {
+		t.Error("audit refinement written to the shared rule")
+	}
+}
+
+// Findings sharing a title share a rule; refining one must not change another.
+func TestApplyAuditVerdicts_RefinementIsolatedToFinding(t *testing.T) {
+	doc := sarif.Build(sarif.AnalysisResult{SecurityIssues: []sarif.SecurityIssue{
+		{Issue: "Missing authorization", FilePath: "a.go", StartLine: 1, Severity: 7, CWEID: "CWE-862", TechnicalDetails: "a"},
+		{Issue: "Missing authorization", FilePath: "b.go", StartLine: 1, Severity: 7, CWEID: "CWE-862", TechnicalDetails: "b"},
+	}}, nil, sarif.BuilderConfig{})
+	audit := AuditResult{AuditedFindings: []AuditedFinding{
+		{OriginalIssue: "Missing authorization", FilePath: "a.go", StartLine: 1, Verdict: "refined", Confidence: 0.9, RefinedSeverity: 3, RefinedCWEID: "CWE-639"},
+		{OriginalIssue: "Missing authorization", FilePath: "b.go", StartLine: 1, Verdict: "confirmed", Confidence: 0.9},
+	}}
+
+	out := sarif.ReviewPresentation(applyAuditVerdicts(doc, audit, ingest.FileMap{}, 0.5))
+
+	a, b := out.Runs[0].Results[0].Properties, out.Runs[0].Results[1].Properties
+	if *a.Severity != 3 || a.CWE != "CWE-639" {
+		t.Errorf("refined finding severity/CWE = %v/%s", *a.Severity, a.CWE)
+	}
+	if *b.Severity != 7 || b.CWE != "CWE-862" {
+		t.Errorf("sibling finding changed: severity/CWE = %v/%s", *b.Severity, b.CWE)
+	}
+	if got := out.Runs[0].Tool.Driver.Rules[0].Properties["security-severity"]; got != "7.0" {
+		t.Errorf("rule security-severity = %v, want worst active finding 7.0", got)
 	}
 }
 
@@ -1104,5 +1155,17 @@ func TestStreamingTokenCount_MatchesFullXMLCount(t *testing.T) {
 	if diff > maxDrift {
 		t.Errorf("streaming count %d diverges from full XML count %d by %d (max allowed %d)",
 			streamCount, fullCount, diff, maxDrift)
+	}
+}
+
+// A finding the audit suppressed must not fail CI on severity.
+func TestMaxActiveSeverityIgnoresSuppressed(t *testing.T) {
+	doc := sarif.Build(sarif.AnalysisResult{SecurityIssues: []sarif.SecurityIssue{
+		{Issue: "Shared", FilePath: "a.go", StartLine: 1, Severity: 9.5},
+		{Issue: "Shared", FilePath: "b.go", StartLine: 1, Severity: 4},
+	}}, nil, sarif.BuilderConfig{})
+	doc.Runs[0].Results[0].Suppressions = []sarif.SARIFSuppression{{Kind: "external", Status: "accepted"}}
+	if got := maxActiveSeverity(doc); got != 4 {
+		t.Fatalf("maxActiveSeverity = %v, want 4", got)
 	}
 }

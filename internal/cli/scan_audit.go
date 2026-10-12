@@ -130,11 +130,9 @@ func runAuditPhase(
 			}
 		}
 
-		var severity float64
-		if sevStr, ok := rule.Properties["security-severity"].(string); ok {
-			if _, err := fmt.Sscanf(sevStr, "%f", &severity); err != nil {
-				slog.Debug("failed to parse security severity", "value", sevStr, "error", err)
-			}
+		sketch := result.Message.Text
+		if result.Properties != nil && result.Properties.TechnicalDetails != "" {
+			sketch = result.Properties.TechnicalDetails
 		}
 
 		findings = append(findings, claimToVerify{
@@ -142,9 +140,9 @@ func runAuditPhase(
 			FilePath:                filePath,
 			StartLine:               startLine,
 			EndLine:                 endLine,
-			UnverifiedExploitSketch: result.Message.Text,
-			Severity:                severity,
-			CWEID:                   sarif.CWEForRule(rule),
+			UnverifiedExploitSketch: sketch,
+			Severity:                sarif.ResultSeverity(result, rule),
+			CWEID:                   sarif.ResultCWE(result, rule),
 			CodeFlows:               result.CodeFlows,
 		})
 	}
@@ -396,8 +394,11 @@ func validateAuditCoverage(result AuditResult, expected map[auditFindingKey]bool
 	return nil
 }
 
-// applyAuditVerdicts takes the original SARIF document and the audit results,
-// and produces a new SARIF document with findings filtered, refined, and enriched.
+// applyAuditVerdicts records each audit verdict on its own result. Every
+// initial finding is retained: rejected and below-threshold findings become
+// suppressed results, so their ID, status, and reason stay trackable instead
+// of disappearing from the report. Refinements are written to the result,
+// never to the rule, because a rule is shared by every finding with its title.
 func applyAuditVerdicts(
 	doc sarif.SARIFDocument,
 	audit AuditResult,
@@ -421,15 +422,9 @@ func applyAuditVerdicts(
 		auditByKey[key] = af
 	}
 
-	// Process existing results: apply verdicts.
 	var keptResults []sarif.SARIFResult
 	ruleByID := make(map[string]sarif.SARIFRule, len(run.Tool.Driver.Rules))
 	for _, rule := range run.Tool.Driver.Rules {
-		properties := make(map[string]any, len(rule.Properties))
-		for k, v := range rule.Properties {
-			properties[k] = v
-		}
-		rule.Properties = properties
 		ruleByID[rule.ID] = rule
 	}
 
@@ -461,9 +456,13 @@ func applyAuditVerdicts(
 		result.Properties = &props
 		if !found {
 			props.AuditStatus = "not_audited"
+			props.AuditReasons = []string{"missing_verdict"}
 			keptResults = append(keptResults, result)
 			continue
 		}
+		props.AuditJustification = af.Justification
+		props.AuditBlockingCode = af.BlockingCode
+		props.AuditReasons = nil
 
 		// Symmetric-skepticism gate: a "rejected" verdict without a
 		// quoted blocking source line is an unsubstantiated rejection.
@@ -479,27 +478,31 @@ func applyAuditVerdicts(
 				"justification", af.Justification,
 			)
 			af.Verdict = "unverified"
+			props.AuditReasons = append(props.AuditReasons, "ungrounded_rejection")
 			coerced++
 		}
 
 		// "unverified" findings are retained. Floor confidence at the
-		// threshold so a low score doesn't immediately re-drop them.
-		// They are clearly marked as unverified in the SARIF message.
-		if af.Verdict == "unverified" {
-			unverified++
-			if af.Confidence < confidenceThreshold {
-				af.Confidence = confidenceThreshold
-			}
-			if af.RefinedTechnicalDetails == "" {
-				af.RefinedTechnicalDetails = result.Message.Text
-			}
-			af.RefinedTechnicalDetails = "[UNVERIFIED — audit could not re-prove the full chain; treat as a lead]\n\n" + af.RefinedTechnicalDetails
+		// threshold so a low score doesn't immediately suppress them.
+		if af.Verdict == "unverified" && af.Confidence < confidenceThreshold {
+			af.Confidence = confidenceThreshold
 		}
+		props.AuditStatus = af.Verdict
+		props.AuditConfidence = &af.Confidence
 
-		// Reject explicit rejections (now guaranteed to have blocking_code)
-		// and findings below confidence threshold.
+		// Rejections (now guaranteed to have blocking_code) and findings
+		// below the confidence threshold are kept as suppressed records.
 		if af.Verdict == "rejected" || af.Confidence < confidenceThreshold {
 			rejected++
+			if af.Verdict != "rejected" {
+				props.AuditReasons = append(props.AuditReasons, "below_confidence_threshold")
+			}
+			props.AuditStatus = "rejected"
+			result.Suppressions = []sarif.SARIFSuppression{{
+				Kind:          "external",
+				Status:        "accepted",
+				Justification: auditSuppressionJustification(af, confidenceThreshold),
+			}}
 			slog.Debug("audit: rejected finding",
 				"issue", af.OriginalIssue,
 				"file", af.FilePath,
@@ -507,46 +510,42 @@ func applyAuditVerdicts(
 				"blocking_code", af.BlockingCode,
 				"reason", af.Justification,
 			)
+			keptResults = append(keptResults, result)
 			continue
 		}
 
-		// Apply refinements.
 		switch af.Verdict {
 		case "refined":
 			refined++
 		case "escalated":
 			escalated++
 		case "unverified":
-			// counted above
+			unverified++
 		default:
 			confirmed++
 		}
 
-		// Update the result with refined details.
-		props.AuditStatus = af.Verdict
-		props.AuditConfidence = &af.Confidence
 		props.Summary = af.Summary // Empty means derive from the final evidence.
 		props.Remediation = af.Remediation
-		props.TechnicalDetails = ""
 		// Audit paths replace analysis paths; an unavailable/unverified path
 		// must not leave an obsolete analysis walkthrough in the final report.
 		result.CodeFlows = sarif.BuildCodeFlows(af.CodePath, sarif.FileMap(fileMap))
 		if af.Verdict == "unverified" {
 			result.CodeFlows = nil
 		}
-		if af.RefinedTechnicalDetails == "" {
-			af.RefinedTechnicalDetails = result.Message.Text
+		if af.RefinedTechnicalDetails != "" {
+			props.TechnicalDetails = af.RefinedTechnicalDetails
+		} else if props.TechnicalDetails == "" {
+			props.TechnicalDetails = result.Message.Text
 		}
-		result.Message = sarif.SARIFMessage{
-			Text: fmt.Sprintf("%s\n\n[Audit confidence: %.0f%%] %s",
-				af.RefinedTechnicalDetails, af.Confidence*100, af.Justification),
+		result.Message = sarif.SARIFMessage{Text: props.TechnicalDetails}
+		if af.RefinedSeverity > 0 {
+			severity := af.RefinedSeverity
+			props.Severity = &severity
+			result.Level = severityLevelScan(severity)
 		}
-
-		// Update rule severity if refined.
-		if rule, ok := ruleByID[result.RuleID]; ok && af.RefinedSeverity > 0 {
-			rule.Properties["security-severity"] = fmt.Sprintf("%.1f", af.RefinedSeverity)
-			result.Level = severityLevelScan(af.RefinedSeverity)
-			ruleByID[result.RuleID] = rule
+		if cwe := sarif.NormalizeCWE(af.RefinedCWEID); cwe != "" {
+			props.CWE = cwe
 		}
 
 		keptResults = append(keptResults, result)
@@ -564,7 +563,7 @@ func applyAuditVerdicts(
 			FilePath:         nf.FilePath,
 			StartLine:        nf.StartLine,
 			EndLine:          nf.EndLine,
-			TechnicalDetails: fmt.Sprintf("%s\n\n[Audit confidence: %.0f%%]", nf.TechnicalDetails, nf.Confidence*100),
+			TechnicalDetails: nf.TechnicalDetails,
 			Severity:         nf.Severity,
 			CWEID:            nf.CWEID,
 			Summary:          nf.Summary,
@@ -577,11 +576,14 @@ func applyAuditVerdicts(
 		}, sarif.FileMap(fileMap), sarif.BuilderConfig{ToolVersion: version})
 
 		if len(newDoc.Runs) > 0 && len(newDoc.Runs[0].Results) > 0 {
+			confidence := nf.Confidence
 			newDoc.Runs[0].Results[0].Properties.AuditStatus = "new"
-			newDoc.Runs[0].Results[0].Properties.AuditConfidence = &nf.Confidence
+			newDoc.Runs[0].Results[0].Properties.AuditConfidence = &confidence
 			keptResults = append(keptResults, newDoc.Runs[0].Results...)
 			for _, rule := range newDoc.Runs[0].Tool.Driver.Rules {
-				ruleByID[rule.ID] = rule
+				if _, exists := ruleByID[rule.ID]; !exists {
+					ruleByID[rule.ID] = rule
+				}
 			}
 			newCount++
 		}
@@ -597,15 +599,22 @@ func applyAuditVerdicts(
 		"new", newCount,
 	)
 
-	// Rebuild rules slice from the map.
-	var rules []sarif.SARIFRule
+	// Rebuild rules slice from the map, preserving the original order.
 	usedRuleIDs := make(map[string]bool)
 	for _, r := range keptResults {
 		usedRuleIDs[r.RuleID] = true
 	}
-	for id, rule := range ruleByID {
-		if usedRuleIDs[id] {
+	var rules []sarif.SARIFRule
+	for _, rule := range run.Tool.Driver.Rules {
+		if usedRuleIDs[rule.ID] {
 			rules = append(rules, rule)
+			delete(usedRuleIDs, rule.ID)
+		}
+	}
+	for _, r := range keptResults {
+		if usedRuleIDs[r.RuleID] {
+			rules = append(rules, ruleByID[r.RuleID])
+			delete(usedRuleIDs, r.RuleID)
 		}
 	}
 	if rules == nil {
@@ -620,6 +629,25 @@ func applyAuditVerdicts(
 	doc.Runs[0] = run
 
 	return doc
+}
+
+// auditSuppressionJustification states why the audit suppressed a finding,
+// citing the blocking source when the auditor quoted one.
+func auditSuppressionJustification(af AuditedFinding, confidenceThreshold float64) string {
+	var reason string
+	if af.Verdict == "rejected" {
+		reason = "Rejected by audit"
+	} else {
+		reason = fmt.Sprintf("Audit confidence %.0f%% is below the %.0f%% threshold",
+			af.Confidence*100, confidenceThreshold*100)
+	}
+	if j := strings.TrimSpace(af.Justification); j != "" {
+		reason += ": " + j
+	}
+	if code := strings.TrimSpace(af.BlockingCode); code != "" {
+		reason += "\n\nBlocking code: " + code
+	}
+	return reason
 }
 
 // severityLevelScan maps a numeric severity to a SARIF level (scan package version).

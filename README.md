@@ -720,7 +720,7 @@ Check `runs[0].invocations[0].executionSuccessful` and
 
 Audit is best effort. If any audit batch remains unavailable, completed audit
 verdicts are preserved and the remaining findings are retained with
-`properties.auditStatus: "not_audited"` and a visible review warning. The run
+`properties.auditStatus: "not_audited"` and `auditReasons: ["missing_verdict"]`. The run
 contains a warning notification and its audit phase metadata has status
 `incomplete`. This does not fail CI, even when all audit batches are unavailable.
 It does not turn an analysis failure or cancellation into a successful scan.
@@ -737,18 +737,40 @@ exhaustion does not start a second audit-level HTTP retry cycle.
 
 ## SARIF descriptions and scan comparisons
 
-GitHub's issue panel shows a concise description of attacker control, impact,
-prerequisites, and remediation in `rule.help`. Inline `result.message.text`
-annotations contain the issue title and audit status. Findings that share a
-rule have separate, location-labelled sections in its help. Rejected findings
-are excluded before these sections are built. Existing rule IDs stay unchanged.
+Each result is a self-contained finding. `result.message.text` is that
+finding's reviewer-facing summary; `result.message.markdown` adds its location,
+remediation, audit status, finding ID, and escaped technical details. Rules are
+shared by every finding with the same title, so `rule.help` and
+`rule.fullDescription` stay generic and never contain finding-specific text.
+Existing rule IDs stay unchanged. A rule's `security-severity` is the highest
+severity among its unsuppressed findings.
 
-Full evidence and audit justification are available under the help's
-**Technical details** disclosure and verbatim in
-`result.properties.technicalDetails`. Markdown help escapes source text so
-payloads remain literal. Viewers without disclosure support can read the SARIF
-property. Older/custom prompts without a reviewer summary use the first
-narrative paragraph, limited to 1000 characters, before audit justification.
+Per-finding state lives in `result.properties`:
+
+| Property | Meaning |
+|----------|---------|
+| `findingId` | Stable ID (`CC-` + 16 hex). Also in `partialFingerprints["codecrucibleFinding/v1"]` |
+| `verified` | `true` only when the audit confirmed, refined, or escalated the finding and did not suppress it |
+| `auditStatus` | `confirmed`, `refined`, `escalated`, `unverified`, `rejected`, `new` (added by the audit), or `not_audited` |
+| `auditConfidence` | Audit confidence, 0–1 |
+| `auditJustification`, `auditBlockingCode` | The auditor's reasoning and, for rejections, the quoted blocking source |
+| `auditReasons` | Machine-readable qualifiers: `missing_verdict`, `audit_skipped`, `ungrounded_rejection`, `below_confidence_threshold` |
+| `severity`, `cwe` | This finding's own severity (0–10) and CWE, including audit refinements |
+| `summary`, `remediation`, `technicalDetails` | Reviewer summary, fix, and full evidence |
+
+The finding ID hashes the CWE (or rule ID), file path, and whitespace-normalized
+flagged source. It excludes model wording and line numbers, so rescans of
+unchanged code and unrelated edits that shift lines keep the same ID. IDs are
+assigned before the audit, so an audit-refined CWE does not change them.
+
+Audit rejections and findings below `--audit-confidence-threshold` are retained
+as suppressed results (`suppressions[].kind: "external"`, `status: "accepted"`,
+with the audit justification) and `auditStatus: "rejected"`. They do not count
+toward `--fail-on-severity`. Consumers that ignore SARIF suppressions will
+display them; filter on `suppressions` or `properties.auditStatus`.
+
+Older/custom prompts without a reviewer summary use the first narrative
+paragraph of the technical details, limited to 1000 characters.
 
 Analysis and audit schemas request an ordered `code_path` of exact files,
 line ranges, and step explanations. Valid paths become
