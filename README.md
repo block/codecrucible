@@ -80,6 +80,17 @@ phase artifacts beside it: `results.feature-detection.json`,
 `--phase-output-dir DIR` to choose an explicit artifact directory, including
 for stdout workflows.
 
+To compare audit prompts or models without analysis variance, replay the audit
+on saved findings: `codecrucible scan REPO --audit-from results.analysis.sarif`.
+Replay ingests REPO with the same filters, skips feature detection and analysis,
+and audits the saved claims under their original finding IDs. Only audit
+requests are sent, and the cost preflight excludes analysis. The input can be
+an analysis artifact or the final output of a `--skip-audit` scan; audited SARIF
+is rejected, as is a replay where none of the findings' files are in REPO.
+`recipe.auditReplay` in the run metadata records the input's SHA-256 and counts
+findings whose file or snippet no longer matches the checkout; verdicts for
+those findings are not comparable. Replay never rewrites the analysis artifact.
+
 Dry runs show source-input cost plus a separate rough input-and-output estimate.
 The planning estimate assumes 25% input overhead, output tokens equal to 1/16
 of padded input, and one repository-sized audit pass when audit is enabled.
@@ -202,6 +213,7 @@ Per-phase flags follow the pattern `--{phase}-{flag}` (e.g. `--audit-model`, `--
 ```
   --audit-batch-size int               split audit into N-finding batches (default 25)
   --audit-confidence-threshold float   reject findings below this confidence (default 0.3)
+  --audit-from string                  audit a saved analysis SARIF instead of running analysis
   --base-url string                    override default provider URL
   --compress                           compress whitespace in source files to save tokens
   --concurrency int                    max parallel chunks (default 3)
