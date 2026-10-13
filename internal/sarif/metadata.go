@@ -106,6 +106,9 @@ type ScanExecution struct {
 	Chunks           ChunkExecution            `json:"chunks"`
 	ContextSources   []ContextExecution        `json:"contextSources"`
 	ContextPacking   map[string]ContextPacking `json:"contextPacking"`
+	// AuditLeads are the v2 audit's notes on possible issues outside the
+	// audited findings, for a human to follow up. They are not findings.
+	AuditLeads []string `json:"auditLeads,omitempty"`
 }
 
 type PhaseExecution struct {

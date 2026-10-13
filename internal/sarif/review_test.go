@@ -173,3 +173,15 @@ func TestReviewLegacyFallbackAndUncertainty(t *testing.T) {
 		t.Fatal("unaudited finding not visible")
 	}
 }
+
+func TestReviewStatusNamesDuplicateAndCrux(t *testing.T) {
+	dup := SARIFResult{Properties: &FindingProperties{AuditStatus: "duplicate", DuplicateOf: "cc-1"},
+		Suppressions: []SARIFSuppression{{Kind: "external", Status: "accepted"}}}
+	if got := reviewStatus(dup); got != "Duplicate of cc-1" {
+		t.Errorf("duplicate status = %q", got)
+	}
+	open := SARIFResult{Properties: &FindingProperties{AuditStatus: "unverified", AuditCrux: "whether the caller checks the role"}}
+	if got := reviewStatus(open); !strings.HasSuffix(got, ". Open question: whether the caller checks the role") {
+		t.Errorf("unverified status = %q", got)
+	}
+}
