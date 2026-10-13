@@ -3,15 +3,7 @@
 # maps them by name (internal/llm/prompt.go AnalysisSectionsFile) and
 # feature_detection.yaml produces the matching feature strings.
 #
-# Revision notes vs. original:
-#   - access_control_audit: previously instructed "YOU MUST CHECK EVERY
-#     ENDPOINT... this IS a finding." That forcing function produced 3/6 of
-#     the extra FPs in the sample-app benchmark (all CWE-639). Rewritten to
-#     build a matrix first and report systemic gaps once.
-#   - Added business_logic (no home previously outside blockchain).
-#   - Added trust_boundaries (SSRF / internal calls / queue consumers).
-#   - Broadened concurrency_state beyond TOCTOU.
-#   - cross_site: added open redirect + header injection.
+# Copied from prompts/default until the core analysis contract lands.
 
 sections:
   access_control_audit:
