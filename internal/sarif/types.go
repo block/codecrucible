@@ -122,21 +122,40 @@ type SARIFMessage struct {
 
 // SARIFResult is a single finding referencing a rule.
 type SARIFResult struct {
-	RuleID     string             `json:"ruleId"`
-	Level      string             `json:"level"`
-	Message    SARIFMessage       `json:"message"`
-	Locations  []SARIFLocation    `json:"locations,omitempty"`
-	CodeFlows  []SARIFCodeFlow    `json:"codeFlows,omitempty"`
-	Properties *FindingProperties `json:"properties,omitempty"`
+	RuleID              string             `json:"ruleId"`
+	Level               string             `json:"level"`
+	Message             SARIFMessage       `json:"message"`
+	Locations           []SARIFLocation    `json:"locations,omitempty"`
+	CodeFlows           []SARIFCodeFlow    `json:"codeFlows,omitempty"`
+	PartialFingerprints map[string]string  `json:"partialFingerprints,omitempty"`
+	Suppressions        []SARIFSuppression `json:"suppressions,omitempty"`
+	Properties          *FindingProperties `json:"properties,omitempty"`
 }
 
-// FindingProperties keeps full evidence available outside the inline annotation.
+// SARIFSuppression records why a result is retained but not presented as an
+// active finding (SARIF §3.35). CodeCrucible uses it for audit rejections.
+type SARIFSuppression struct {
+	Kind          string `json:"kind"`
+	Status        string `json:"status,omitempty"`
+	Justification string `json:"justification,omitempty"`
+}
+
+// FindingProperties is the per-finding record. Everything here belongs to
+// exactly one result; rules are shared by every result with the same title,
+// so finding-specific state must never be stored on the rule.
 type FindingProperties struct {
-	Summary          string   `json:"summary,omitempty"`
-	Remediation      string   `json:"remediation,omitempty"`
-	TechnicalDetails string   `json:"technicalDetails,omitempty"`
-	AuditStatus      string   `json:"auditStatus,omitempty"`
-	AuditConfidence  *float64 `json:"auditConfidence,omitempty"`
+	FindingID          string   `json:"findingId,omitempty"`
+	Verified           bool     `json:"verified"`
+	AuditStatus        string   `json:"auditStatus,omitempty"`
+	AuditConfidence    *float64 `json:"auditConfidence,omitempty"`
+	AuditJustification string   `json:"auditJustification,omitempty"`
+	AuditBlockingCode  string   `json:"auditBlockingCode,omitempty"`
+	AuditReasons       []string `json:"auditReasons,omitempty"`
+	Severity           *float64 `json:"severity,omitempty"`
+	CWE                string   `json:"cwe,omitempty"`
+	Summary            string   `json:"summary,omitempty"`
+	Remediation        string   `json:"remediation,omitempty"`
+	TechnicalDetails   string   `json:"technicalDetails,omitempty"`
 }
 
 type SARIFCodeFlow struct {

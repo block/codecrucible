@@ -105,12 +105,23 @@ func Build(result AnalysisResult, fileMap FileMap, cfg BuilderConfig) SARIFDocum
 			rules = append(rules, rule)
 		}
 
+		// The rule keeps the first issue's severity and CWE for GitHub's rule
+		// metadata; each result records its own so siblings sharing a title
+		// do not inherit each other's values.
+		severity := issue.Severity
+		cwe := NormalizeCWE(issue.CWEID)
 		r := SARIFResult{
-			RuleID:     ruleID,
-			Level:      severityLevel(issue.Severity),
-			Message:    SARIFMessage{Text: issue.TechnicalDetails},
-			Properties: &FindingProperties{Summary: issue.Summary, Remediation: issue.Remediation},
-			CodeFlows:  BuildCodeFlows(issue.CodePath, fileMap),
+			RuleID:  ruleID,
+			Level:   severityLevel(issue.Severity),
+			Message: SARIFMessage{Text: issue.TechnicalDetails},
+			Properties: &FindingProperties{
+				Severity:         &severity,
+				CWE:              cwe,
+				Summary:          issue.Summary,
+				Remediation:      issue.Remediation,
+				TechnicalDetails: issue.TechnicalDetails,
+			},
+			CodeFlows: BuildCodeFlows(issue.CodePath, fileMap),
 		}
 
 		if issue.FilePath != "" {
@@ -214,6 +225,12 @@ func extractCWETag(id string) string {
 		return ""
 	}
 	return "cwe-" + m[1]
+}
+
+// NormalizeCWE returns the canonical "CWE-89" form of an identifier such as
+// "cwe-89: SQL Injection", or "" if it names no CWE.
+func NormalizeCWE(id string) string {
+	return strings.ToUpper(extractCWETag(id))
 }
 
 // extractSnippet returns the lines [startLine, endLine] from the file content

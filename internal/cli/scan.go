@@ -787,7 +787,8 @@ func runScan(cmd *cobra.Command, args []string) error {
 	merged := sarif.Merge(sarifDocs)
 
 	// --- Stage 6.5: Post-process (dedup + deprioritize non-source) ---
-	merged = sarif.PostProcess(merged)
+	// IDs are assigned before the audit so a refined CWE cannot change them.
+	merged = sarif.AssignFindingIDs(sarif.PostProcess(merged))
 
 	slog.Info("initial analysis complete",
 		"total_findings", len(merged.Runs[0].Results),
@@ -851,6 +852,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 		}
 	} else if cfg.SkipAudit {
 		slog.Info("audit phase skipped (--skip-audit)")
+		merged = markNotAudited(merged, "audit_skipped")
 	} else {
 		slog.Info("audit phase skipped (no findings to audit)")
 		setPhaseStatus(metadata, "audit", "skipped", "no findings")
@@ -889,21 +891,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 
 	// Check --fail-on-severity threshold.
 	if cfg.FailOnSeverity > 0 {
-		ruleSeverity := make(map[string]float64, len(merged.Runs[0].Tool.Driver.Rules))
-		for _, rule := range merged.Runs[0].Tool.Driver.Rules {
-			if sevStr, ok := rule.Properties["security-severity"].(string); ok {
-				var sev float64
-				if _, err := fmt.Sscanf(sevStr, "%f", &sev); err == nil {
-					ruleSeverity[rule.ID] = sev
-				}
-			}
-		}
-		var maxSev float64
-		for _, result := range merged.Runs[0].Results {
-			if sev, ok := ruleSeverity[result.RuleID]; ok && sev > maxSev {
-				maxSev = sev
-			}
-		}
+		maxSev := maxActiveSeverity(merged)
 		if maxSev >= cfg.FailOnSeverity {
 			slog.Info("findings exceed severity threshold",
 				"threshold", cfg.FailOnSeverity,
@@ -915,6 +903,43 @@ func runScan(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+// markNotAudited records why findings carry no audit verdict.
+func markNotAudited(doc sarif.SARIFDocument, reason string) sarif.SARIFDocument {
+	doc.Runs = append([]sarif.SARIFRun(nil), doc.Runs...)
+	for i := range doc.Runs {
+		run := &doc.Runs[i]
+		run.Results = append([]sarif.SARIFResult(nil), run.Results...)
+		for j := range run.Results {
+			props := sarif.FindingProperties{}
+			if run.Results[j].Properties != nil {
+				props = *run.Results[j].Properties
+			}
+			props.AuditStatus = "not_audited"
+			props.AuditReasons = []string{reason}
+			run.Results[j].Properties = &props
+		}
+	}
+	return doc
+}
+
+// maxActiveSeverity is the highest severity among findings that were not
+// suppressed by the audit.
+func maxActiveSeverity(doc sarif.SARIFDocument) float64 {
+	var maxSev float64
+	for _, run := range doc.Runs {
+		rules := make(map[string]sarif.SARIFRule, len(run.Tool.Driver.Rules))
+		for _, rule := range run.Tool.Driver.Rules {
+			rules[rule.ID] = rule
+		}
+		for _, result := range run.Results {
+			if !sarif.IsSuppressed(result) {
+				maxSev = max(maxSev, sarif.ResultSeverity(result, rules[result.RuleID]))
+			}
+		}
+	}
+	return maxSev
 }
 
 func markAuditIncomplete(doc sarif.SARIFDocument, message string) sarif.SARIFDocument {

@@ -82,12 +82,12 @@ func deduplicateResults(results []SARIFResult, ruleByID map[string]SARIFRule) []
 			}
 		}
 
-		cwe := CWEForRule(ruleByID[r.RuleID])
+		cwe := ResultCWE(r, ruleByID[r.RuleID])
 		key := dedupKey{fileURI: fileURI, startLine: startLine, cwe: cwe}
 
 		if idx, exists := bestIndex[key]; exists {
-			existingSev := ruleSeverity(ruleByID[deduped[idx].RuleID])
-			newSev := ruleSeverity(ruleByID[r.RuleID])
+			existingSev := ResultSeverity(deduped[idx], ruleByID[deduped[idx].RuleID])
+			newSev := ResultSeverity(r, ruleByID[r.RuleID])
 			if newSev > existingSev {
 				deduped[idx] = r
 			}
@@ -205,6 +205,29 @@ func CWEForRule(rule SARIFRule) string {
 	}
 
 	return ""
+}
+
+// ResultSeverity returns the finding's own severity, falling back to its
+// rule's for results built before severity was recorded per finding.
+func ResultSeverity(r SARIFResult, rule SARIFRule) float64 {
+	if r.Properties != nil && r.Properties.Severity != nil {
+		return *r.Properties.Severity
+	}
+	return ruleSeverity(rule)
+}
+
+// ResultCWE returns the finding's own CWE, falling back to its rule's.
+func ResultCWE(r SARIFResult, rule SARIFRule) string {
+	if r.Properties != nil && r.Properties.CWE != "" {
+		return r.Properties.CWE
+	}
+	return CWEForRule(rule)
+}
+
+// IsSuppressed reports whether the result is retained only as a record, such
+// as an audit rejection, rather than as an active finding.
+func IsSuppressed(r SARIFResult) bool {
+	return len(r.Suppressions) > 0
 }
 
 // ruleSeverity extracts the numeric security-severity from a rule's properties.

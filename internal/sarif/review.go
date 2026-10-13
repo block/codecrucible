@@ -5,7 +5,6 @@ import (
 	"html"
 	"log/slog"
 	"path"
-	"sort"
 	"strings"
 )
 
@@ -45,20 +44,34 @@ func BuildCodeFlows(steps []CodePathStep, files FileMap) []SARIFCodeFlow {
 }
 
 // ReviewPresentation is the serialization boundary, after audit and filtering.
-// The internal message still carries full evidence for the audit input. Exported
-// messages are short annotations; GitHub's issue panel uses rule.help. Rule IDs
-// stay stable, and shared-rule help attributes each finding to its own location.
+// Internal messages carry full evidence for the audit input. Exported results
+// each carry their own writeup and state: the message is that finding's
+// reviewer-facing summary, and result.properties holds its ID, verification
+// status, confidence, severity, CWE, and full technical details. Rules stay
+// generic because every finding with the same title shares one rule.
 func ReviewPresentation(doc SARIFDocument) SARIFDocument {
-	doc = RefreshDescriptions(doc)
+	doc = AssignFindingIDs(RefreshDescriptions(doc))
 	for i := range doc.Runs {
 		run := &doc.Runs[i]
-		byRule := make(map[string][]SARIFResult)
-		titles := make(map[string]string)
-		for _, rule := range run.Tool.Driver.Rules {
-			titles[rule.ID] = rule.ShortDescription.Text
+		ruleIndex := make(map[string]int, len(run.Tool.Driver.Rules))
+		for j, rule := range run.Tool.Driver.Rules {
+			ruleIndex[rule.ID] = j
 		}
+		type ruleSeverities struct {
+			active, all float64
+			hasActive   bool
+		}
+		severities := make(map[string]*ruleSeverities)
 		for j := range run.Results {
 			r := &run.Results[j]
+			var rule SARIFRule
+			if k, ok := ruleIndex[r.RuleID]; ok {
+				rule = run.Tool.Driver.Rules[k]
+			}
+			title := rule.ShortDescription.Text
+			if title == "" {
+				title = r.RuleID
+			}
 			props := FindingProperties{}
 			if r.Properties != nil {
 				props = *r.Properties
@@ -67,62 +80,83 @@ func ReviewPresentation(doc SARIFDocument) SARIFDocument {
 				props.TechnicalDetails = r.Message.Text
 			}
 			if strings.TrimSpace(props.Summary) == "" {
-				props.Summary = legacySummary(props.TechnicalDetails, titles[r.RuleID])
+				props.Summary = legacySummary(props.TechnicalDetails, title)
 			}
 			props.Summary = limitReviewText(strings.TrimSpace(props.Summary), 1000)
+			if props.AuditStatus == "" {
+				props.AuditStatus = "not_audited"
+			}
+			props.Verified = !IsSuppressed(*r) && verifiedAuditStatus(props.AuditStatus)
+			severity := ResultSeverity(*r, rule)
+			props.Severity = &severity
+			props.CWE = ResultCWE(*r, rule)
 			r.Properties = &props
-			annotation := titles[r.RuleID]
-			if annotation == "" {
-				annotation = r.RuleID
+			r.Level = severityLevel(severity)
+			r.Message = findingMessage(title, *r)
+
+			s := severities[r.RuleID]
+			if s == nil {
+				s = &ruleSeverities{}
+				severities[r.RuleID] = s
 			}
-			if status := reviewStatus(props); status != "" {
-				annotation += ". " + status
+			s.all = max(s.all, severity)
+			if !IsSuppressed(*r) {
+				s.active = max(s.active, severity)
+				s.hasActive = true
 			}
-			r.Message = SARIFMessage{Text: annotation}
-			byRule[r.RuleID] = append(byRule[r.RuleID], *r)
 		}
+		// GitHub reads security-severity only from the rule. Report the worst
+		// active finding so a suppressed sibling cannot raise or lower it.
 		for j := range run.Tool.Driver.Rules {
 			rule := &run.Tool.Driver.Rules[j]
-			findings := byRule[rule.ID]
-			if len(findings) == 0 {
+			s := severities[rule.ID]
+			if s == nil {
 				continue
 			}
-			if len(findings) == 1 {
-				p := findings[0].Properties
-				text := p.Summary
-				if status := reviewStatus(*p); status != "" {
-					text = status + " " + text
-				}
-				rule.FullDescription = &SARIFMessage{Text: limitReviewText(text, 1024)}
+			severity := s.all
+			if s.hasActive {
+				severity = s.active
 			}
-			sort.SliceStable(findings, func(a, b int) bool { return reviewLocation(findings[a]) < reviewLocation(findings[b]) })
-			var plain, markdown strings.Builder
-			for n, r := range findings {
-				if n > 0 {
-					plain.WriteString("\n\n")
-					markdown.WriteString("\n\n---\n\n")
-				}
-				p := r.Properties
-				location := reviewLocation(r)
-				fmt.Fprintf(&plain, "%s\n\n%s", location, p.Summary)
-				fmt.Fprintf(&markdown, "### %s\n\n%s", escapeMarkdown(location), escapeMarkdown(p.Summary))
-				if p.Remediation != "" {
-					fmt.Fprintf(&plain, "\n\nRemediation: %s", p.Remediation)
-					fmt.Fprintf(&markdown, "\n\n**Remediation:** %s", escapeMarkdown(p.Remediation))
-				}
-				if status := reviewStatus(*p); status != "" {
-					fmt.Fprintf(&plain, "\n\n%s", status)
-					fmt.Fprintf(&markdown, "\n\n**%s**", escapeMarkdown(status))
-				}
-				// Full evidence is also retained verbatim on the result, including
-				// when a SARIF viewer does not support Markdown details elements.
-				plain.WriteString("\n\nFull technical details: result.properties.technicalDetails in the SARIF artifact.")
-				fmt.Fprintf(&markdown, "\n\n<details>\n<summary>Technical details</summary>\n\n<pre>%s</pre>\n</details>", html.EscapeString(p.TechnicalDetails))
+			properties := make(map[string]any, len(rule.Properties)+1)
+			for k, v := range rule.Properties {
+				properties[k] = v
 			}
-			rule.Help = &SARIFMessage{Text: plain.String(), Markdown: markdown.String()}
+			properties["security-severity"] = fmt.Sprintf("%.1f", severity)
+			rule.Properties = properties
 		}
 	}
 	return doc
+}
+
+// verifiedAuditStatus reports whether an audit verdict affirms the finding.
+func verifiedAuditStatus(status string) bool {
+	switch status {
+	case "confirmed", "refined", "escalated":
+		return true
+	}
+	return false
+}
+
+// findingMessage renders one finding's writeup from its own properties only.
+func findingMessage(title string, r SARIFResult) SARIFMessage {
+	p := r.Properties
+	text := p.Summary
+	if text == "" {
+		text = title
+	}
+	var md strings.Builder
+	fmt.Fprintf(&md, "**%s** (%s)\n\n%s", escapeMarkdown(title), escapeMarkdown(reviewLocation(r)), escapeMarkdown(text))
+	if p.Remediation != "" {
+		fmt.Fprintf(&md, "\n\n**Remediation:** %s", escapeMarkdown(p.Remediation))
+	}
+	fmt.Fprintf(&md, "\n\n**Status:** %s", escapeMarkdown(reviewStatus(r)))
+	if p.FindingID != "" {
+		fmt.Fprintf(&md, "\n\n**Finding ID:** %s", escapeMarkdown(p.FindingID))
+	}
+	if p.TechnicalDetails != "" && p.TechnicalDetails != text {
+		fmt.Fprintf(&md, "\n\n<details>\n<summary>Technical details</summary>\n\n<pre>%s</pre>\n</details>", html.EscapeString(p.TechnicalDetails))
+	}
+	return SARIFMessage{Text: text, Markdown: md.String()}
 }
 
 func reviewLocation(r SARIFResult) string {
@@ -136,17 +170,25 @@ func reviewLocation(r SARIFResult) string {
 	return fmt.Sprintf("%s:%d", p.ArtifactLocation.URI, p.Region.StartLine)
 }
 
-func reviewStatus(p FindingProperties) string {
-	switch p.AuditStatus {
-	case "not_audited":
-		return "Not audited: audit coverage is incomplete; review this finding manually."
-	case "unverified":
-		return "Unverified: the audit could not establish the full exploit path."
+func reviewStatus(r SARIFResult) string {
+	p := r.Properties
+	var status string
+	switch {
+	case IsSuppressed(r):
+		status = "Rejected by audit"
+	case p.AuditStatus == "not_audited":
+		status = "Not audited; review manually"
+	case p.AuditStatus == "unverified":
+		status = "Unverified: the audit could not establish the full exploit path"
+	case p.AuditStatus == "new":
+		status = "Reported by the audit; not independently verified"
+	default:
+		status = "Audit " + p.AuditStatus
 	}
-	if p.AuditConfidence != nil {
-		return fmt.Sprintf("Audit %s; confidence %.0f%%.", p.AuditStatus, *p.AuditConfidence*100)
+	if p.AuditConfidence != nil && p.AuditStatus != "not_audited" {
+		status += fmt.Sprintf(" (confidence %.0f%%)", *p.AuditConfidence*100)
 	}
-	return ""
+	return status
 }
 
 // Older/custom prompts may omit summary. Keep the first narrative paragraph,
