@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"encoding/json"
 	"os"
 	"strings"
 	"testing"
@@ -1103,5 +1104,76 @@ func TestBuildCWESection_EmptyInput(t *testing.T) {
 
 	if !strings.Contains(out, "No CWE-specific prompts matched") {
 		t.Errorf("output = %q, want fallback message for empty input", out)
+	}
+}
+
+const testFamiliesYAML = `families:
+  authz:
+    title: Authorization
+    cwes: [CWE-862, cwe-863]
+    establish: The caller lacks the role.
+    refute: A role check that grants the action.
+  injection:
+    title: Injection
+    cwes: [CWE-89]
+    establish: Input reaches the query.
+    refute: A parameterized query.
+  general:
+    title: General
+    cwes: []
+    establish: The claim holds.
+    refute: A guard.
+fallback: general
+`
+
+func TestAssembleAuditMessagesV2FamilyCards(t *testing.T) {
+	fsys := fstest.MapFS{
+		"audit.yaml":          &fstest.MapFile{Data: []byte("contract: v2\nuser_prompt_template: \"{cwe_analysis_prompts}\"\n")},
+		"audit_families.yaml": &fstest.MapFile{Data: []byte(testFamiliesYAML)},
+	}
+	msgs, err := NewPromptLoader(fsys).AssembleAuditMessages(AuditParams{CWEIDs: []string{"CWE-89: SQL Injection", "CWE-863", "CWE-79"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := msgs[1].Content
+	auth, inj, gen := strings.Index(got, "### Authorization"), strings.Index(got, "### Injection"), strings.Index(got, "### General")
+	if auth < 0 || inj < auth || gen < inj {
+		t.Fatalf("family cards missing or out of file order:\n%s", got)
+	}
+	if strings.Count(got, "### ") != 3 || !strings.Contains(got, "Refutes them (quote the line):\nA role check that grants the action.") {
+		t.Fatalf("unexpected family section:\n%s", got)
+	}
+
+	delete(fsys, "audit_families.yaml")
+	if _, err := NewPromptLoader(fsys).AssembleAuditMessages(AuditParams{CWEIDs: []string{"CWE-89"}}); err == nil {
+		t.Fatal("v2 audit without audit_families.yaml should fail")
+	}
+	fsys["audit_families.yaml"] = &fstest.MapFile{Data: []byte("families: {}\nfallback: missing\n")}
+	if _, err := NewPromptLoader(fsys).AssembleAuditMessages(AuditParams{}); err == nil {
+		t.Fatal("unknown fallback family should fail")
+	}
+}
+
+func TestAuditSchemaV2IsValidJSON(t *testing.T) {
+	var schema struct {
+		Name   string `json:"name"`
+		Schema struct {
+			Properties struct {
+				Assessments struct {
+					Items struct {
+						Required []string `json:"required"`
+					} `json:"items"`
+				} `json:"assessments"`
+			} `json:"properties"`
+		} `json:"schema"`
+	}
+	if err := json.Unmarshal(*AuditSchemaV2(), &schema); err != nil {
+		t.Fatal(err)
+	}
+	required := strings.Join(schema.Schema.Properties.Assessments.Items.Required, ",")
+	for _, q := range AuditQuestions {
+		if !strings.Contains(required, q) {
+			t.Errorf("schema does not require %s", q)
+		}
 	}
 }

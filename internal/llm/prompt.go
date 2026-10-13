@@ -38,16 +38,7 @@ func (f *AnalysisSectionsFile) UnmarshalYAML(node *yaml.Node) error {
 	if err := node.Decode((*plain)(f)); err != nil {
 		return err
 	}
-	f.Order = nil
-	for i := 0; i+1 < len(node.Content); i += 2 {
-		if node.Content[i].Value != "sections" || node.Content[i+1].Kind != yaml.MappingNode {
-			continue
-		}
-		entries := node.Content[i+1].Content
-		for j := 0; j+1 < len(entries); j += 2 {
-			f.Order = append(f.Order, entries[j].Value)
-		}
-	}
+	f.Order = mappingKeys(node, "sections")
 	return nil
 }
 
@@ -89,6 +80,10 @@ type FeatureDetectionPrompt struct {
 
 // AuditPrompt represents the parsed audit.yaml template.
 type AuditPrompt struct {
+	// Contract selects the audit response contract. "" is the v1 verdict
+	// schema; "v2" answers evidentiary questions and code computes the
+	// verdict (see AuditSchemaV2), with family cards from audit_families.yaml.
+	Contract            string `yaml:"contract"`
 	SystemMessage       string `yaml:"system_message"`
 	UserPromptTemplate  string `yaml:"user_prompt_template"`
 	JSONFormattingRules string `yaml:"json_formatting_rules"`
@@ -109,6 +104,48 @@ type CWEPrompt struct {
 	AnalysisPrompt          string   `yaml:"analysis_prompt"`
 	ValidationChecks        []string `yaml:"validation_checks"`
 	FalsePositiveIndicators []string `yaml:"false_positive_indicators"`
+}
+
+// AuditFamiliesFile is the parsed audit_families.yaml used by the v2 audit:
+// weakness-family cards for the auditor, each claiming a set of CWEs. Claims
+// whose CWE no family lists get the fallback card.
+type AuditFamiliesFile struct {
+	Families map[string]AuditFamily `yaml:"families"`
+	Fallback string                 `yaml:"fallback"`
+	Order    []string               `yaml:"-"`
+}
+
+// AuditFamily is one weakness-family card.
+type AuditFamily struct {
+	Title     string   `yaml:"title"`
+	CWEs      []string `yaml:"cwes"`
+	Establish string   `yaml:"establish"`
+	Refute    string   `yaml:"refute"`
+}
+
+// UnmarshalYAML decodes the families and records their file order.
+func (f *AuditFamiliesFile) UnmarshalYAML(node *yaml.Node) error {
+	type plain AuditFamiliesFile
+	if err := node.Decode((*plain)(f)); err != nil {
+		return err
+	}
+	f.Order = mappingKeys(node, "families")
+	return nil
+}
+
+// mappingKeys returns the keys of the mapping at node[field] in file order.
+func mappingKeys(node *yaml.Node, field string) []string {
+	var keys []string
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Value != field || node.Content[i+1].Kind != yaml.MappingNode {
+			continue
+		}
+		entries := node.Content[i+1].Content
+		for j := 0; j+1 < len(entries); j += 2 {
+			keys = append(keys, entries[j].Value)
+		}
+	}
+	return keys
 }
 
 // AuditParams holds the dynamic values used when assembling audit prompt messages.
@@ -137,6 +174,7 @@ type PromptLoader struct {
 	cachedFeature  *FeatureDetectionPrompt
 	cachedAudit    *AuditPrompt
 	cachedCWE      *CWEPromptsFile
+	cachedFamilies *AuditFamiliesFile
 	cachedCompress *ContextCompressPrompt
 }
 
@@ -515,8 +553,12 @@ func (l *PromptLoader) AssembleAuditMessages(params AuditParams) ([]Message, err
 	}
 
 	// Build CWE-specific analysis section.
-	cweSection, err := l.buildCWESection(params.CWEIDs)
-	if err != nil {
+	var cweSection string
+	if ap.Contract == "v2" {
+		if cweSection, err = l.buildFamilySection(params.CWEIDs); err != nil {
+			return nil, err
+		}
+	} else if cweSection, err = l.buildCWESection(params.CWEIDs); err != nil {
 		// Non-fatal: proceed without CWE prompts.
 		cweSection = "(CWE-specific prompts not available)"
 	}
@@ -553,6 +595,73 @@ func (l *PromptLoader) AssembleAuditMessages(params AuditParams) ([]Message, err
 		{Role: "system", Content: system},
 		{Role: "user", Content: userContent},
 	}, nil
+}
+
+// LoadAuditFamilies reads and parses audit_families.yaml.
+func (l *PromptLoader) LoadAuditFamilies() (*AuditFamiliesFile, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.cachedFamilies != nil {
+		return l.cachedFamilies, nil
+	}
+	data, err := l.readTemplate("audit_families.yaml")
+	if err != nil {
+		return nil, fmt.Errorf("loading audit families: %w", err)
+	}
+	var ff AuditFamiliesFile
+	if err := yaml.Unmarshal(data, &ff); err != nil {
+		return nil, fmt.Errorf("parsing audit families YAML: %w", err)
+	}
+	if _, ok := ff.Families[ff.Fallback]; ff.Fallback != "" && !ok {
+		return nil, fmt.Errorf("audit families: fallback %q is not a family", ff.Fallback)
+	}
+	l.cachedFamilies = &ff
+	return &ff, nil
+}
+
+// buildFamilySection renders the family cards the batch's CWEs map to, in
+// file order, so batches with the same families share identical text.
+func (l *PromptLoader) buildFamilySection(cweIDs []string) (string, error) {
+	ff, err := l.LoadAuditFamilies()
+	if err != nil {
+		return "", err
+	}
+	familyOf := map[string]string{}
+	for _, name := range ff.Order {
+		for _, cwe := range ff.Families[name].CWEs {
+			cwe = strings.ToUpper(strings.TrimSpace(cwe))
+			if _, taken := familyOf[cwe]; !taken {
+				familyOf[cwe] = name
+			}
+		}
+	}
+	wanted := map[string]bool{}
+	for _, id := range cweIDs {
+		if name, ok := familyOf[normalizeCWEKey(id)]; ok {
+			wanted[name] = true
+		} else if ff.Fallback != "" {
+			wanted[ff.Fallback] = true
+		}
+	}
+	var out strings.Builder
+	for _, name := range ff.Order {
+		if !wanted[name] {
+			continue
+		}
+		card := ff.Families[name]
+		fmt.Fprintf(&out, "### %s\n\nEstablishes the questions:\n%s\n\nRefutes them (quote the line):\n%s\n\n",
+			card.Title, strings.TrimSpace(card.Establish), strings.TrimSpace(card.Refute))
+	}
+	return strings.TrimRight(out.String(), "\n"), nil
+}
+
+// normalizeCWEKey extracts "CWE-89" from forms like "cwe-89: SQL Injection".
+func normalizeCWEKey(id string) string {
+	key := id
+	if idx := strings.Index(id, ":"); idx > 0 {
+		key = id[:idx]
+	}
+	return strings.ToUpper(strings.TrimSpace(key))
 }
 
 // buildCWESection assembles the CWE-specific analysis prompts for the given CWE IDs.
@@ -648,7 +757,7 @@ func (l *PromptLoader) Fingerprint() (string, error) {
 	defer l.mu.Unlock()
 	if l.raw == nil {
 		raw := map[string][]byte{}
-		for _, name := range []string{"security_analysis_base.yaml", "analysis_sections.yaml", "feature_detection.yaml", "audit.yaml", "cwe_deep_analysis.yaml", "context_compress.yaml"} {
+		for _, name := range []string{"security_analysis_base.yaml", "analysis_sections.yaml", "feature_detection.yaml", "audit.yaml", "cwe_deep_analysis.yaml", "audit_families.yaml", "context_compress.yaml"} {
 			data, err := fs.ReadFile(l.fsys, name)
 			if errors.Is(err, fs.ErrNotExist) && name != "security_analysis_base.yaml" {
 				continue

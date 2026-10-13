@@ -159,6 +159,36 @@ type FindingProperties struct {
 	// ReportedPath is the model's file path when it named no scanned file and
 	// was repaired to the one scanned file it uniquely matches.
 	ReportedPath string `json:"reportedPath,omitempty"`
+	// v2 audit record: each question's answer after evidence verification,
+	// the open question when undecided, the finding this one duplicates,
+	// and deployment exposure, which never changes the verdict.
+	AuditAnswers       map[string]AuditAnswer `json:"auditAnswers,omitempty"`
+	AuditCrux          string                 `json:"auditCrux,omitempty"`
+	DuplicateOf        string                 `json:"duplicateOf,omitempty"`
+	DeploymentExposure *DeploymentExposure    `json:"deploymentExposure,omitempty"`
+}
+
+// AuditAnswer is one v2 audit question's answer. Evidence holds only quotes
+// that matched the scanned source.
+type AuditAnswer struct {
+	Status   string          `json:"status"`
+	Reason   string          `json:"reason,omitempty"`
+	Evidence []AuditEvidence `json:"evidence,omitempty"`
+}
+
+// AuditEvidence is a quoted source line.
+type AuditEvidence struct {
+	File  string `json:"file"`
+	Line  int    `json:"line"`
+	Quote string `json:"quote"`
+}
+
+// DeploymentExposure records whether the flagged code ships and runs by
+// default, behind configuration, or not at all. It is informational.
+type DeploymentExposure struct {
+	Status   string          `json:"status"`
+	Detail   string          `json:"detail,omitempty"`
+	Evidence []AuditEvidence `json:"evidence,omitempty"`
 }
 
 type SARIFCodeFlow struct {

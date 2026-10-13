@@ -88,6 +88,12 @@ func runAuditPhase(
 	if len(doc.Runs) == 0 || len(doc.Runs[0].Results) == 0 {
 		return &doc, llm.TokenUsage{}, 0, nil
 	}
+	if ap, err := promptLoader.LoadAuditPrompt(); err == nil && ap.Contract == "v2" {
+		v2 := &auditV2Run{repoName: repoName, client: client, endpoint: endpoint, modelCfg: modelCfg, promptLoader: promptLoader,
+			outputMode: outputMode, fileMap: fileMap, modelParams: modelParams, supContext: supContext,
+			productionOnly: productionOnly, counter: counter, metadata: metadata}
+		return v2.run(ctx, doc, batchSize)
+	}
 	slog.Info("starting audit phase",
 		"findings_to_audit", len(doc.Runs[0].Results),
 		"batch_size", batchSize,
