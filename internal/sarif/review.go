@@ -17,6 +17,7 @@ func BuildCodeFlows(steps []CodePathStep, files FileMap) []SARIFCodeFlow {
 	}
 	locations := make([]SARIFThreadFlowLocation, 0, len(steps))
 	for i, step := range steps {
+		step.FilePath, _ = ResolvePath(files, step.FilePath)
 		content, ok := files[step.FilePath]
 		end := step.EndLine
 		if end == 0 {

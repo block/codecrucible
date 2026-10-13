@@ -375,8 +375,11 @@ func validateAuditCoverage(result AuditResult, expected map[auditFindingKey]bool
 	seen := make(map[auditFindingKey]bool, len(expected))
 	for _, finding := range result.AuditedFindings {
 		key := auditFindingKey{finding.FilePath, finding.StartLine, finding.OriginalIssue}
-		if !expected[key] || seen[key] {
-			return fmt.Errorf("audit returned an unknown or duplicate finding")
+		if seen[key] {
+			return fmt.Errorf("audit returned a duplicate finding: %s:%d %q", key.filePath, key.startLine, key.issue)
+		}
+		if !expected[key] {
+			return fmt.Errorf("audit returned an unknown finding: %s:%d %q", key.filePath, key.startLine, key.issue)
 		}
 		switch finding.Verdict {
 		case "confirmed", "refined", "rejected", "escalated", "unverified":
