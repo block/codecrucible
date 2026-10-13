@@ -1177,3 +1177,44 @@ func TestAuditSchemaV2IsValidJSON(t *testing.T) {
 		}
 	}
 }
+
+func TestCorePromptSetAuditFamilies(t *testing.T) {
+	loader := NewPromptLoader(os.DirFS("../../prompts/core"))
+	ap, err := loader.LoadAuditPrompt()
+	if err != nil || ap.Contract != "v2" {
+		t.Fatalf("core audit prompt: contract=%q err=%v", ap.Contract, err)
+	}
+	ff, err := loader.LoadAuditFamilies()
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := map[string]string{}
+	for _, name := range ff.Order {
+		card := ff.Families[name]
+		if card.Title == "" || strings.TrimSpace(card.Establish) == "" || strings.TrimSpace(card.Refute) == "" {
+			t.Errorf("family %s is incomplete", name)
+		}
+		for _, cwe := range card.CWEs {
+			if prev, ok := owner[cwe]; ok {
+				t.Errorf("%s is listed by both %s and %s", cwe, prev, name)
+			}
+			owner[cwe] = name
+		}
+	}
+	msgs, err := loader.AssembleAuditMessages(AuditParams{RepoName: "r", FindingsJSON: `{"claims_to_verify":[]}`, CWEIDs: []string{"CWE-89", "CWE-639", "CWE-9999"},
+		Schema: string(*AuditSchemaV2()), ProductionOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	user := msgs[1].Content
+	for _, want := range []string{"### Injection", "### Authorization", "### Other weaknesses", "security_audit_v2", "excluded test, fixture"} {
+		if !strings.Contains(user, want) {
+			t.Errorf("core audit prompt lacks %q", want)
+		}
+	}
+	for _, placeholder := range []string{"{repo_name}", "{findings_json}", "{cwe_analysis_prompts}", "{code_context}", "{production_only_gate}", "{supplementary_context}", "{schema}"} {
+		if strings.Contains(msgs[0].Content+user, placeholder) {
+			t.Errorf("unreplaced placeholder %s", placeholder)
+		}
+	}
+}

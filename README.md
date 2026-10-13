@@ -266,6 +266,7 @@ Available sets:
 | Set | Description |
 |-----|-------------|
 | `default` | General-purpose security analysis (used when no `--prompts-dir` is specified) |
+| `core` | Default analysis with the v2 audit contract: evidentiary questions, code-computed verdicts, and weakness-family cards (experimental) |
 | `carlini` | Slim Carlini-style adversarial CTF-researcher prompts |
 | `carlini-curated` | Carlini v2 with targeted suppression rules and line-precision guidance |
 | `exploit-proof` | Language-agnostic set that requires a concrete exploit per finding |
@@ -281,7 +282,7 @@ Available sets:
 
 See [PROMPT_SETS.md](PROMPT_SETS.md) for a fuller walkthrough of when to reach for each set.
 
-Each prompt set directory must contain: `security_analysis_base.yaml`, `analysis_sections.yaml`, `feature_detection.yaml`, `audit.yaml`, `cwe_deep_analysis.yaml`, and optionally `context_compress.yaml`.
+Each prompt set directory must contain: `security_analysis_base.yaml`, `analysis_sections.yaml`, `feature_detection.yaml`, `audit.yaml`, and optionally `context_compress.yaml`. A v1 audit (`audit.yaml` without `contract: v2`) also reads `cwe_deep_analysis.yaml`; a v2 audit requires `audit_families.yaml` instead.
 
 ## Configuration
 

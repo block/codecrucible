@@ -1,0 +1,198 @@
+# Weakness-family cards for the v2 audit. A batch gets the cards for its
+# claims' CWEs, in this file's order; a CWE no family lists gets the fallback.
+# A family's CWE list is its alias map: the first family to list a CWE owns it.
+#
+# Cards are written for the auditor: what establishes the three questions for
+# this kind of weakness, and what refutes them with a line that can be quoted.
+
+families:
+  injection:
+    title: Injection into an interpreter (SQL, NoSQL, shell, template, expression, LDAP, XPath)
+    cwes: [CWE-74, CWE-77, CWE-78, CWE-88, CWE-89, CWE-90, CWE-94, CWE-95, CWE-643, CWE-917, CWE-943, CWE-1336]
+    establish: >
+      Attacker text becomes part of the code the interpreter parses: a string
+      concatenated or formatted into a query, a shell command line, a
+      template source, or an expression. For argument injection, attacker
+      text can start with "-" in an argv slot, with or without a shell.
+      Rendering attacker data into a fixed template is not template
+      injection; the template source itself must be attacker-influenced.
+    refute: >
+      The attacker value travels as data: a bound parameter or placeholder,
+      an ORM filter call, an argv array with no shell and a "--" separator
+      or fixed leading arguments, or a value checked against an allow-list
+      before use. Quote that call or check. An escaping helper refutes only
+      when it fits the context (quote escaping does not protect a numeric or
+      identifier position).
+
+  output:
+    title: Output and log injection (XSS, header and log forging)
+    cwes: [CWE-79, CWE-80, CWE-83, CWE-113, CWE-116, CWE-117]
+    establish: >
+      Attacker data reaches a browser, header, or log line without encoding
+      for that context: raw HTML insertion (innerHTML,
+      dangerouslySetInnerHTML, v-html, |safe, template.HTML, Html.Raw), a
+      javascript: or data: URL in href/src, or CR/LF into a header or log.
+    refute: >
+      The template engine auto-escapes this context and the code does not
+      bypass it, the value passes through a context-correct encoder or a
+      sanitizer such as DOMPurify, or the response content type is not
+      rendered as HTML. Quote the render call or the encoder.
+
+  authorization:
+    title: Authorization and object access (missing checks, IDOR, mass assignment)
+    cwes: [CWE-284, CWE-285, CWE-269, CWE-639, CWE-862, CWE-863, CWE-915, CWE-566, CWE-425]
+    establish: >
+      An entry point performs an action on a resource without checking that
+      the caller may perform it on that resource: a lookup by an attacker-
+      supplied ID with no owner or tenant filter, a handler missing the role
+      check its siblings have, or request fields bound onto a model that
+      include privileged attributes (role, owner, balance).
+    refute: >
+      Quote the check that governs this path: an owner or tenant condition in
+      the query, a policy or permission call, or a role annotation,
+      interceptor, or middleware bound to this route. If that role grants
+      exactly this action (administrators managing users through an
+      administrator-only endpoint), privilege_boundary is refuted. For mass
+      assignment, quote the allow-list or DTO that excludes the privileged
+      fields.
+
+  authentication:
+    title: Authentication, sessions, and request forgery
+    cwes: [CWE-287, CWE-288, CWE-290, CWE-294, CWE-306, CWE-307, CWE-352, CWE-384, CWE-521, CWE-613, CWE-620, CWE-640, CWE-1390]
+    establish: >
+      An attacker can act as another principal or without credentials: an
+      endpoint with no authentication that should have it, a bypassable
+      check (a client-supplied header or flag trusted as identity), a
+      session not rotated at login, a reset token that is guessable or not
+      bound to the account. CSRF needs a state-changing request authenticated
+      by an ambient credential (cookie, basic auth) with no token, origin
+      check, or SameSite protection.
+    refute: >
+      Quote the authentication middleware or filter that covers the route,
+      the session regeneration call, or the token check. For CSRF, quote the
+      CSRF middleware, a SameSite=Lax or Strict cookie setting, or show the
+      request authenticates with a header the browser does not send on its
+      own (a bearer token).
+
+  parsing:
+    title: Deserialization and parser configuration
+    cwes: [CWE-502, CWE-611, CWE-776, CWE-1321, CWE-470]
+    establish: >
+      Attacker bytes reach a deserializer that can instantiate types or run
+      code (Java ObjectInputStream, pickle, yaml.load, Marshal, BinaryFormatter,
+      polymorphic JSON typing), an XML parser with external entities or DTDs
+      enabled, or a recursive merge that writes __proto__ or constructor keys.
+      Prototype pollution matters when a gadget reads the polluted property.
+    refute: >
+      Quote the safe call or configuration: yaml.safe_load, a type allow-list
+      or ObjectInputFilter, a JSON mapper without default typing, a parser
+      with external entities and DTDs disabled, or a merge that skips
+      __proto__ and constructor keys.
+
+  files:
+    title: Paths and file handling
+    cwes: [CWE-22, CWE-23, CWE-36, CWE-59, CWE-73, CWE-434, CWE-552]
+    establish: >
+      An attacker-influenced path segment reaches a file operation after
+      joining with a base directory, without canonicalization and a prefix
+      check, or an upload is stored where it is served or executed with an
+      attacker-chosen name or type.
+    refute: >
+      Quote the step that confines the path: reducing to a base name
+      (filepath.Base, path.basename; multipart file names already reduced
+      by the framework count if you can quote the API), canonicalizing and
+      checking the prefix, a lookup by ID instead of name, or an allow-list
+      of names or extensions applied before use.
+
+  network:
+    title: Server-side requests and redirects
+    cwes: [CWE-918, CWE-601, CWE-441]
+    establish: >
+      An attacker-influenced URL or host reaches a server-side HTTP client,
+      or a redirect target, with no destination restriction. Internal
+      services, metadata endpoints, and link-local addresses are the usual
+      targets.
+    refute: >
+      Quote the allow-list of hosts or the check against private and
+      link-local ranges, applied after DNS resolution and on redirects, or
+      show only a path is attacker-controlled under a fixed host. For
+      redirects, quote the relative-path or same-origin check.
+
+  secrets:
+    title: Cryptography and secrets
+    cwes: [CWE-259, CWE-295, CWE-321, CWE-326, CWE-327, CWE-328, CWE-330, CWE-338, CWE-347, CWE-312, CWE-319, CWE-522, CWE-760, CWE-798, CWE-916]
+    establish: >
+      A secret, key, or credential ships in source used by production code;
+      a security decision rests on a weak or unauthenticated primitive (MD5
+      or SHA-1 for passwords or signatures, ECB, a non-cryptographic RNG for
+      tokens, a JWT accepted without signature or with alg none, TLS
+      verification disabled); or sensitive data is stored or sent in clear.
+    refute: >
+      Quote what shows it is not a security use: a checksum or cache key, a
+      placeholder value read from the environment at startup, a test key
+      used only by excluded code, or the verification call with the
+      algorithm pinned.
+
+  exposure:
+    title: Configuration and information exposure
+    cwes: [CWE-16, CWE-200, CWE-209, CWE-215, CWE-497, CWE-532, CWE-548, CWE-614, CWE-693, CWE-942, CWE-1004, CWE-1021]
+    establish: >
+      Sensitive data (credentials, tokens, personal data, internal details
+      that enable another attack) reaches a response, log, or listing that
+      the attacker can read, or a permissive setting (CORS reflecting any
+      origin with credentials, a debug endpoint) is reachable.
+    refute: >
+      Quote what limits it: the error handler that replaces details, the
+      field excluded from serialization, the log redaction, or the CORS
+      allow-list. A missing header with nothing sensitive to protect is a
+      hardening gap: lower refined_severity rather than refuting.
+
+  concurrency:
+    title: Races and time-of-check to time-of-use
+    cwes: [CWE-362, CWE-366, CWE-367, CWE-820, CWE-821]
+    establish: >
+      Two requests or threads can interleave between a check and the action
+      it guards (balance check then debit, existence check then create) or
+      share state without synchronization, and the interleaving gives the
+      attacker something.
+    refute: >
+      Quote the lock, transaction with the right isolation or row lock,
+      atomic operation, or unique constraint that makes the sequence atomic.
+
+  memory:
+    title: Memory safety and integer errors
+    cwes: [CWE-119, CWE-120, CWE-121, CWE-122, CWE-125, CWE-129, CWE-131, CWE-134, CWE-190, CWE-191, CWE-415, CWE-416, CWE-476, CWE-681, CWE-787]
+    establish: >
+      An attacker-influenced length, index, or count reaches a copy, index,
+      or allocation without a bound, or an object is used after its owner
+      frees it. Resolve the constants and do the arithmetic: state the
+      maximum value and the buffer size.
+    refute: >
+      Quote the bound check that dominates the access, the size computed
+      from the destination, or the reference count or lock that keeps the
+      object alive. A check on a different variable, or one done before a
+      second fetch from user memory, does not refute.
+
+  resources:
+    title: Resource exhaustion
+    cwes: [CWE-400, CWE-409, CWE-674, CWE-770, CWE-834, CWE-1333]
+    establish: >
+      An attacker controls the size, count, or nesting of work (an unbounded
+      body or upload, a pagination size, a recursion depth, a regex with
+      nested quantifiers on attacker text, decompression of an attacker
+      archive) with no cap.
+    refute: >
+      Quote the cap: a body size limit, a maximum page size, a timeout, a
+      linear-time regex engine, or a decompression ratio limit.
+
+  general:
+    title: Other weaknesses
+    cwes: []
+    establish: >
+      The claim's exploit sketch holds on the quoted path: the attacker input,
+      the operation it reaches, and the effect are all visible in the source.
+    refute: >
+      Quote the line that stops the sketched attack: the check, the trusted
+      origin of the value, or the privilege requirement.
+
+fallback: general
