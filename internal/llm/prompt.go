@@ -159,6 +159,9 @@ type AuditParams struct {
 	// SupplementaryContext is the packed output of internal/supctx for the
 	// audit phase.
 	SupplementaryContext string
+	// OtherClaims lists the scan's claims outside this batch, one per line,
+	// so the auditor does not repeat them as leads. Rendered at {other_claims}.
+	OtherClaims string
 }
 
 // PromptLoader loads and assembles prompt templates from an fs.FS.
@@ -574,6 +577,7 @@ func (l *PromptLoader) AssembleAuditMessages(params AuditParams) ([]Message, err
 	userContent = strings.ReplaceAll(userContent, "{cwe_analysis_prompts}", cweSection)
 	userContent = strings.ReplaceAll(userContent, "{code_context}", params.CodeContext)
 	userContent = strings.ReplaceAll(userContent, "{production_only_gate}", prodGate)
+	userContent = strings.ReplaceAll(userContent, "{other_claims}", params.OtherClaims)
 
 	supSection := ""
 	if params.SupplementaryContext != "" {

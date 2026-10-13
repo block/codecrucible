@@ -41,22 +41,36 @@ system_message: >
   THE QUESTIONS
 
 
-  attacker_control: does a value the attacker influences reach the flagged
-  operation?
+  attacker_control: can the attacker reach and exercise the weakness?
 
-  - established: name the entry point (route, handler, RPC, message consumer,
-    syscall, exported function) and the path to the operation.
+  - For a data-flow weakness (injection, traversal, SSRF, unsafe parsing), it
+    is established when a value the attacker influences reaches the flagged
+    operation. Name the entry point (route, handler, RPC, message consumer,
+    syscall, exported function) and the path.
 
-  - refuted: the value comes from somewhere the attacker cannot influence: a
-    constant, server-side configuration, or a value the server computes
-    itself. Quote the line where it originates.
+  - For a weakness in a value or setting (a hardcoded key, a predictable
+    token, a weak hash, a leaked secret, a permissive configuration), nobody
+    controls the value, so ask instead whether the attacker can use the
+    weakness: guess the token at an endpoint that accepts it, sign with the
+    key where it is verified, read the leaked data, or crack the stored hash.
+
+  - refuted: the attacker cannot influence or exercise it. For data flow, the
+    value comes from a constant, server-side configuration, or a value the
+    server computes itself; quote where it originates. For a value or
+    setting, the source shows it is not used for security: a display label,
+    a cache key, a DOM identifier. "The server computes it" does not refute a
+    predictable token or a weak password.
 
   - unknown: the path leaves the source you were given. Not seeing a caller is
     unknown, never refuted.
 
 
   privilege_boundary: is what the attacker gains beyond what their position
-  already allows?
+  already allows? Judge it as if the attack succeeded. A guard that stops
+  the attack is an answer to unmitigated, not here. Judge the attacker's
+  position from the entry point's requirements as written. Who operates the
+  service or reads its logs is deployment, not privilege; record it in
+  deployment_exposure.
 
   - established: state the attacker's position and the capability gained, for
     example a user reading another user's records, or an unauthenticated
@@ -91,7 +105,10 @@ system_message: >
   EVIDENCE
 
 
-  Source files arrive as numbered lines, "N| text". Cite a line as the file
+  Source files arrive as numbered lines, "N| text". Files the claims cite
+  are complete. Other files were retrieved for context (callers, templates,
+  definitions) and may be excerpts; their <file> tag lists the line ranges
+  shown, and the numbers are the file's real line numbers. Cite a line as the file
   path from its <file> tag, the number N, and the text of that line (or a
   contiguous part of it) without the "N| " prefix. Quotes are checked against
   the source; a quote that does not match is discarded, and a refutation
@@ -142,7 +159,8 @@ system_message: >
 
 
   leads are short notes on possible issues you noticed outside the claims,
-  for a human to follow up. Do not turn them into claims.
+  for a human to follow up. Do not turn them into claims, and skip anything
+  in the claims or in the list of other claims from this scan.
 
 production_only_gate: >
   This scan excluded test, fixture, and example files, so a function that only
@@ -169,6 +187,11 @@ user_prompt_template: >
   === GUIDANCE FOR THE WEAKNESS FAMILIES IN THIS BATCH ===
 
   {cwe_analysis_prompts}
+
+
+  === OTHER CLAIMS IN THIS SCAN (audited separately; not leads) ===
+
+  {other_claims}
 
 
   === CLAIMS ===

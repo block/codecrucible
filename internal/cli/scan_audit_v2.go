@@ -11,6 +11,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/block/codecrucible/internal/auditctx"
 	"github.com/block/codecrucible/internal/chunk"
 	"github.com/block/codecrucible/internal/config"
 	"github.com/block/codecrucible/internal/ingest"
@@ -96,10 +97,19 @@ type auditV2Run struct {
 	productionOnly bool
 	counter        *chunk.TokenCounter
 	metadata       *sarif.ScanMetadata
+	// claims are all of the scan's claims, so each batch can list the rest.
+	claims []auditClaimV2
+	index  *auditctx.Index
 }
+
+// auditRetrievalBudget caps the tokens of retrieved context per batch, on
+// top of the files the claims cite.
+const auditRetrievalBudget = 24000
 
 func (r *auditV2Run) run(ctx context.Context, doc sarif.SARIFDocument, batchSize int) (*sarif.SARIFDocument, llm.TokenUsage, float64, error) {
 	claims := auditClaimsV2(doc)
+	r.claims = claims
+	r.index = auditctx.NewIndex(r.fileMap)
 	if batchSize <= 0 || batchSize >= len(claims) {
 		batchSize = len(claims)
 	}
@@ -248,6 +258,8 @@ func (r *auditV2Run) call(ctx context.Context, claims []auditClaimV2, label stri
 			fmt.Fprintf(&codeCtx, "<file path=\"%s\">\n%s</file>\n\n", p, numberedSource(content))
 		}
 	}
+	retrieved, excerpts := r.retrieve(claims, files)
+	codeCtx.WriteString(retrieved)
 
 	schema := llm.AuditSchemaV2()
 	messages, err := r.promptLoader.AssembleAuditMessages(llm.AuditParams{
@@ -258,6 +270,7 @@ func (r *auditV2Run) call(ctx context.Context, claims []auditClaimV2, label stri
 		Schema:               string(*schema),
 		ProductionOnly:       r.productionOnly,
 		SupplementaryContext: r.supContext,
+		OtherClaims:          otherClaims(r.claims, claims),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("assemble audit prompt: %w", err)
@@ -266,7 +279,7 @@ func (r *auditV2Run) call(ctx context.Context, claims []auditClaimV2, label stri
 	for _, m := range messages {
 		estTokens += r.counter.Count(m.Content)
 	}
-	slog.Info("running audit batch", "label", label, "findings", len(claims), "files_in_context", len(paths),
+	slog.Info("running audit batch", "label", label, "findings", len(claims), "files_in_context", len(paths), "retrieved_excerpts", excerpts,
 		"estimated_tokens", estTokens, "estimated_input_cost", fmt.Sprintf("$%.4f", r.modelCfg.EstimateInputCost(estTokens)))
 
 	resp, err := r.client.ChatCompletion(ctx, llm.ChatRequest{
@@ -287,6 +300,51 @@ func (r *auditV2Run) call(ctx context.Context, claims []auditClaimV2, label stri
 		return nil, fmt.Errorf("LLM call: %w", err)
 	}
 	return resp, nil
+}
+
+// retrieve renders context the claims' own files lack. Excerpts are taken
+// round-robin across claims, so each claim gets its most useful context
+// before any claim gets its next.
+func (r *auditV2Run) retrieve(claims []auditClaimV2, sent map[string]bool) (string, int) {
+	if r.index == nil {
+		return "", 0
+	}
+	perClaim := make([][]auditctx.Excerpt, len(claims))
+	for i, c := range claims {
+		perClaim[i] = r.index.Retrieve(auditctx.Claim{File: c.FilePath, Start: c.StartLine, End: c.EndLine}, sent)
+	}
+	var ordered []auditctx.Excerpt
+	for depth := 0; ; depth++ {
+		added := false
+		for _, list := range perClaim {
+			if depth < len(list) {
+				ordered = append(ordered, list[depth])
+				added = true
+			}
+		}
+		if !added {
+			break
+		}
+	}
+	return auditctx.Render(r.index, ordered, auditRetrievalBudget, r.counter.Count)
+}
+
+// otherClaims lists the claims outside batch, one line each.
+func otherClaims(all, batch []auditClaimV2) string {
+	in := make(map[string]bool, len(batch))
+	for _, c := range batch {
+		in[c.FindingID] = true
+	}
+	var b strings.Builder
+	for _, c := range all {
+		if !in[c.FindingID] {
+			fmt.Fprintf(&b, "- %s (%s:%d)\n", c.Issue, c.FilePath, c.StartLine)
+		}
+	}
+	if b.Len() == 0 {
+		return "(none)"
+	}
+	return strings.TrimRight(b.String(), "\n")
 }
 
 // auditClaimsV2 presents each result as a claim keyed by its finding ID.

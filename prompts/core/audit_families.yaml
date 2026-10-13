@@ -127,11 +127,15 @@ families:
       or SHA-1 for passwords or signatures, ECB, a non-cryptographic RNG for
       tokens, a JWT accepted without signature or with alg none, TLS
       verification disabled); or sensitive data is stored or sent in clear.
+      attacker_control asks whether the attacker can exercise the weakness:
+      present a guessed token, forge with the key where it is verified, or
+      crack a stored hash after obtaining it.
     refute: >
-      Quote what shows it is not a security use: a checksum or cache key, a
-      placeholder value read from the environment at startup, a test key
-      used only by excluded code, or the verification call with the
-      algorithm pinned.
+      Quote what shows it is not a security use: a checksum, cache key, or
+      display value; a placeholder overridden from the environment at
+      startup; or the verification call with the algorithm pinned. A key
+      that only test code uses is a deployment fact: record it in
+      deployment_exposure.
 
   exposure:
     title: Configuration and information exposure

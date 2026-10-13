@@ -18,6 +18,7 @@ import (
 const testAuditV2YAML = `contract: v2
 system_message: Audit the claims.
 user_prompt_template: |
+  {other_claims}
   {findings_json}
   {cwe_analysis_prompts}
   {code_context}
@@ -303,5 +304,32 @@ func TestAuditV2DuplicateNeverHidesTheStrongerFinding(t *testing.T) {
 	results = applyAuditAssessments(doc, assessments, batchOf, files).Runs[0].Results
 	if results[3].Properties.AuditStatus != "confirmed" {
 		t.Errorf("duplicate across batches honored: %+v", results[3].Properties)
+	}
+}
+
+func TestAuditV2RequestCarriesRetrievedContextAndOtherClaims(t *testing.T) {
+	doc, files, _ := v2Fixture()
+	files["app/routes.go"] = "package app\n\nfunc Routes(r Router) {\n\tr.Post(\"/admin/purge\", Purge)\n}\n"
+	var prompts []string
+	client := auditClientFunc(func(_ context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+		prompts = append(prompts, req.Messages[len(req.Messages)-1].Content)
+		var out []auditAssessmentV2
+		for _, id := range claimIDs(t, req) {
+			out = append(out, auditAssessmentV2{FindingID: id, AttackerControl: established("x"), PrivilegeBoundary: established("x"), Unmitigated: established("x")})
+		}
+		return v2Reply(t, auditResponseV2{Assessments: out}), nil
+	})
+	_, _, _, err := runAuditPhase(context.Background(), doc, "fixture", client, "", config.ModelConfig{Name: "test"},
+		v2PromptLoader(), llm.OutputModeNone, files, .3, nil, "", 2, true, chunk.NewTokenCounter("", nil), nil)
+	if err != nil || len(prompts) != 2 {
+		t.Fatalf("prompts=%d err=%v", len(prompts), err)
+	}
+	if !strings.Contains(prompts[0], "<file path=\"app/routes.go\" lines=\"1-6\">\n1| package app") ||
+		!strings.Contains(prompts[0], "4| \tr.Post(\"/admin/purge\", Purge)") {
+		t.Errorf("first batch lacks the route registration of Purge:\n%s", prompts[0])
+	}
+	if !strings.Contains(prompts[0], "- Path traversal (app/file.go:4)") || strings.Contains(prompts[0], "- SQL injection (app/db.go:4)") ||
+		!strings.Contains(prompts[1], "- SQL injection (app/db.go:4)") {
+		t.Errorf("other-claims lists are wrong:\n%s\n---\n%s", prompts[0], prompts[1])
 	}
 }

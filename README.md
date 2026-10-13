@@ -798,7 +798,18 @@ three are established, the finding is confirmed. Anything else leaves it
 unverified. A refutation without a matching quote counts as unknown, so missing
 evidence never rejects. A v2 audit has no confidence, so
 `--audit-confidence-threshold` does not apply. Findings are matched by
-`findingId`, and claims the response omits are retried once. Notes the auditor
+`findingId`, and claims the response omits are retried once.
+
+Each v2 batch carries more than the files the findings cite. Up to about 24K
+tokens of excerpts are retrieved per batch, with real line numbers, so the
+auditor can check what decides a claim:
+- references to the flagged function, such as route registration;
+- templates the flagged code renders;
+- definitions of the functions and types it uses.
+
+Retrieval is lexical and deterministic, so a replayed audit sees the same
+context. Each batch also lists the scan's other findings, so the auditor
+doesn't repeat them as leads. Notes the auditor
 makes about possible issues outside the findings are recorded as
 `execution.auditLeads` in the run metadata, not as findings.
 
