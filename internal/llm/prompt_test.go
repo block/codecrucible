@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"os"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -110,6 +111,26 @@ func TestLoadAnalysisSections(t *testing.T) {
 	}
 	if len(cq.Features) != 0 {
 		t.Errorf("code_quality.Features length = %d, want 0", len(cq.Features))
+	}
+	if strings.Join(af.Order, ",") != "public_api,code_quality" {
+		t.Errorf("Order = %v, want file order", af.Order)
+	}
+}
+
+func TestAssembleMessagesSectionOrderIsStable(t *testing.T) {
+	loader := NewPromptLoader(os.DirFS("../../prompts/default"))
+	first, err := loader.AssembleMessages(PromptParams{RepoName: "r", Schema: "{}", ChunkTotal: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 20; i++ {
+		again, err := loader.AssembleMessages(PromptParams{RepoName: "r", Schema: "{}", ChunkTotal: 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if again[1].Content != first[1].Content {
+			t.Fatal("analysis prompt differs between identical calls")
+		}
 	}
 }
 

@@ -25,8 +25,30 @@ type BasePrompt struct {
 }
 
 // AnalysisSectionsFile represents the parsed analysis_sections.yaml.
+// Order holds section keys in file order: map iteration is random, and
+// prompts must be byte-identical across the chunks of a scan.
 type AnalysisSectionsFile struct {
 	Sections map[string]AnalysisSection `yaml:"sections"`
+	Order    []string                   `yaml:"-"`
+}
+
+// UnmarshalYAML decodes the sections and records their file order.
+func (f *AnalysisSectionsFile) UnmarshalYAML(node *yaml.Node) error {
+	type plain AnalysisSectionsFile
+	if err := node.Decode((*plain)(f)); err != nil {
+		return err
+	}
+	f.Order = nil
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Value != "sections" || node.Content[i+1].Kind != yaml.MappingNode {
+			continue
+		}
+		entries := node.Content[i+1].Content
+		for j := 0; j+1 < len(entries); j += 2 {
+			f.Order = append(f.Order, entries[j].Value)
+		}
+	}
+	return nil
 }
 
 // AnalysisSection is a single dynamic analysis section.
@@ -203,7 +225,8 @@ func (l *PromptLoader) AssembleMessages(params PromptParams) ([]Message, error) 
 	if err == nil && len(sections.Sections) > 0 {
 		user.WriteString(bp.AnalysisRequirementsHeader)
 		user.WriteString("\n")
-		for _, section := range sections.Sections {
+		for _, key := range sections.Order {
+			section := sections.Sections[key]
 			if !sectionEnabled(section, params.EnabledFeatures) {
 				continue
 			}
