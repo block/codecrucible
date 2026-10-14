@@ -88,6 +88,12 @@ func runAuditPhase(
 	if len(doc.Runs) == 0 || len(doc.Runs[0].Results) == 0 {
 		return &doc, llm.TokenUsage{}, 0, nil
 	}
+	if ap, err := promptLoader.LoadAuditPrompt(); err == nil && ap.Contract == "v2" {
+		v2 := &auditV2Run{repoName: repoName, client: client, endpoint: endpoint, modelCfg: modelCfg, promptLoader: promptLoader,
+			outputMode: outputMode, fileMap: fileMap, modelParams: modelParams, supContext: supContext,
+			productionOnly: productionOnly, counter: counter, metadata: metadata}
+		return v2.run(ctx, doc, batchSize)
+	}
 	slog.Info("starting audit phase",
 		"findings_to_audit", len(doc.Runs[0].Results),
 		"batch_size", batchSize,
@@ -375,8 +381,11 @@ func validateAuditCoverage(result AuditResult, expected map[auditFindingKey]bool
 	seen := make(map[auditFindingKey]bool, len(expected))
 	for _, finding := range result.AuditedFindings {
 		key := auditFindingKey{finding.FilePath, finding.StartLine, finding.OriginalIssue}
-		if !expected[key] || seen[key] {
-			return fmt.Errorf("audit returned an unknown or duplicate finding")
+		if seen[key] {
+			return fmt.Errorf("audit returned a duplicate finding: %s:%d %q", key.filePath, key.startLine, key.issue)
+		}
+		if !expected[key] {
+			return fmt.Errorf("audit returned an unknown finding: %s:%d %q", key.filePath, key.startLine, key.issue)
 		}
 		switch finding.Verdict {
 		case "confirmed", "refined", "rejected", "escalated", "unverified":

@@ -110,6 +110,10 @@ func Build(result AnalysisResult, fileMap FileMap, cfg BuilderConfig) SARIFDocum
 		// do not inherit each other's values.
 		severity := issue.Severity
 		cwe := NormalizeCWE(issue.CWEID)
+		reported := ""
+		if resolved, ok := ResolvePath(fileMap, issue.FilePath); ok && resolved != issue.FilePath {
+			reported, issue.FilePath = issue.FilePath, resolved
+		}
 		r := SARIFResult{
 			RuleID:  ruleID,
 			Level:   severityLevel(issue.Severity),
@@ -120,6 +124,7 @@ func Build(result AnalysisResult, fileMap FileMap, cfg BuilderConfig) SARIFDocum
 				Summary:          issue.Summary,
 				Remediation:      issue.Remediation,
 				TechnicalDetails: issue.TechnicalDetails,
+				ReportedPath:     reported,
 			},
 			CodeFlows: BuildCodeFlows(issue.CodePath, fileMap),
 		}

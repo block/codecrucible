@@ -1,6 +1,8 @@
 package llm
 
 import (
+	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -110,6 +112,26 @@ func TestLoadAnalysisSections(t *testing.T) {
 	}
 	if len(cq.Features) != 0 {
 		t.Errorf("code_quality.Features length = %d, want 0", len(cq.Features))
+	}
+	if strings.Join(af.Order, ",") != "public_api,code_quality" {
+		t.Errorf("Order = %v, want file order", af.Order)
+	}
+}
+
+func TestAssembleMessagesSectionOrderIsStable(t *testing.T) {
+	loader := NewPromptLoader(os.DirFS("../../prompts/default"))
+	first, err := loader.AssembleMessages(PromptParams{RepoName: "r", Schema: "{}", ChunkTotal: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 20; i++ {
+		again, err := loader.AssembleMessages(PromptParams{RepoName: "r", Schema: "{}", ChunkTotal: 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if again[1].Content != first[1].Content {
+			t.Fatal("analysis prompt differs between identical calls")
+		}
 	}
 }
 
@@ -1082,5 +1104,117 @@ func TestBuildCWESection_EmptyInput(t *testing.T) {
 
 	if !strings.Contains(out, "No CWE-specific prompts matched") {
 		t.Errorf("output = %q, want fallback message for empty input", out)
+	}
+}
+
+const testFamiliesYAML = `families:
+  authz:
+    title: Authorization
+    cwes: [CWE-862, cwe-863]
+    establish: The caller lacks the role.
+    refute: A role check that grants the action.
+  injection:
+    title: Injection
+    cwes: [CWE-89]
+    establish: Input reaches the query.
+    refute: A parameterized query.
+  general:
+    title: General
+    cwes: []
+    establish: The claim holds.
+    refute: A guard.
+fallback: general
+`
+
+func TestAssembleAuditMessagesV2FamilyCards(t *testing.T) {
+	fsys := fstest.MapFS{
+		"audit.yaml":          &fstest.MapFile{Data: []byte("contract: v2\nuser_prompt_template: \"{cwe_analysis_prompts}\"\n")},
+		"audit_families.yaml": &fstest.MapFile{Data: []byte(testFamiliesYAML)},
+	}
+	msgs, err := NewPromptLoader(fsys).AssembleAuditMessages(AuditParams{CWEIDs: []string{"CWE-89: SQL Injection", "CWE-863", "CWE-79"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := msgs[1].Content
+	auth, inj, gen := strings.Index(got, "### Authorization"), strings.Index(got, "### Injection"), strings.Index(got, "### General")
+	if auth < 0 || inj < auth || gen < inj {
+		t.Fatalf("family cards missing or out of file order:\n%s", got)
+	}
+	if strings.Count(got, "### ") != 3 || !strings.Contains(got, "Refutes them (quote the line):\nA role check that grants the action.") {
+		t.Fatalf("unexpected family section:\n%s", got)
+	}
+
+	delete(fsys, "audit_families.yaml")
+	if _, err := NewPromptLoader(fsys).AssembleAuditMessages(AuditParams{CWEIDs: []string{"CWE-89"}}); err == nil {
+		t.Fatal("v2 audit without audit_families.yaml should fail")
+	}
+	fsys["audit_families.yaml"] = &fstest.MapFile{Data: []byte("families: {}\nfallback: missing\n")}
+	if _, err := NewPromptLoader(fsys).AssembleAuditMessages(AuditParams{}); err == nil {
+		t.Fatal("unknown fallback family should fail")
+	}
+}
+
+func TestAuditSchemaV2IsValidJSON(t *testing.T) {
+	var schema struct {
+		Name   string `json:"name"`
+		Schema struct {
+			Properties struct {
+				Assessments struct {
+					Items struct {
+						Required []string `json:"required"`
+					} `json:"items"`
+				} `json:"assessments"`
+			} `json:"properties"`
+		} `json:"schema"`
+	}
+	if err := json.Unmarshal(*AuditSchemaV2(), &schema); err != nil {
+		t.Fatal(err)
+	}
+	required := strings.Join(schema.Schema.Properties.Assessments.Items.Required, ",")
+	for _, q := range AuditQuestions {
+		if !strings.Contains(required, q) {
+			t.Errorf("schema does not require %s", q)
+		}
+	}
+}
+
+func TestCorePromptSetAuditFamilies(t *testing.T) {
+	loader := NewPromptLoader(os.DirFS("../../prompts/core"))
+	ap, err := loader.LoadAuditPrompt()
+	if err != nil || ap.Contract != "v2" {
+		t.Fatalf("core audit prompt: contract=%q err=%v", ap.Contract, err)
+	}
+	ff, err := loader.LoadAuditFamilies()
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := map[string]string{}
+	for _, name := range ff.Order {
+		card := ff.Families[name]
+		if card.Title == "" || strings.TrimSpace(card.Establish) == "" || strings.TrimSpace(card.Refute) == "" {
+			t.Errorf("family %s is incomplete", name)
+		}
+		for _, cwe := range card.CWEs {
+			if prev, ok := owner[cwe]; ok {
+				t.Errorf("%s is listed by both %s and %s", cwe, prev, name)
+			}
+			owner[cwe] = name
+		}
+	}
+	msgs, err := loader.AssembleAuditMessages(AuditParams{RepoName: "r", FindingsJSON: `{"claims_to_verify":[]}`, CWEIDs: []string{"CWE-89", "CWE-639", "CWE-9999"},
+		Schema: string(*AuditSchemaV2()), ProductionOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	user := msgs[1].Content
+	for _, want := range []string{"### Injection", "### Authorization", "### Other weaknesses", "security_audit_v2", "excluded test, fixture"} {
+		if !strings.Contains(user, want) {
+			t.Errorf("core audit prompt lacks %q", want)
+		}
+	}
+	for _, placeholder := range []string{"{repo_name}", "{findings_json}", "{cwe_analysis_prompts}", "{code_context}", "{production_only_gate}", "{supplementary_context}", "{schema}"} {
+		if strings.Contains(msgs[0].Content+user, placeholder) {
+			t.Errorf("unreplaced placeholder %s", placeholder)
+		}
 	}
 }

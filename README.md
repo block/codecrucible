@@ -80,6 +80,17 @@ phase artifacts beside it: `results.feature-detection.json`,
 `--phase-output-dir DIR` to choose an explicit artifact directory, including
 for stdout workflows.
 
+To compare audit prompts or models without analysis variance, replay the audit
+on saved findings: `codecrucible scan REPO --audit-from results.analysis.sarif`.
+Replay ingests REPO with the same filters, skips feature detection and analysis,
+and audits the saved claims under their original finding IDs. Only audit
+requests are sent, and the cost preflight excludes analysis. The input can be
+an analysis artifact or the final output of a `--skip-audit` scan; audited SARIF
+is rejected, as is a replay where none of the findings' files are in REPO.
+`recipe.auditReplay` in the run metadata records the input's SHA-256 and counts
+findings whose file or snippet no longer matches the checkout; verdicts for
+those findings are not comparable. Replay never rewrites the analysis artifact.
+
 Dry runs show source-input cost plus a separate rough input-and-output estimate.
 The planning estimate assumes 25% input overhead, output tokens equal to 1/16
 of padded input, and one repository-sized audit pass when audit is enabled.
@@ -202,6 +213,7 @@ Per-phase flags follow the pattern `--{phase}-{flag}` (e.g. `--audit-model`, `--
 ```
   --audit-batch-size int               split audit into N-finding batches (default 25)
   --audit-confidence-threshold float   reject findings below this confidence (default 0.3)
+  --audit-from string                  audit a saved analysis SARIF instead of running analysis
   --base-url string                    override default provider URL
   --compress                           compress whitespace in source files to save tokens
   --concurrency int                    max parallel chunks (default 3)
@@ -254,6 +266,7 @@ Available sets:
 | Set | Description |
 |-----|-------------|
 | `default` | General-purpose security analysis (used when no `--prompts-dir` is specified) |
+| `core` | Default analysis with the v2 audit contract: evidentiary questions, code-computed verdicts, and weakness-family cards (experimental) |
 | `carlini` | Slim Carlini-style adversarial CTF-researcher prompts |
 | `carlini-curated` | Carlini v2 with targeted suppression rules and line-precision guidance |
 | `exploit-proof` | Language-agnostic set that requires a concrete exploit per finding |
@@ -269,7 +282,7 @@ Available sets:
 
 See [PROMPT_SETS.md](PROMPT_SETS.md) for a fuller walkthrough of when to reach for each set.
 
-Each prompt set directory must contain: `security_analysis_base.yaml`, `analysis_sections.yaml`, `feature_detection.yaml`, `audit.yaml`, `cwe_deep_analysis.yaml`, and optionally `context_compress.yaml`.
+Each prompt set directory must contain: `security_analysis_base.yaml`, `analysis_sections.yaml`, `feature_detection.yaml`, `audit.yaml`, and optionally `context_compress.yaml`. A v1 audit (`audit.yaml` without `contract: v2`) also reads `cwe_deep_analysis.yaml`; a v2 audit requires `audit_families.yaml` instead.
 
 ## Configuration
 
@@ -751,12 +764,17 @@ Per-finding state lives in `result.properties`:
 |----------|---------|
 | `findingId` | Stable ID (`CC-` + 16 hex). Also in `partialFingerprints["codecrucibleFinding/v1"]` |
 | `verified` | `true` only when the audit confirmed, refined, or escalated the finding and did not suppress it |
-| `auditStatus` | `confirmed`, `refined`, `escalated`, `unverified`, `rejected`, `new` (added by the audit), or `not_audited` |
+| `auditStatus` | `confirmed`, `refined`, `escalated`, `unverified`, `rejected`, `duplicate` (v2), `new` (added by the audit), or `not_audited` |
 | `auditConfidence` | Audit confidence, 0–1 |
 | `auditJustification`, `auditBlockingCode` | The auditor's reasoning and, for rejections, the quoted blocking source |
-| `auditReasons` | Machine-readable qualifiers: `missing_verdict`, `audit_skipped`, `ungrounded_rejection`, `below_confidence_threshold` |
+| `auditReasons` | Machine-readable qualifiers: `missing_verdict`, `audit_skipped`, `ungrounded_rejection`, `below_confidence_threshold`; v2 adds `refuted:<question>`, `unknown:<question>`, `ungrounded_refutation:<question>`, `unverified_evidence:<question>`, and `duplicate` |
+| `auditAnswers` | v2: each audit question's `status` (`established`, `refuted`, `unknown`), reason, and the evidence quotes that matched the source |
+| `auditCrux` | v2: for an unverified finding, the code or fact that would decide it |
+| `duplicateOf` | v2: the finding ID this one duplicates (same root cause and fix) |
+| `deploymentExposure` | v2: `default_on`, `config_enabled`, `config_dependent`, `not_deployed`, or `unknown`, with detail and evidence. Informational; never changes the verdict |
 | `severity`, `cwe` | This finding's own severity (0–10) and CWE, including audit refinements |
 | `summary`, `remediation`, `technicalDetails` | Reviewer summary, fix, and full evidence |
+| `reportedPath` | The model's file path, when it named no scanned file and was repaired to the one scanned file it uniquely matches (for example a dropped `app/` prefix) |
 
 The finding ID hashes the CWE (or rule ID), file path, and whitespace-normalized
 flagged source. It excludes model wording and line numbers, so rescans of
@@ -768,6 +786,32 @@ as suppressed results (`suppressions[].kind: "external"`, `status: "accepted"`,
 with the audit justification) and `auditStatus: "rejected"`. They do not count
 toward `--fail-on-severity`. Consumers that ignore SARIF suppressions will
 display them; filter on `suppressions` or `properties.auditStatus`.
+
+A prompt set opts into the v2 audit contract with `contract: v2` in
+`audit.yaml`. For each finding, the auditor answers three questions with quoted
+source evidence. `attacker_control` asks whether attacker input reaches the
+flagged code. `privilege_boundary` asks whether the finding grants more than the
+attacker already holds. `unmitigated` asks whether the path lacks a guard. The
+verdict is computed from the answers. A question refuted by a quote that matches
+the source, within two lines of the cited line, rejects the finding. If all
+three are established, the finding is confirmed. Anything else leaves it
+unverified. A refutation without a matching quote counts as unknown, so missing
+evidence never rejects. A v2 audit has no confidence, so
+`--audit-confidence-threshold` does not apply. Findings are matched by
+`findingId`, and claims the response omits are retried once.
+
+Each v2 batch carries more than the files the findings cite. Up to about 24K
+tokens of excerpts are retrieved per batch, with real line numbers, so the
+auditor can check what decides a claim:
+- references to the flagged function, such as route registration;
+- templates the flagged code renders;
+- definitions of the functions and types it uses.
+
+Retrieval is lexical and deterministic, so a replayed audit sees the same
+context. Each batch also lists the scan's other findings, so the auditor
+doesn't repeat them as leads. Notes the auditor
+makes about possible issues outside the findings are recorded as
+`execution.auditLeads` in the run metadata, not as findings.
 
 Older/custom prompts without a reviewer summary use the first narrative
 paragraph of the technical details, limited to 1000 characters.

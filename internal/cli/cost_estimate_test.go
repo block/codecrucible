@@ -66,4 +66,10 @@ func TestScanCostEstimateMixedProvidersAndBudget(t *testing.T) {
 	if estimate.TotalInput != 0.64 || estimate.AuditInput != 0 || strings.Contains(summary.String(), "Estimated audit input") {
 		t.Fatal("disabled audit included")
 	}
+	cfg.SkipAudit = false
+	cfg.AuditFrom = "analysis.sarif"
+	estimate = estimateScanCost(320000, cfg)
+	if estimate.AnalysisInput != 0 || estimate.AuditInput != 0.32 || estimate.TotalInput != 0.32 || estimate.Planning != 0.5 {
+		t.Fatalf("audit replay estimate includes analysis: %+v", estimate)
+	}
 }

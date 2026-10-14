@@ -21,6 +21,20 @@ type ScanRecipe struct {
 	Prompts                       PromptIdentity         `json:"prompts"`
 	CustomRequirementsFingerprint string                 `json:"customRequirementsFingerprint,omitempty"`
 	ContextSources                []ContextIdentity      `json:"contextSources"`
+	// AuditReplay identifies the saved analysis whose findings this scan
+	// audited instead of running analysis.
+	AuditReplay *AuditReplaySource `json:"auditReplay,omitempty"`
+}
+
+// AuditReplaySource identifies replayed analysis findings by content, not path.
+// Drift counts findings whose source no longer matches the current checkout.
+type AuditReplaySource struct {
+	SHA256            string `json:"sha256"`
+	RecipeFingerprint string `json:"recipeFingerprint,omitempty"`
+	ArtifactStage     string `json:"artifactStage,omitempty"`
+	Findings          int    `json:"findings"`
+	MissingFiles      int    `json:"missingFiles"`
+	ChangedSnippets   int    `json:"changedSnippets"`
 }
 
 type PhaseRecipe struct {
@@ -92,6 +106,9 @@ type ScanExecution struct {
 	Chunks           ChunkExecution            `json:"chunks"`
 	ContextSources   []ContextExecution        `json:"contextSources"`
 	ContextPacking   map[string]ContextPacking `json:"contextPacking"`
+	// AuditLeads are the v2 audit's notes on possible issues outside the
+	// audited findings, for a human to follow up. They are not findings.
+	AuditLeads []string `json:"auditLeads,omitempty"`
 }
 
 type PhaseExecution struct {

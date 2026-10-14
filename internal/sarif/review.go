@@ -17,6 +17,7 @@ func BuildCodeFlows(steps []CodePathStep, files FileMap) []SARIFCodeFlow {
 	}
 	locations := make([]SARIFThreadFlowLocation, 0, len(steps))
 	for i, step := range steps {
+		step.FilePath, _ = ResolvePath(files, step.FilePath)
 		content, ok := files[step.FilePath]
 		end := step.EndLine
 		if end == 0 {
@@ -174,12 +175,17 @@ func reviewStatus(r SARIFResult) string {
 	p := r.Properties
 	var status string
 	switch {
+	case IsSuppressed(r) && p.DuplicateOf != "":
+		status = "Duplicate of " + p.DuplicateOf
 	case IsSuppressed(r):
 		status = "Rejected by audit"
 	case p.AuditStatus == "not_audited":
 		status = "Not audited; review manually"
 	case p.AuditStatus == "unverified":
 		status = "Unverified: the audit could not establish the full exploit path"
+		if p.AuditCrux != "" {
+			status += ". Open question: " + p.AuditCrux
+		}
 	case p.AuditStatus == "new":
 		status = "Reported by the audit; not independently verified"
 	default:
