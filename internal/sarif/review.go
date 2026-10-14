@@ -5,6 +5,7 @@ import (
 	"html"
 	"log/slog"
 	"path"
+	"regexp"
 	"strings"
 )
 
@@ -45,11 +46,12 @@ func BuildCodeFlows(steps []CodePathStep, files FileMap) []SARIFCodeFlow {
 }
 
 // ReviewPresentation is the serialization boundary, after audit and filtering.
-// Internal messages carry full evidence for the audit input. Exported results
-// each carry their own writeup and state: the message is that finding's
-// reviewer-facing summary, and result.properties holds its ID, verification
-// status, confidence, severity, CWE, and full technical details. Rules stay
-// generic because every finding with the same title shares one rule.
+// Internal messages carry full evidence for the audit input. GitHub renders
+// result messages as plain-text annotations and only rule help as Markdown, so
+// each exported finding gets its own rule: the rule's description and help are
+// that finding's writeup, and the message is a one-line annotation. Rules are
+// keyed by finding ID, which excludes model wording, so a reworded title keeps
+// the alert. result.properties holds the full state for other consumers.
 func ReviewPresentation(doc SARIFDocument) SARIFDocument {
 	doc = AssignFindingIDs(RefreshDescriptions(doc))
 	for i := range doc.Runs {
@@ -58,11 +60,8 @@ func ReviewPresentation(doc SARIFDocument) SARIFDocument {
 		for j, rule := range run.Tool.Driver.Rules {
 			ruleIndex[rule.ID] = j
 		}
-		type ruleSeverities struct {
-			active, all float64
-			hasActive   bool
-		}
-		severities := make(map[string]*ruleSeverities)
+		rules := make([]SARIFRule, 0, len(run.Results))
+		emitted := make(map[string]bool, len(run.Results))
 		for j := range run.Results {
 			r := &run.Results[j]
 			var rule SARIFRule
@@ -93,38 +92,15 @@ func ReviewPresentation(doc SARIFDocument) SARIFDocument {
 			props.CWE = ResultCWE(*r, rule)
 			r.Properties = &props
 			r.Level = severityLevel(severity)
-			r.Message = findingMessage(title, *r)
-
-			s := severities[r.RuleID]
-			if s == nil {
-				s = &ruleSeverities{}
-				severities[r.RuleID] = s
-			}
-			s.all = max(s.all, severity)
-			if !IsSuppressed(*r) {
-				s.active = max(s.active, severity)
-				s.hasActive = true
+			r.Message = SARIFMessage{Text: firstSentence(props.Summary) + ". " + reviewStatus(*r) + "."}
+			r.RuleID = rulePrefix + props.FindingID
+			if !emitted[r.RuleID] {
+				emitted[r.RuleID] = true
+				rules = append(rules, findingRule(r.RuleID, title, rule, *r))
 			}
 		}
-		// GitHub reads security-severity only from the rule. Report the worst
-		// active finding so a suppressed sibling cannot raise or lower it.
-		for j := range run.Tool.Driver.Rules {
-			rule := &run.Tool.Driver.Rules[j]
-			s := severities[rule.ID]
-			if s == nil {
-				continue
-			}
-			severity := s.all
-			if s.hasActive {
-				severity = s.active
-			}
-			properties := make(map[string]any, len(rule.Properties)+1)
-			for k, v := range rule.Properties {
-				properties[k] = v
-			}
-			properties["security-severity"] = fmt.Sprintf("%.1f", severity)
-			rule.Properties = properties
-		}
+		run.Tool.Driver.Rules = rules
+		run.Taxonomies = withCWETaxa(run.Taxonomies, run.Results)
 	}
 	return doc
 }
@@ -138,26 +114,99 @@ func verifiedAuditStatus(status string) bool {
 	return false
 }
 
-// findingMessage renders one finding's writeup from its own properties only.
-func findingMessage(title string, r SARIFResult) SARIFMessage {
+// findingRule renders one finding's writeup from its own properties only. The
+// finding ID is the rule ID, so the writeup omits it, and the annotation and
+// code flows already show the location.
+func findingRule(id, title string, base SARIFRule, r SARIFResult) SARIFRule {
 	p := r.Properties
-	text := p.Summary
-	if text == "" {
-		text = title
-	}
-	var md strings.Builder
-	fmt.Fprintf(&md, "**%s** (%s)\n\n%s", escapeMarkdown(title), escapeMarkdown(reviewLocation(r)), escapeMarkdown(text))
+	status := reviewStatus(r)
+	var text, md strings.Builder
+	fmt.Fprintf(&text, "%s\n\nStatus: %s", p.Summary, status)
+	fmt.Fprintf(&md, "%s\n\n**Status:** %s", markdownText(p.Summary), markdownText(status))
 	if p.Remediation != "" {
-		fmt.Fprintf(&md, "\n\n**Remediation:** %s", escapeMarkdown(p.Remediation))
+		fmt.Fprintf(&text, "\n\nRemediation: %s", p.Remediation)
+		fmt.Fprintf(&md, "\n\n#### Remediation\n\n%s", markdownText(p.Remediation))
 	}
-	fmt.Fprintf(&md, "\n\n**Status:** %s", escapeMarkdown(reviewStatus(r)))
-	if p.FindingID != "" {
-		fmt.Fprintf(&md, "\n\n**Finding ID:** %s", escapeMarkdown(p.FindingID))
+	if p.TechnicalDetails != "" && p.TechnicalDetails != p.Summary {
+		fmt.Fprintf(&text, "\n\nTechnical details:\n%s", p.TechnicalDetails)
+		md.WriteString("\n\n<details>\n<summary>Technical details</summary>\n")
+		for _, paragraph := range strings.Split(p.TechnicalDetails, "\n\n") {
+			if paragraph = strings.TrimSpace(paragraph); paragraph != "" {
+				md.WriteString("\n" + markdownText(paragraph) + "\n")
+			}
+		}
+		md.WriteString("\n</details>")
 	}
-	if p.TechnicalDetails != "" && p.TechnicalDetails != text {
-		fmt.Fprintf(&md, "\n\n<details>\n<summary>Technical details</summary>\n\n<pre>%s</pre>\n</details>", html.EscapeString(p.TechnicalDetails))
+
+	properties := make(map[string]any, len(base.Properties)+2)
+	for k, v := range base.Properties {
+		properties[k] = v
 	}
-	return SARIFMessage{Text: text, Markdown: md.String()}
+	// GitHub reads security-severity and the CWE tag only from the rule.
+	properties["security-severity"] = fmt.Sprintf("%.1f", *p.Severity)
+	tags := []string{"security"}
+	var relationships []SARIFRelationship
+	if p.CWE != "" {
+		tags = append(tags, "external/cwe/"+strings.ToLower(p.CWE))
+		relationships = []SARIFRelationship{{
+			Target: SARIFRelationshipTarget{ID: p.CWE, ToolComponent: SARIFToolComponentRef{Name: "CWE"}},
+			Kinds:  []string{"superset"},
+		}}
+	}
+	properties["tags"] = tags
+	return SARIFRule{
+		ID:               id,
+		ShortDescription: SARIFMessage{Text: limitReviewText(title, 1024)},
+		FullDescription:  &SARIFMessage{Text: limitReviewText(p.Summary, 1024)},
+		Help:             &SARIFMessage{Text: text.String(), Markdown: md.String()},
+		Properties:       properties,
+		Relationships:    relationships,
+	}
+}
+
+// withCWETaxa adds taxa for CWEs that the audit introduced, so every rule
+// relationship resolves. Existing entries are kept.
+func withCWETaxa(taxonomies []SARIFTaxonomy, results []SARIFResult) []SARIFTaxonomy {
+	taxonomies = append([]SARIFTaxonomy(nil), taxonomies...)
+	index := -1
+	seen := make(map[string]bool)
+	for i, t := range taxonomies {
+		if t.Name == "CWE" {
+			index = i
+			for _, taxon := range t.Taxa {
+				seen[taxon.ID] = true
+			}
+		}
+	}
+	for _, r := range results {
+		cwe := r.Properties.CWE
+		if cwe == "" || seen[cwe] {
+			continue
+		}
+		seen[cwe] = true
+		if index < 0 {
+			index = len(taxonomies)
+			taxonomies = append(taxonomies, SARIFTaxonomy{Name: "CWE", Organization: "MITRE",
+				ShortDescription: SARIFMessage{Text: "Common Weakness Enumeration"}})
+		}
+		t := &taxonomies[index]
+		t.Taxa = append(append([]SARIFTaxon(nil), t.Taxa...), SARIFTaxon{ID: cwe, ShortDescription: SARIFMessage{Text: cwe}})
+	}
+	if len(taxonomies) == 0 {
+		return nil
+	}
+	return taxonomies
+}
+
+var sentenceEnd = regexp.MustCompile(`[.!?]\s+[A-Z]`)
+
+// firstSentence keeps annotations to one line: GitHub uses the message as the
+// alert title, and the full summary is the rule description beside it.
+func firstSentence(s string) string {
+	if loc := sentenceEnd.FindStringIndex(s); loc != nil {
+		s = s[:loc[0]]
+	}
+	return limitReviewText(strings.TrimRight(s, ".!? "), 300)
 }
 
 func reviewLocation(r SARIFResult) string {
@@ -221,7 +270,27 @@ func limitReviewText(s string, max int) string {
 	return s
 }
 
+// markdownText renders model prose so it displays literally, except that
+// balanced backtick spans become inline code.
+func markdownText(s string) string {
+	parts := strings.Split(s, "`")
+	if len(parts)%2 == 0 {
+		return escapeMarkdown(s)
+	}
+	var b strings.Builder
+	for i, part := range parts {
+		if i%2 == 1 {
+			b.WriteString("<code>" + html.EscapeString(part) + "</code>")
+		} else {
+			b.WriteString(escapeMarkdown(part))
+		}
+	}
+	return b.String()
+}
+
+// escapeMarkdown backslash-escapes Markdown syntax, then HTML. The other order
+// escapes the "#" in entities such as &#39;, which then render literally.
 func escapeMarkdown(s string) string {
-	s = html.EscapeString(s)
-	return strings.NewReplacer("\\", "\\\\", "`", "\\`", "*", "\\*", "_", "\\_", "[", "\\[", "]", "\\]", "#", "\\#", "!", "\\!", "|", "\\|").Replace(s)
+	s = strings.NewReplacer("\\", "\\\\", "`", "\\`", "*", "\\*", "_", "\\_", "[", "\\[", "]", "\\]", "#", "\\#", "!", "\\!", "|", "\\|").Replace(s)
+	return html.EscapeString(s)
 }

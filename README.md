@@ -750,13 +750,14 @@ exhaustion does not start a second audit-level HTTP retry cycle.
 
 ## SARIF descriptions and scan comparisons
 
-Each result is a self-contained finding. `result.message.text` is that
-finding's reviewer-facing summary; `result.message.markdown` adds its location,
-remediation, audit status, finding ID, and escaped technical details. Rules are
-shared by every finding with the same title, so `rule.help` and
-`rule.fullDescription` stay generic and never contain finding-specific text.
-Existing rule IDs stay unchanged. A rule's `security-severity` is the highest
-severity among its unsuppressed findings.
+Each result is a self-contained finding with its own rule, whose ID is
+`codecrucible.` plus the finding ID. GitHub renders result messages as plain
+text and only `rule.help` as Markdown, so the writeup lives on the rule:
+`rule.fullDescription` is the finding's summary, and `rule.help` adds its audit
+status, remediation, and technical details (escaped, collapsed in Markdown).
+`result.message.text` is a one-line annotation: the summary's first sentence and
+the audit status. The rule's `security-severity` and CWE tag are the finding's
+own. Rule IDs exclude model wording, so a reworded title keeps its alert.
 
 Per-finding state lives in `result.properties`:
 
