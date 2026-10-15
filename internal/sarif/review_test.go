@@ -10,41 +10,52 @@ import (
 func TestReviewPresentation(t *testing.T) {
 	details := "Payload: <script>alert(1)</script> & `literal`"
 	doc := Build(AnalysisResult{SecurityIssues: []SecurityIssue{
-		{Issue: "Shared issue", FilePath: "a.go", StartLine: 1, Severity: 8, CWEID: "CWE-79", TechnicalDetails: details, Summary: "Attacker-controlled input reaches an unsafe sink.", Remediation: "Validate input before calling the sink."},
+		{Issue: "Shared issue", FilePath: "a.go", StartLine: 1, Severity: 8, CWEID: "CWE-79", TechnicalDetails: details, Summary: "Attacker-controlled input reaches an unsafe sink. It is not encoded.", Remediation: "Validate input before calling the sink."},
 		{Issue: "Shared issue", FilePath: "b.go", StartLine: 1, Severity: 4, CWEID: "CWE-80", TechnicalDetails: "Other location details", Summary: "Another entry point lacks validation."},
 	}}, nil, BuilderConfig{})
 	before, _ := json.Marshal(doc)
 	got := ReviewPresentation(doc)
 	run := got.Runs[0]
-	if len(run.Tool.Driver.Rules) != 1 || run.Tool.Driver.Rules[0].ID != doc.Runs[0].Tool.Driver.Rules[0].ID {
-		t.Fatal("alert identity changed")
-	}
 	a, b := run.Results[0], run.Results[1]
-	if a.Message.Text != "Attacker-controlled input reaches an unsafe sink." || b.Message.Text != "Another entry point lacks validation." {
-		t.Fatal("message is not the finding's own summary", a.Message, b.Message)
+	// Findings sharing a title get their own rules, keyed by finding ID.
+	if len(run.Tool.Driver.Rules) != 2 || a.RuleID != rulePrefix+a.Properties.FindingID || b.RuleID != rulePrefix+b.Properties.FindingID {
+		t.Fatal("each finding needs its own rule", run.Tool.Driver.Rules)
 	}
-	if !strings.Contains(a.Message.Markdown, "Validate input") || !strings.Contains(a.Message.Markdown, "&lt;script&gt;") ||
-		strings.Contains(a.Message.Markdown, "<script>") {
-		t.Fatal("writeup missing remediation or safely escaped details", a.Message.Markdown)
+	ruleA, ruleB := run.Tool.Driver.Rules[0], run.Tool.Driver.Rules[1]
+	if ruleA.ID != a.RuleID || ruleB.ID != b.RuleID || ruleA.ShortDescription.Text != "Shared issue" {
+		t.Fatal("rules do not match their findings", ruleA, ruleB)
 	}
-	// Each writeup stands alone: no sibling text in the result or shared rule.
-	for _, leak := range []string{"Another entry point", "Other location details", "b.go"} {
-		if strings.Contains(a.Message.Text+a.Message.Markdown, leak) {
+	if a.Message.Text != "Attacker-controlled input reaches an unsafe sink. Not audited; review manually." || a.Message.Markdown != "" {
+		t.Fatal("annotation is not the finding's first sentence and status", a.Message)
+	}
+	if ruleA.FullDescription.Text != "Attacker-controlled input reaches an unsafe sink. It is not encoded." {
+		t.Fatal("rule description is not the finding's summary", ruleA.FullDescription)
+	}
+	help := ruleA.Help.Markdown
+	if !strings.Contains(help, "Validate input") || !strings.Contains(help, "&lt;script&gt;") || strings.Contains(help, "<script>") ||
+		!strings.Contains(help, "<code>literal</code>") || !strings.Contains(ruleA.Help.Text, details) {
+		t.Fatal("writeup missing remediation or safely escaped details", ruleA.Help)
+	}
+	// Each writeup stands alone: no sibling text in the result or its rule.
+	for _, leak := range []string{"Another entry point", "Other location details"} {
+		if strings.Contains(a.Message.Text+ruleA.Help.Text+ruleA.Help.Markdown+ruleA.FullDescription.Text, leak) {
 			t.Fatal("sibling finding leaked into writeup", leak)
-		}
-	}
-	rule := run.Tool.Driver.Rules[0]
-	for _, leak := range []string{"Attacker-controlled", "Another entry point", "a.go", "b.go"} {
-		if strings.Contains(rule.Help.Text+rule.Help.Markdown+rule.FullDescription.Text, leak) {
-			t.Fatal("finding-specific text in shared rule", leak, rule)
 		}
 	}
 	if *a.Properties.Severity != 8 || a.Properties.CWE != "CWE-79" || *b.Properties.Severity != 4 || b.Properties.CWE != "CWE-80" ||
 		a.Level != "error" || b.Level != "warning" {
-		t.Fatal("findings sharing a rule did not keep their own severity and CWE", a.Properties, b.Properties)
+		t.Fatal("findings sharing a title did not keep their own severity and CWE", a.Properties, b.Properties)
 	}
-	if rule.Properties["security-severity"] != "8.0" {
-		t.Fatal("rule severity is not the worst finding", rule.Properties)
+	if ruleA.Properties["security-severity"] != "8.0" || ruleB.Properties["security-severity"] != "4.0" ||
+		!reflect.DeepEqual(ruleB.Properties["tags"], []string{"security", "external/cwe/cwe-80"}) || ruleB.Relationships[0].Target.ID != "CWE-80" {
+		t.Fatal("rule metadata is not its finding's", ruleA.Properties, ruleB)
+	}
+	taxa := map[string]bool{}
+	for _, taxon := range run.Taxonomies[0].Taxa {
+		taxa[taxon.ID] = true
+	}
+	if !taxa["CWE-79"] || !taxa["CWE-80"] {
+		t.Fatal("rule relationship lacks a taxon", run.Taxonomies)
 	}
 	if a.Properties.AuditStatus != "not_audited" || a.Properties.Verified {
 		t.Fatal("unaudited finding presented as verified", a.Properties)
@@ -83,14 +94,8 @@ func TestReviewPresentationVerificationState(t *testing.T) {
 	if !got.Results[0].Properties.Verified || got.Results[1].Properties.Verified || got.Results[2].Properties.Verified {
 		t.Fatal("verified must mean affirmed by audit and not suppressed")
 	}
-	if !strings.Contains(got.Results[0].Message.Markdown, "confidence 90%") || !strings.Contains(got.Results[1].Message.Markdown, "Rejected") {
+	if !strings.Contains(got.Results[0].Message.Text, "confidence 90%") || !strings.Contains(got.Tool.Driver.Rules[1].Help.Markdown, "Rejected") {
 		t.Fatal("writeup status does not reflect finding state")
-	}
-	for _, rule := range got.Tool.Driver.Rules {
-		want := map[string]string{"Confirmed": "5.0", "Rejected": "9.0"}[rule.ShortDescription.Text]
-		if rule.Properties["security-severity"] != want {
-			t.Fatal("rule severity must follow active findings first", rule.ShortDescription.Text, rule.Properties)
-		}
 	}
 }
 
@@ -164,12 +169,12 @@ func TestReviewLegacyFallbackAndUncertainty(t *testing.T) {
 	doc.Runs[0].Results[0].Properties.AuditStatus = "unverified"
 	got := ReviewPresentation(doc)
 	r := got.Runs[0].Results[0]
-	if r.Properties.Summary != "Relevant explanation." || r.Message.Text != "Relevant explanation." ||
-		r.Properties.Verified || !strings.Contains(r.Message.Markdown, "Unverified") {
+	if r.Properties.Summary != "Relevant explanation." || !strings.HasPrefix(r.Message.Text, "Relevant explanation. Unverified") ||
+		r.Properties.Verified || !strings.Contains(got.Runs[0].Tool.Driver.Rules[0].Help.Markdown, "Unverified") {
 		t.Fatal(got)
 	}
 	doc.Runs[0].Results[0].Properties.AuditStatus = "not_audited"
-	if !strings.Contains(ReviewPresentation(doc).Runs[0].Results[0].Message.Markdown, "Not audited") {
+	if !strings.Contains(ReviewPresentation(doc).Runs[0].Results[0].Message.Text, "Not audited") {
 		t.Fatal("unaudited finding not visible")
 	}
 }
@@ -183,5 +188,31 @@ func TestReviewStatusNamesDuplicateAndCrux(t *testing.T) {
 	open := SARIFResult{Properties: &FindingProperties{AuditStatus: "unverified", AuditCrux: "whether the caller checks the role"}}
 	if got := reviewStatus(open); !strings.HasSuffix(got, ". Open question: whether the caller checks the role") {
 		t.Errorf("unverified status = %q", got)
+	}
+}
+
+func TestMarkdownTextEscaping(t *testing.T) {
+	// GitHub renders HTML entities but not backslash-escaped ones.
+	if got := markdownText("system('cmd') # *x*"); got != "system(&#39;cmd&#39;) \\# \\*x\\*" {
+		t.Errorf("markdownText = %q", got)
+	}
+	if got := markdownText("call `a<b>` then `c`"); got != "call <code>a&lt;b&gt;</code> then <code>c</code>" {
+		t.Errorf("code spans = %q", got)
+	}
+	if got := markdownText("unbalanced ` tick"); got != "unbalanced \\` tick" {
+		t.Errorf("unbalanced = %q", got)
+	}
+}
+
+func TestFirstSentence(t *testing.T) {
+	for in, want := range map[string]string{
+		"One. Two.":                "One",
+		"Calls os.system(). Then.": "Calls os.system()",
+		"No terminator":            "No terminator",
+		"Ends here.":               "Ends here",
+	} {
+		if got := firstSentence(in); got != want {
+			t.Errorf("firstSentence(%q) = %q, want %q", in, got, want)
+		}
 	}
 }

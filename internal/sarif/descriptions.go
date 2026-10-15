@@ -2,14 +2,15 @@ package sarif
 
 import "strings"
 
-const ruleGuidance = "Each finding carries its own writeup in its message and its state in " +
-	"result properties (findingId, verified, auditStatus, auditConfidence, severity, cwe, " +
+const ruleGuidance = "Each finding carries its own writeup and its state in result " +
+	"properties (findingId, verified, auditStatus, auditConfidence, severity, cwe, " +
 	"technicalDetails). Validate the reported input, unsafe operation, and missing control " +
 	"in context before applying a fix."
 
 // RefreshDescriptions fills rule descriptions and empty result messages.
-// Rule help is shared by every result referencing that rule, so it must not
-// contain finding-specific evidence or audit verdicts. Plain text stays plain
+// Internal rules are shared by every result with the same title, so their help
+// must not contain finding-specific evidence or audit verdicts; output gets
+// per-finding rules from ReviewPresentation. Plain text stays plain
 // text: interpreting payloads or code as Markdown can change their meaning.
 // Modified slices and descriptions are owned by the returned snapshot.
 func RefreshDescriptions(doc SARIFDocument) SARIFDocument {

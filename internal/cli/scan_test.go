@@ -1061,8 +1061,10 @@ func TestApplyAuditVerdicts_RefinementIsolatedToFinding(t *testing.T) {
 	if *b.Severity != 7 || b.CWE != "CWE-862" {
 		t.Errorf("sibling finding changed: severity/CWE = %v/%s", *b.Severity, b.CWE)
 	}
-	if got := out.Runs[0].Tool.Driver.Rules[0].Properties["security-severity"]; got != "7.0" {
-		t.Errorf("rule security-severity = %v, want worst active finding 7.0", got)
+	ruleA, ruleB := out.Runs[0].Tool.Driver.Rules[0], out.Runs[0].Tool.Driver.Rules[1]
+	if ruleA.Properties["security-severity"] != "3.0" || ruleB.Properties["security-severity"] != "7.0" ||
+		ruleA.Relationships[0].Target.ID != "CWE-639" || ruleB.Relationships[0].Target.ID != "CWE-862" {
+		t.Errorf("rules must carry their own finding's severity and CWE: %v / %v", ruleA, ruleB)
 	}
 }
 

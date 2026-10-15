@@ -314,12 +314,12 @@ func TestAuditDescriptionsFollowFinalVerdicts(t *testing.T) {
 	if len(final.Runs[0].Results) != 3 {
 		t.Fatal("wrong final finding count")
 	}
+	rules := map[string]sarif.SARIFRule{}
 	for _, rule := range final.Runs[0].Tool.Driver.Rules {
-		for _, evidence := range []string{"REMOVE ME", "OLD DETAILS", "FINAL DETAILS", "NEW EVIDENCE"} {
-			if strings.Contains(rule.Help.Text+rule.Help.Markdown+rule.FullDescription.Text, evidence) {
-				t.Fatal("finding evidence in shared rule text", rule)
-			}
-		}
+		rules[rule.ID] = rule
+	}
+	if len(rules) != 3 {
+		t.Fatal("each finding needs its own rule", final.Runs[0].Tool.Driver.Rules)
 	}
 	ids := map[string]bool{}
 	for _, result := range final.Runs[0].Results {
@@ -328,8 +328,15 @@ func TestAuditDescriptionsFollowFinalVerdicts(t *testing.T) {
 			t.Fatal("finding lacks a unique identity", result)
 		}
 		ids[p.FindingID] = true
-		if result.Message.Text != p.Summary {
-			t.Fatal("annotation is not the finding's own summary", result.Message)
+		rule := rules[result.RuleID]
+		writeup := rule.Help.Text + rule.Help.Markdown + rule.FullDescription.Text + result.Message.Text
+		if !strings.Contains(rule.Help.Text, p.TechnicalDetails) || !strings.HasPrefix(result.Message.Text, strings.TrimSuffix(p.Summary, ".")) {
+			t.Fatal("writeup is not the finding's own", result.Message, rule.Help)
+		}
+		for _, evidence := range []string{"REMOVE ME", "OLD DETAILS", "FINAL DETAILS", "NEW EVIDENCE"} {
+			if evidence != p.TechnicalDetails && strings.Contains(writeup, evidence) {
+				t.Fatal("another finding's evidence in this writeup", evidence, rule)
+			}
 		}
 		switch result.Locations[0].PhysicalLocation.ArtifactLocation.URI {
 		case "a.go":
@@ -340,9 +347,6 @@ func TestAuditDescriptionsFollowFinalVerdicts(t *testing.T) {
 			if p.TechnicalDetails != "FINAL DETAILS" || p.AuditStatus != "unverified" || p.Verified ||
 				p.AuditConfidence == nil || *p.AuditConfidence != .3 || p.AuditJustification != "chain uncertain" {
 				t.Fatal("lost audit refinement or caveat", p)
-			}
-			if strings.Contains(result.Message.Text+result.Message.Markdown, "REMOVE ME") {
-				t.Fatal("sibling evidence leaked into this finding", result.Message)
 			}
 		case "c.go":
 			if p.TechnicalDetails != "NEW EVIDENCE" || p.AuditStatus != "new" || *p.Severity != 9 {
@@ -458,18 +462,18 @@ func TestScanArtifactsIncludeFinalEvidenceAndMetadata(t *testing.T) {
 					}
 				}
 				rule := doc.Runs[0].Tool.Driver.Rules[0]
-				if rule.FullDescription == nil || rule.FullDescription.Text == "" || rule.Help == nil || rule.Help.Text == "" {
+				result := doc.Runs[0].Results[0]
+				if rule.ID != result.RuleID || rule.FullDescription == nil || rule.FullDescription.Text == "" || rule.Help == nil || rule.Help.Text == "" {
 					t.Fatal("incorrect description", rule)
 				}
-				if strings.Contains(rule.Help.Text+rule.Help.Markdown, "evidence:") {
-					t.Fatal("finding evidence in shared rule help", rule.Help)
-				}
-				result := doc.Runs[0].Results[0]
 				if result.Properties.TechnicalDetails != want {
 					t.Fatalf("%s artifact lost evidence: %+v", stage, result.Properties)
 				}
-				if md := result.Message.Markdown; !strings.Contains(md, "evidence: &lt;") || strings.Contains(md, "<script>") || strings.Contains(md, "<img") {
+				if md := rule.Help.Markdown; !strings.Contains(md, "evidence: &lt;") || strings.Contains(md, "<script>") || strings.Contains(md, "<img") {
 					t.Fatalf("finding writeup missing escaped evidence %q / %+v", md, result.Properties)
+				}
+				if result.Message.Markdown != "" {
+					t.Fatal("annotation must be plain text", result.Message)
 				}
 			}
 		})
