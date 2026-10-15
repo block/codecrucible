@@ -106,6 +106,9 @@ type ScanExecution struct {
 	Chunks           ChunkExecution            `json:"chunks"`
 	ContextSources   []ContextExecution        `json:"contextSources"`
 	ContextPacking   map[string]ContextPacking `json:"contextPacking"`
+	// Models lists the distinct models that served this scan's requests: the
+	// provider-reported IDs, or the requested ID when a provider reports none.
+	Models []string `json:"models"`
 	// AuditLeads are the v2 audit's notes on possible issues outside the
 	// audited findings, for a human to follow up. They are not findings.
 	AuditLeads []string `json:"auditLeads,omitempty"`
@@ -119,6 +122,26 @@ type PhaseExecution struct {
 	// Context compression uses per-source limits, no structured output, and
 	// does not currently forward configured model parameters.
 	RequestPolicy string `json:"requestPolicy,omitempty"`
+	// Models tallies this phase's requests by the model ID sent.
+	Models []ModelExecution `json:"models,omitempty"`
+}
+
+// ModelExecution tallies one phase's requests to one model ID. Calls count
+// client requests, not the client's internal retries.
+type ModelExecution struct {
+	Model string `json:"model"` // sent ID, after any model-params override
+	// ResponseModels are the IDs the provider reported serving the calls.
+	ResponseModels   []string `json:"responseModels"`
+	Calls            int      `json:"calls"`
+	Failures         int      `json:"failures"`
+	PromptTokens     int      `json:"promptTokens"`
+	CompletionTokens int      `json:"completionTokens"`
+	ReasoningTokens  int      `json:"reasoningTokens,omitempty"`
+	// EstimatedCost applies the phase's configured prices; it is not billed spend.
+	EstimatedCost float64 `json:"estimatedCost"`
+	// Successful calls by setting as sent, after the client's fallbacks.
+	TemperatureOmitted  int `json:"temperatureOmitted,omitempty"`
+	MaxCompletionTokens int `json:"maxCompletionTokens,omitempty"`
 }
 
 type ChunkExecution struct {

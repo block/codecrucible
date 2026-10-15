@@ -430,6 +430,8 @@ func runScan(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	usage := newModelUsage()
+	client = usage.wrap("analysis", client, modelCfg)
 
 	slog.Info("LLM provider configured", "provider", analysis.Provider, "model", modelCfg.Name)
 
@@ -450,6 +452,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 	}
 	artifacts := newPhaseArtifactWriter(cfg)
 	artifacts.metadata = metadata
+	artifacts.usage = usage
 	recordActualPhase(metadata, "analysis", *analysis, cfg, false)
 	if artifacts.Enabled() {
 		slog.Info("phase artifacts enabled",
@@ -460,7 +463,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 	}
 
 	// --- Stage 5.25: Load & pack supplementary context ---
-	analysisCtx, auditCtx, err := loadSupplementaryContext(cmd.Context(), cfg, counter, promptLoader, modelCfg.ContextLimit, metadata)
+	analysisCtx, auditCtx, err := loadSupplementaryContext(cmd.Context(), cfg, counter, promptLoader, modelCfg.ContextLimit, metadata, usage)
 	if err != nil {
 		return err
 	}
@@ -485,7 +488,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 		outcome, err := runAnalysisPhases(cmd.Context(), analysisInputs{
 			cfg: cfg, analysis: analysis, client: client, endpoint: endpoint,
 			promptLoader: promptLoader, schema: schema, outputMode: outputMode, repoName: repoName,
-			counter: counter, analysisCtx: analysisCtx, metadata: metadata, artifacts: artifacts,
+			counter: counter, analysisCtx: analysisCtx, metadata: metadata, artifacts: artifacts, usage: usage,
 			filtered: filtered, flatResult: &flatResult, totalTokens: totalTokens,
 			importGraph: importGraph, exportSummaries: exportSummaries,
 		})
@@ -509,6 +512,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 				"provider", audit.Provider, "model", audit.ModelCfg.Name)
 		}
 		recordActualPhase(metadata, "audit", *audit, cfg, auditErr != nil)
+		auditClient = usage.wrap("audit", auditClient, audit.ModelCfg)
 		auditOutputMode := llm.OutputModeForConfig(audit.ModelCfg)
 
 		auditedDoc, auditUsage, auditCost, auditErr := runAuditPhase(
@@ -557,6 +561,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 	)
 
 	// --- Stage 7: Output ---
+	usage.apply(metadata)
 	merged, err = prepareSARIF(merged, metadata, "final")
 	if err != nil {
 		return err
@@ -664,6 +669,7 @@ type analysisInputs struct {
 	analysisCtx     supctx.PackResult
 	metadata        *sarif.ScanMetadata
 	artifacts       phaseArtifactWriter
+	usage           *modelUsage
 	filtered        []ingest.SourceFile
 	flatResult      *ingest.FlattenResult
 	totalTokens     int
@@ -733,6 +739,7 @@ func runAnalysisPhases(ctx context.Context, in analysisInputs) (out analysisOutc
 				"provider", fd.Provider, "model", fd.ModelCfg.Name)
 		}
 		recordActualPhase(metadata, "feature-detection", *fd, cfg, fdErr != nil)
+		fdClient = in.usage.wrap("feature-detection", fdClient, fd.ModelCfg)
 		fdOutputMode := llm.OutputModeForConfig(fd.ModelCfg)
 		var fdCorrection float64
 		detectedFeatures, fdCorrection, err = runFeatureDetection(ctx, filtered, repoName, fdClient, fdEndpoint, fd.ModelCfg, promptLoader, fdOutputMode, fd.ModelParams, counter)

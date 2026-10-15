@@ -834,15 +834,25 @@ Every SARIF run includes `properties.codecrucible` with `schemaVersion: 1`:
 | `recipe.phases` | Analysis, feature detection, audit, and context compression: provider/model, sanitized base URL/endpoint, transport, model parameters, context/output limits, temperature settings, output mode, timeout, tokenizer, and pricing assumptions |
 | `recipe.controls` | Scope filters, test/document inclusion, file-size limit, compression, concurrency, cost limit, severity gate, phase toggles, audit confidence/batch size, and context budget |
 | `recipeFingerprint` | SHA-256 of the canonical JSON recipe (sorted object keys, preserved array order); excludes output paths, credentials, timestamps, and execution outcomes |
-| `execution` | Artifact stage, phase statuses and actual phase configurations, fallbacks, detected features, token correction, chunk/recovery counts, source loading/compression outcomes, and packed-context fingerprints/truncation |
+| `execution` | Artifact stage, phase statuses and actual phase configurations, fallbacks, per-phase model calls, the models used, detected features, token correction, chunk/recovery counts, source loading/compression outcomes, and packed-context fingerprints/truncation |
 
 Phase configuration reflects inheritance and overrides after configuration
 resolution. Model parameters are recorded separately from model-registry
 defaults; they can override request-body fields. `execution.phases.*.actual`
 identifies the configuration used when a phase ran, including fallback to the
 analysis client. `requestPolicy` explains exceptions such as Claude CLI-managed
-sampling and context compression's per-source output limits. This is not a
-trace of provider-side defaults or per-request retry adaptations.
+sampling and context compression's per-source output limits.
+
+`execution.phases.*.models` tallies each phase's requests by the model ID sent,
+which is the `model-params.model` override when one is set. For each ID it
+records the IDs the provider reported serving the requests, call and failure
+counts, token usage, and the cost estimated at the configured prices. It also
+counts successful requests that were sent without a temperature or with
+`max_completion_tokens`, including after the client drops a field the endpoint
+rejected. `execution.models` lists the distinct models that served the scan:
+the provider-reported IDs, or the sent ID when a provider reports none. Calls
+count client requests, not the client's internal retries. Provider-side
+defaults are not recorded.
 
 Analysis, audit, and final files have independent execution snapshots and the
 same recipe fingerprint. `pending` means a phase had not run at that snapshot;
@@ -867,6 +877,9 @@ custom SARIF properties in its alert interface:
 ```bash
 # Inspect configuration and execution outcomes.
 jq '.runs[0].properties.codecrucible' results.sarif
+
+# Show the models each phase used.
+jq '.runs[0].properties.codecrucible.execution | {models, phases: (.phases | map_values(.models))}' results.sarif
 
 # Compare recipes, excluding differences caused only by run outcomes.
 jq -S '.runs[0].properties.codecrucible.recipe' before.sarif > before.recipe.json
