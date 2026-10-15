@@ -269,7 +269,7 @@ func TestMetadataContextFingerprintsAndPacking(t *testing.T) {
 	}
 	m := newScanMetadata(cfg)
 	counter := chunk.NewTokenCounter("cl100k_base", nil)
-	_, _, err = loadSupplementaryContext(context.Background(), cfg, counter, loader, 1000, m)
+	_, _, err = loadSupplementaryContext(context.Background(), cfg, counter, loader, 1000, m, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -286,7 +286,7 @@ func TestMetadataContextFingerprintsAndPacking(t *testing.T) {
 	}
 	cfg.ContextSources[1].Location += " changed"
 	next := newScanMetadata(cfg)
-	_, _, err = loadSupplementaryContext(context.Background(), cfg, counter, loader, 1000, next)
+	_, _, err = loadSupplementaryContext(context.Background(), cfg, counter, loader, 1000, next, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
