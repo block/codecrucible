@@ -1,6 +1,7 @@
 // Package auditctx retrieves the source an audit needs beyond the files a
 // claim cites: callers and route registrations of the flagged function,
-// templates it renders, and definitions of the functions and types the
+// templates it renders, the call that receives the flagged value and what it
+// passes that value to, and definitions of the functions and types the
 // flagged lines use. Retrieval is lexical and deterministic, so a replayed
 // audit sees the same context, and it is bounded by a token budget.
 package auditctx
@@ -59,7 +60,7 @@ var (
 	}
 	typePatterns = []*regexp.Regexp{
 		regexp.MustCompile(`^\s*type\s+([A-Za-z_]\w*)\s+(?:struct|interface)\b`), // Go
-		regexp.MustCompile(`^\s*(?:export\s+)?(?:default\s+)?(?:(?:public|private|protected|internal|abstract|final|sealed|data|open|static)\s+)*(?:class|interface|struct|enum|record|trait)\s+([A-Za-z_]\w*)`), // most languages
+		regexp.MustCompile(`^\s*(?:@\w+(?:\([^)]*\))?\s+)*(?:export\s+)?(?:default\s+)?(?:(?:public|private|protected|internal|abstract|final|sealed|data|open|static|enum|annotation|value|inner)\s+)*(?:class|interface|struct|enum|record|trait|object)\s+([A-Za-z_]\w*)`), // most languages; Kotlin objects
 		regexp.MustCompile(`^\s*(?:export\s+)?type\s+([A-Za-z_]\w*)\s*(?:<[^>]*>)?\s*=`), // TypeScript
 	}
 	keywords = map[string]bool{
@@ -72,7 +73,10 @@ var (
 		"run": true, "Run": true, "ServeHTTP": true, "toString": true, "constructor": true, "index": true, "render": true,
 		"String": true, "Error": true, "close": true, "Close": true, "execute": true, "apply": true, "call": true,
 	}
-	callName     = regexp.MustCompile(`([A-Za-z_$][\w$]*)\s*\(`)
+	callName     = regexp.MustCompile(`(?:([A-Za-z_$][\w$]*)\s*\.\s*)?([A-Za-z_$][\w$]*)\s*\(`)
+	trailingCall = regexp.MustCompile(`(?:([A-Za-z_$][\w$]*)\s*\.\s*)?([A-Za-z_$][\w$]*)\s*$`)
+	namedArg     = regexp.MustCompile(`^\s*([A-Za-z_]\w*)\s*[=:][^=]`)
+	identifier   = regexp.MustCompile(`[A-Za-z_$][\w$]*`)
 	typeName     = regexp.MustCompile(`\b([A-Z][A-Za-z0-9_]*)\b`)
 	stringLit    = regexp.MustCompile("[\"'`]([\\w./-]+)[\"'`]")
 	templateHint = regexp.MustCompile(`(?i)render|templ|tmpl|view|layout|include|parsefiles|parseglob|execute`)
@@ -149,6 +153,8 @@ const (
 	callerRadius   = 8
 	maxCallees     = 4
 	maxTypes       = 3
+	maxContaining  = 2 // calls the flagged value is passed into
+	maxForwarded   = 2 // definitions a receiving call passes the value to
 	maxDefLines    = 60
 	maxTemplate    = 400
 	// maxEnclosingSpan is how far below a definition a claim can sit and
@@ -203,16 +209,37 @@ func (ix *Index) Retrieve(c Claim, skip map[string]bool) []Excerpt {
 	if haveEnclosing {
 		seen[enclosing.Name] = true
 	}
+	// The flagged value is passed into the calls that contain it, so what they
+	// do with it (a constructor that validates it, say) can decide the claim.
+	for _, call := range containingCalls(lines, c.Start, lo) {
+		if seen[call.name] || ix.external(call.qualifier) {
+			continue
+		}
+		seen[call.name] = true
+		d, ok := ix.uniqueDef(call.name, false, c.File)
+		if !ok {
+			d, ok = ix.uniqueDef(call.name, true, c.File)
+		}
+		if !ok {
+			continue
+		}
+		add(defExcerpt(d, "receives the flagged value: "+call.name))
+		for _, e := range ix.forwarded(d, call, seen) {
+			add(e)
+		}
+	}
 	n := 0
 	for _, line := range window {
-		for _, m := range callName.FindAllStringSubmatch(line, -1) {
-			name := m[1]
-			if n >= maxCallees || seen[name] || keywords[name] || genericNames[name] {
+		for _, m := range calls(line) {
+			name := m.name
+			if n >= maxCallees || seen[name] || keywords[name] || genericNames[name] || ix.external(m.qualifier) {
 				continue
 			}
-			seen[name] = true
+			// A name that is no function may be a constructor call, which
+			// the type pass below retrieves.
 			if d, ok := ix.uniqueDef(name, false, c.File); ok {
-				add(Excerpt{File: d.File, Start: d.Line, End: min(d.End, d.Line+maxDefLines-1), Reason: "definition of " + name})
+				seen[name] = true
+				add(defExcerpt(d, "definition of "+name))
 				n++
 			}
 		}
@@ -226,12 +253,182 @@ func (ix *Index) Retrieve(c Claim, skip map[string]bool) []Excerpt {
 			}
 			seen[name] = true
 			if d, ok := ix.uniqueDef(name, true, c.File); ok {
-				add(Excerpt{File: d.File, Start: d.Line, End: min(d.End, d.Line+maxDefLines-1), Reason: "type " + name})
+				add(defExcerpt(d, "type "+name))
 				n++
 			}
 		}
 	}
 	return out
+}
+
+func defExcerpt(d Def, reason string) Excerpt {
+	return Excerpt{File: d.File, Start: d.Line, End: min(d.End, d.Line+maxDefLines-1), Reason: reason}
+}
+
+// external reports whether a call is qualified by a capitalized name with no
+// definition in the scan, such as a library type's static method. Resolving
+// the method name alone would find an unrelated definition.
+func (ix *Index) external(qualifier string) bool {
+	return qualifier != "" && qualifier[0] >= 'A' && qualifier[0] <= 'Z' && len(ix.defs[qualifier]) == 0
+}
+
+// calls returns the calls on line. A qualifier is kept only when it starts
+// the expression (Money.of), not when it is a field in a chain (a.DB.Query).
+func calls(line string) []call {
+	var out []call
+	for _, m := range callName.FindAllStringSubmatchIndex(line, -1) {
+		out = append(out, call{qualifier: leadingQualifier(line, m[2], m[3]), name: line[m[4]:m[5]], arg: -1})
+	}
+	return out
+}
+
+func leadingQualifier(line string, start, end int) string {
+	if start < 0 {
+		return ""
+	}
+	if before := strings.TrimRight(line[:start], " \t"); strings.HasSuffix(before, ".") || strings.HasSuffix(before, "?") {
+		return ""
+	}
+	return line[start:end]
+}
+
+// call is a call whose argument list contains the flagged line.
+type call struct {
+	qualifier, name string
+	arg             int    // position of the flagged argument, or -1
+	param           string // the parameter it is passed to by name, if any
+}
+
+// containingCalls walks back from the flagged line to the calls whose
+// parentheses are still open there, innermost first. Brackets in strings and
+// comments are not distinguished; the result only orders retrieval.
+func containingCalls(lines []string, start, lo int) []call {
+	if start < 1 || start > len(lines) {
+		return nil
+	}
+	var out []call
+	depth, commas, param := 0, 0, ""
+	if m := namedArg.FindStringSubmatch(lines[start-1]); m != nil {
+		param = m[1]
+	}
+	for i := start - 2; i >= lo-1 && i >= 0; i-- {
+		line := lines[i]
+		for j := len(line) - 1; j >= 0; j-- {
+			switch line[j] {
+			case ')', ']', '}':
+				depth++
+			case ',':
+				if depth == 0 {
+					commas++
+				}
+			case '(', '[', '{':
+				if depth > 0 {
+					depth--
+					continue
+				}
+				if line[j] == '(' {
+					if m := trailingCall.FindStringSubmatchIndex(line[:j]); m != nil && !keywords[line[m[4]:m[5]]] && !genericNames[line[m[4]:m[5]]] {
+						out = append(out, call{qualifier: leadingQualifier(line, m[2], m[3]), name: line[m[4]:m[5]], arg: commas, param: param})
+						if len(out) == maxContaining {
+							return out
+						}
+					}
+				}
+				// Outer calls receive an expression containing the value,
+				// not the value itself.
+				commas, param = -1, ""
+			}
+		}
+	}
+	return out
+}
+
+// forwarded returns definitions that d passes the flagged value to: calls on
+// the lines of d's body that use the parameter receiving it.
+func (ix *Index) forwarded(d Def, c call, seen map[string]bool) []Excerpt {
+	lines := ix.lines[d.File]
+	end := min(d.End, d.Line+maxDefLines-1, len(lines))
+	param, bodyStart := c.param, d.Line
+	if params, after := parameters(lines, d.Line-1, end); after > 0 {
+		bodyStart = after
+		if param == "" && c.arg >= 0 && c.arg < len(params) {
+			param = params[c.arg]
+		}
+	}
+	if param == "" {
+		return nil
+	}
+	word := regexp.MustCompile(`(?:^|[^\w$])` + regexp.QuoteMeta(param) + `(?:[^\w$]|$)`)
+	var out []Excerpt
+	for i := bodyStart; i < end && len(out) < maxForwarded; i++ {
+		if !word.MatchString(lines[i]) {
+			continue
+		}
+		for _, m := range calls(lines[i]) {
+			name := m.name
+			if len(out) == maxForwarded || seen[name] || keywords[name] || genericNames[name] || ix.external(m.qualifier) {
+				continue
+			}
+			f, ok := ix.uniqueDef(name, false, d.File)
+			if !ok {
+				f, ok = ix.uniqueDef(name, true, d.File)
+			}
+			if ok {
+				seen[name] = true
+				out = append(out, defExcerpt(f, fmt.Sprintf("%s passes %s to %s", d.Name, param, name)))
+			}
+		}
+	}
+	return out
+}
+
+// parameters returns the parameter names of the definition starting at line
+// index from, and the index of the line after its parameter list (0 if none
+// closes before end). A name is the last identifier before any type
+// annotation, which covers "name: Type", "val name: Type", and "Type name".
+func parameters(lines []string, from, end int) ([]string, int) {
+	var names []string
+	depth, started := 0, false
+	var current strings.Builder
+	flush := func() {
+		text := current.String()
+		if i := strings.Index(text, ":"); i >= 0 {
+			text = text[:i]
+		}
+		if i := strings.Index(text, "="); i >= 0 {
+			text = text[:i]
+		}
+		if ids := identifier.FindAllString(text, -1); len(ids) > 0 {
+			names = append(names, ids[len(ids)-1])
+		}
+		current.Reset()
+	}
+	for i := from; i < end; i++ {
+		for _, r := range lines[i] {
+			switch {
+			case r == '(':
+				depth++
+				if depth == 1 && !started {
+					started = true
+					continue
+				}
+			case r == ')':
+				depth--
+				if started && depth == 0 {
+					flush()
+					return names, i + 1
+				}
+			case r == ',' && depth == 1:
+				flush()
+				continue
+			}
+			if started && depth >= 1 {
+				current.WriteRune(r)
+			}
+		}
+		current.WriteRune(' ')
+	}
+	return nil, 0
 }
 
 // enclosing returns the function definition containing line.
@@ -307,7 +504,18 @@ func (ix *Index) callerExcerpts(def Def) []Excerpt {
 		}
 		return false
 	}
-	sort.SliceStable(order, func(i, j int) bool { return routed(order[i]) && !routed(order[j]) })
+	// Route registrations first, then callers outside tests.
+	rank := func(f string) int {
+		r := 0
+		if !routed(f) {
+			r += 2
+		}
+		if testPath(f) {
+			r++
+		}
+		return r
+	}
+	sort.SliceStable(order, func(i, j int) bool { return rank(order[i]) < rank(order[j]) })
 	var out []Excerpt
 	for _, f := range order[:min(len(order), maxCallerFiles)] {
 		for _, h := range byFile[f][:min(len(byFile[f]), maxCallerHits)] {
@@ -471,4 +679,11 @@ func merge(ranges [][2]int) [][2]int {
 		out = append(out, r)
 	}
 	return out
+}
+
+var testFile = regexp.MustCompile(`(?i)(^|/)(tests?|__tests__|spec)/|(_test|\.test|\.spec|tests?)\.[a-z]+$|(^|/)test_[^/]*$`)
+
+// testPath reports whether path looks like a test file.
+func testPath(path string) bool {
+	return testFile.MatchString(path)
 }
