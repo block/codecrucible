@@ -50,7 +50,10 @@ func TestGLMFlashResolvesCerebrasAcrossPhases(t *testing.T) {
 		if !pc.ModelCfg.SupportsStructuredOutput {
 			t.Errorf("%s lost JSON Schema output", phase)
 		}
-		if !strings.Contains(pc.ModelCfg.ExecutionWarning, "provisional") || !strings.Contains(pc.ModelCfg.ExecutionWarning, "--max-cost cannot enforce") {
+		if pc.ModelCfg.ContextLimit != 1048576 || pc.ModelCfg.MaxOutputTokens != 131072 {
+			t.Errorf("%s lost upstream GLM token limits", phase)
+		}
+		if !strings.Contains(pc.ModelCfg.ExecutionWarning, "deployment limits may differ") || !strings.Contains(pc.ModelCfg.ExecutionWarning, "--max-cost cannot enforce") {
 			t.Errorf("%s must disclose unverified limits and missing pricing: %q", phase, pc.ModelCfg.ExecutionWarning)
 		}
 	}

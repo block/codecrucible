@@ -190,19 +190,26 @@ endpoint ID in local configuration, for example:
 
 ```bash
 export PHASES_ANALYSIS_MODEL=zai-glm-5.3-flash
-export PHASES_ANALYSIS_MODEL_PARAMS_JSON='{"model":"YOUR_DEPLOYMENT_ID"}'
+export PHASES_ANALYSIS_MODEL_PARAMS_JSON='{"model":"YOUR_DEPLOYMENT_ID","reasoning_effort":"max"}'
 codecrucible scan ./target --provider cerebras --dry-run
 codecrucible scan ./target --provider cerebras --output results.sarif
 ```
 
-The profile uses provisional 128K context and 32768 output settings. Pricing
-is unconfigured: reported costs exclude this model, and `--max-cost` cannot
-enforce its spend. Configure verified limits and contract pricing under
-`models:` before relying on large-repository sizing or cost estimates.
-JSON Schema requests and a full analysis/audit scan were live-tested against
-an operator-configured deployment; this does not establish every deployment's
-capabilities or maximum limits. The output allowance includes reasoning tokens;
-an 8192-token allowance truncated the tested audit response.
+The profile uses the upstream model limits: 1,048,576 context tokens and
+131,072 output tokens (including reasoning). Cerebras supports `low`, `high`,
+and `max` reasoning effort for this model and defaults to `max`; reasoning
+cannot be disabled. The example makes `max` explicit. See the
+[model documentation](https://docs.z.ai/guides/vlm/glm-5.3-flash) and
+[Cerebras reasoning controls](https://inference-docs.cerebras.ai/capabilities/reasoning).
+Deployment-specific limits may be lower; override them under `models:` or with
+per-phase context/output settings when necessary. JSON Schema output, `max`
+reasoning, and the 131,072-token output allowance were accepted in a live
+request, and a complete analysis/audit scan was verified. This does not
+establish maximum-length generation or a fully occupied 1M-token context.
+
+Pricing is unconfigured: reported costs exclude this model, and `--max-cost`
+cannot enforce its spend. Configure contract pricing under `models:` before
+relying on cost estimates.
 
 When switching deployments, update the `model` override in local
 `model-params` / `PHASES_ANALYSIS_MODEL_PARAMS_JSON` as well as the selected
