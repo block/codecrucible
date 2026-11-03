@@ -33,7 +33,7 @@ func TestDefaultModelRegistry_ContainsExpectedModels(t *testing.T) {
 		{"gemini-3.5-flash", 1048576},
 		{"gemini-3.1-flash-lite", 1048576},
 		{"kimi-k2.6", 128000},
-		{"zai-glm-5.3-flash", 128000},
+		{"zai-glm-5.3-flash", 1048576},
 	}
 
 	if len(registry) != len(expected) {

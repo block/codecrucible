@@ -108,8 +108,11 @@ func TestCerebrasGLMFlashScanProducesSARIF(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Error(err)
 		}
-		if body["model"] != "custom-glm-deployment" || body["max_completion_tokens"] != float64(32768) {
+		if body["model"] != "custom-glm-deployment" || body["max_completion_tokens"] != float64(131072) {
 			t.Errorf("incorrect GLM request target or output limit: %v", body)
+		}
+		if body["reasoning_effort"] != "max" {
+			t.Error("GLM must forward max reasoning effort")
 		}
 		format, ok := body["response_format"].(map[string]any)
 		if !ok || format["type"] != "json_schema" {
@@ -132,7 +135,7 @@ func TestCerebrasGLMFlashScanProducesSARIF(t *testing.T) {
 	config.SetDefaults(v)
 	v.Set("provider", "cerebras")
 	v.Set("model", "zai-glm-5.3-flash")
-	v.Set("model-params-json", `{"model":"custom-glm-deployment"}`)
+	v.Set("model-params-json", `{"model":"custom-glm-deployment","reasoning_effort":"max"}`)
 	v.Set("cerebras-api-key", "test-key")
 	v.Set("base-url", server.URL)
 	v.Set("prompts-dir", filepath.Join(dir, "prompts", "default"))

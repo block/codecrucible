@@ -355,15 +355,16 @@ var defaultModels = []ModelConfig{
 		// Opt-in public profile. Keep deployment IDs in local model-params.
 		// JSON Schema was verified on one deployment; other deployments must
 		// explicitly select this profile or configure their own capabilities.
-		// Allow room for reasoning plus audit JSON: 8192 truncated live audits.
+		// Upstream specifies a 1M context and 128K output. Cerebras defaults
+		// reasoning_effort to max; keep deployment-specific routing in config.
 		Name:                     "zai-glm-5.3-flash",
 		ExactMatch:               true,
 		Provider:                 "cerebras",
 		Endpoint:                 "zai-glm-5.3-flash/invocations",
-		ContextLimit:             128000,
-		MaxOutputTokens:          32768,
+		ContextLimit:             1048576,
+		MaxOutputTokens:          131072,
 		Encoding:                 "cl100k_base",
-		ExecutionWarning:         "zai-glm-5.3-flash uses provisional 128K context and 32768 output limits; deployment limits and Cerebras contract pricing are unverified. Override models: with verified deployment settings",
+		ExecutionWarning:         "zai-glm-5.3-flash uses upstream 1M context and 128K output limits; Cerebras deployment limits may differ and contract pricing is unverified. Override models: with deployment-specific settings",
 		SupportsStructuredOutput: true,
 	},
 }
