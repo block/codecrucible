@@ -183,6 +183,34 @@ override limits. Cerebras models with no configured pricing emit a warning:
 reported costs exclude their usage and `--max-cost` cannot enforce that spend.
 Model listing discovers IDs; it does not populate pricing or capabilities.
 
+The `zai-glm-5.3-flash` profile is an explicit opt-in for Cerebras deployments
+that support JSON Schema output. It requires a full, case-insensitive name
+match; shorter or custom IDs retain unknown-model defaults. Keep the actual
+endpoint ID in local configuration, for example:
+
+```bash
+export PHASES_ANALYSIS_MODEL=zai-glm-5.3-flash
+export PHASES_ANALYSIS_MODEL_PARAMS_JSON='{"model":"YOUR_DEPLOYMENT_ID"}'
+codecrucible scan ./target --provider cerebras --dry-run
+codecrucible scan ./target --provider cerebras --output results.sarif
+```
+
+The profile uses provisional 128K context and 32768 output settings. Pricing
+is unconfigured: reported costs exclude this model, and `--max-cost` cannot
+enforce its spend. Configure verified limits and contract pricing under
+`models:` before relying on large-repository sizing or cost estimates.
+JSON Schema requests and a full analysis/audit scan were live-tested against
+an operator-configured deployment; this does not establish every deployment's
+capabilities or maximum limits. The output allowance includes reasoning tokens;
+an 8192-token allowance truncated the tested audit response.
+
+When switching deployments, update the `model` override in local
+`model-params` / `PHASES_ANALYSIS_MODEL_PARAMS_JSON` as well as the selected
+profile. Request-body overrides determine the actual endpoint even after
+changing `--model`. Clear old per-phase output-limit overrides to use the
+profile's default. Set `exact_match: true` on custom `models:` entries to
+exclude them from aliases and partial-name matching too.
+
 ### Custom / Local LLMs
 
 Use `--provider ollama` for Ollama (no API key needed, defaults to `localhost:11434`):

@@ -99,10 +99,24 @@ func TestCerebrasListModels(t *testing.T) {
 	}
 }
 
-func TestCerebrasScanProducesSARIF(t *testing.T) {
+func TestCerebrasGLMFlashScanProducesSARIF(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/chat/completions" {
 			t.Error("wrong path")
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		if body["model"] != "custom-glm-deployment" || body["max_completion_tokens"] != float64(32768) {
+			t.Errorf("incorrect GLM request target or output limit: %v", body)
+		}
+		format, ok := body["response_format"].(map[string]any)
+		if !ok || format["type"] != "json_schema" {
+			t.Error("GLM scan must enforce JSON Schema output")
+		}
+		if _, exists := body["max_tokens"]; exists {
+			t.Error("GLM must use Cerebras max_completion_tokens")
 		}
 		content := `{"repo_name":"fixture","description":"fixture","public_api_routes":[],"security_issues":[],"security_risk":0,"risk_justification":"No issues"}`
 		if err := json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": content}, "finish_reason": "stop"}}, "usage": map[string]int{"prompt_tokens": 100, "completion_tokens": 20}}); err != nil {
@@ -117,7 +131,8 @@ func TestCerebrasScanProducesSARIF(t *testing.T) {
 	v = viper.New()
 	config.SetDefaults(v)
 	v.Set("provider", "cerebras")
-	v.Set("model", "custom-glm")
+	v.Set("model", "zai-glm-5.3-flash")
+	v.Set("model-params-json", `{"model":"custom-glm-deployment"}`)
 	v.Set("cerebras-api-key", "test-key")
 	v.Set("base-url", server.URL)
 	v.Set("prompts-dir", filepath.Join(dir, "prompts", "default"))
