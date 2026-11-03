@@ -340,6 +340,7 @@ func TestLoad_RegistersModelsFromConfigFile(t *testing.T) {
 models:
   # Extend: a local Ollama model.
   - name: llama-4-405b
+    exact_match: true
     provider: ollama
     execution_warning: local model limits are operator supplied
     input_price_per_million: 0.0
@@ -389,6 +390,14 @@ models:
 	}
 	if llama.Provider != "ollama" {
 		t.Errorf("llama Provider: got %q, want ollama", llama.Provider)
+	}
+	if !llama.ExactMatch {
+		t.Error("exact_match was not loaded from configuration")
+	}
+	for _, name := range []string{"llama-4", "custom-llama-4-405b"} {
+		if _, ok := LookupModel(name); ok {
+			t.Errorf("exact-only model matched %q", name)
+		}
 	}
 	if llama.ExecutionWarning != "local model limits are operator supplied" {
 		t.Errorf("llama ExecutionWarning: got %q, want config-file value", llama.ExecutionWarning)
