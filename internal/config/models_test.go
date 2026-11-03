@@ -33,6 +33,7 @@ func TestDefaultModelRegistry_ContainsExpectedModels(t *testing.T) {
 		{"gemini-3.5-flash", 1048576},
 		{"gemini-3.1-flash-lite", 1048576},
 		{"kimi-k2.6", 128000},
+		{"zai-glm-5.3-flash", 1048576},
 	}
 
 	if len(registry) != len(expected) {
@@ -56,6 +57,20 @@ func TestDefaultModelRegistry_ReturnsCopy(t *testing.T) {
 	r2 := DefaultModelRegistry()
 	if r2[0].Name == "mutated" {
 		t.Error("DefaultModelRegistry should return a copy, but mutation leaked")
+	}
+}
+
+func TestGLMFlashProfileRequiresExactMatch(t *testing.T) {
+	for _, name := range []string{"zai-glm-5.3-flash", "ZAI-GLM-5.3-FLASH"} {
+		m, ok := LookupModel(name)
+		if !ok || m.Name != "zai-glm-5.3-flash" || !m.ExactMatch || !m.SupportsStructuredOutput {
+			t.Errorf("exact profile lookup %q failed: %+v, found=%v", name, m, ok)
+		}
+	}
+	for _, name := range []string{"glm", "zai-glm-5.3", "custom-zai-glm-5.3-flash", "zai-glm-5.3-flash-preview"} {
+		if m, ok := LookupModel(name); ok {
+			t.Errorf("unmatched model %q inherited profile %q", name, m.Name)
+		}
 	}
 }
 

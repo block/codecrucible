@@ -13,7 +13,8 @@ import (
 // (Viper uses mapstructure for Unmarshal).
 type ModelConfig struct {
 	Name                       string  `yaml:"name"                                  mapstructure:"name"`
-	Provider                   string  `yaml:"provider"                              mapstructure:"provider"` // "databricks", "anthropic", "openai", "google"
+	ExactMatch                 bool    `yaml:"exact_match"                           mapstructure:"exact_match"` // Exclude this profile from aliases and partial-name matching.
+	Provider                   string  `yaml:"provider"                              mapstructure:"provider"`    // "databricks", "anthropic", "openai", "google"
 	Endpoint                   string  `yaml:"endpoint"                              mapstructure:"endpoint"`
 	ExecutionWarning           string  `yaml:"execution_warning"                     mapstructure:"execution_warning"`
 	InputPricePerM             float64 `yaml:"input_price_per_million"               mapstructure:"input_price_per_million"`
@@ -350,6 +351,22 @@ var defaultModels = []ModelConfig{
 		ExecutionWarning:         "kimi-k2.6 uses provisional planning rates of $2/M input and $8/M output, not verified Cerebras contract prices; 128K context and 8192 output are fallback limits. Override models: with verified deployment settings. Cost limits use these assumed rates and cannot guarantee actual billed spend",
 		SupportsStructuredOutput: true,
 	},
+	{
+		// Opt-in public profile. Keep deployment IDs in local model-params.
+		// JSON Schema was verified on one deployment; other deployments must
+		// explicitly select this profile or configure their own capabilities.
+		// Upstream specifies a 1M context and 128K output. Cerebras defaults
+		// reasoning_effort to max; keep deployment-specific routing in config.
+		Name:                     "zai-glm-5.3-flash",
+		ExactMatch:               true,
+		Provider:                 "cerebras",
+		Endpoint:                 "zai-glm-5.3-flash/invocations",
+		ContextLimit:             1048576,
+		MaxOutputTokens:          131072,
+		Encoding:                 "cl100k_base",
+		ExecutionWarning:         "zai-glm-5.3-flash uses upstream 1M context and 128K output limits; Cerebras deployment limits may differ and contract pricing is unverified. Override models: with deployment-specific settings",
+		SupportsStructuredOutput: true,
+	},
 }
 
 // EstimateInputCost returns the input-token charge for one request. Providers
@@ -427,8 +444,9 @@ func DefaultModelRegistry() []ModelConfig {
 }
 
 // LookupModel finds a model by name using case-insensitive partial matching.
-// It matches if either the query contains a known model name, or a known model
-// name contains the query. This handles Databricks-prefixed names like
+// Unless a profile requires an exact match, it matches if either the query
+// contains a known model name, or a known model name contains the query.
+// This handles Databricks-prefixed names like
 // "databricks-claude-opus-4-5" matching "claude-opus-4".
 func LookupModel(name string) (ModelConfig, bool) {
 	modelsMu.RLock()
@@ -444,7 +462,7 @@ func LookupModel(name string) (ModelConfig, bool) {
 	// user registry entries above authoritative, including a custom "kimi".
 	if isKimiAlias(name) {
 		for _, m := range defaultModels {
-			if strings.EqualFold(m.Name, "kimi-k2.6") {
+			if strings.EqualFold(m.Name, "kimi-k2.6") && !m.ExactMatch {
 				return m, true
 			}
 		}
@@ -455,6 +473,9 @@ func LookupModel(name string) (ModelConfig, bool) {
 	bestLen := 0
 	found := false
 	for _, m := range defaultModels {
+		if m.ExactMatch {
+			continue
+		}
 		mLower := strings.ToLower(m.Name)
 		if strings.Contains(lower, mLower) || strings.Contains(mLower, lower) {
 			if len(m.Name) > bestLen {

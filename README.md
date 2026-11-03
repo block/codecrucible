@@ -183,6 +183,41 @@ override limits. Cerebras models with no configured pricing emit a warning:
 reported costs exclude their usage and `--max-cost` cannot enforce that spend.
 Model listing discovers IDs; it does not populate pricing or capabilities.
 
+The `zai-glm-5.3-flash` profile is an explicit opt-in for Cerebras deployments
+that support JSON Schema output. It requires a full, case-insensitive name
+match; shorter or custom IDs retain unknown-model defaults. Keep the actual
+endpoint ID in local configuration, for example:
+
+```bash
+export PHASES_ANALYSIS_MODEL=zai-glm-5.3-flash
+export PHASES_ANALYSIS_MODEL_PARAMS_JSON='{"model":"YOUR_DEPLOYMENT_ID","reasoning_effort":"max"}'
+codecrucible scan ./target --provider cerebras --dry-run
+codecrucible scan ./target --provider cerebras --output results.sarif
+```
+
+The profile uses the upstream model limits: 1,048,576 context tokens and
+131,072 output tokens (including reasoning). Cerebras supports `low`, `high`,
+and `max` reasoning effort for this model and defaults to `max`; reasoning
+cannot be disabled. The example makes `max` explicit. See the
+[model documentation](https://docs.z.ai/guides/vlm/glm-5.3-flash) and
+[Cerebras reasoning controls](https://inference-docs.cerebras.ai/capabilities/reasoning).
+Deployment-specific limits may be lower; override them under `models:` or with
+per-phase context/output settings when necessary. JSON Schema output, `max`
+reasoning, and the 131,072-token output allowance were accepted in a live
+request, and a complete analysis/audit scan was verified. This does not
+establish maximum-length generation or a fully occupied 1M-token context.
+
+Pricing is unconfigured: reported costs exclude this model, and `--max-cost`
+cannot enforce its spend. Configure contract pricing under `models:` before
+relying on cost estimates.
+
+When switching deployments, update the `model` override in local
+`model-params` / `PHASES_ANALYSIS_MODEL_PARAMS_JSON` as well as the selected
+profile. Request-body overrides determine the actual endpoint even after
+changing `--model`. Clear old per-phase output-limit overrides to use the
+profile's default. Set `exact_match: true` on custom `models:` entries to
+exclude them from aliases and partial-name matching too.
+
 ### Custom / Local LLMs
 
 Use `--provider ollama` for Ollama (no API key needed, defaults to `localhost:11434`):
