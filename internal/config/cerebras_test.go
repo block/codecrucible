@@ -1,7 +1,6 @@
 package config
 
 import (
-	"math"
 	"strings"
 	"testing"
 
@@ -54,14 +53,8 @@ func TestGLMFlashResolvesCerebrasAcrossPhases(t *testing.T) {
 		if pc.ModelCfg.ContextLimit != 1048576 || pc.ModelCfg.MaxOutputTokens != 131072 {
 			t.Errorf("%s lost upstream GLM token limits", phase)
 		}
-		if got := pc.ModelCfg.EstimateCost(1_000_000, 100_000); math.Abs(got-0.03976) > 1e-9 {
-			t.Errorf("%s reference cost = %f, want 0.03976", phase, got)
-		}
-		if !strings.Contains(pc.ModelCfg.ExecutionWarning, "deployment limits may differ") || !strings.Contains(pc.ModelCfg.ExecutionWarning, "OpenRouter reference rates") || !strings.Contains(pc.ModelCfg.ExecutionWarning, "cannot guarantee actual billed spend") {
-			t.Errorf("%s must disclose unverified limits and assumed pricing: %q", phase, pc.ModelCfg.ExecutionWarning)
-		}
-		if strings.Contains(pc.ModelCfg.ExecutionWarning, "pricing is not configured") {
-			t.Errorf("%s incorrectly reports missing pricing: %q", phase, pc.ModelCfg.ExecutionWarning)
+		if !strings.Contains(pc.ModelCfg.ExecutionWarning, "deployment limits may differ") || !strings.Contains(pc.ModelCfg.ExecutionWarning, "--max-cost cannot enforce") {
+			t.Errorf("%s must disclose unverified limits and missing pricing: %q", phase, pc.ModelCfg.ExecutionWarning)
 		}
 	}
 }
