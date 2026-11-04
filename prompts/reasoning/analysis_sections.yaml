@@ -1,0 +1,11 @@
+# Always included: feature sampling must not hide an unfamiliar attack surface.
+sections:
+  coverage:
+    title: "Security boundaries and invariants"
+    features: []
+    content: |
+      Follow attacker influence across identity, permissions, data interpreters,
+      storage, outbound requests, and sensitive outputs where relevant. Also
+      consider resource and memory safety, arithmetic, lifetime, concurrency,
+      protocol state, and application-specific business invariants. Treat this
+      list as a reminder, not a limit or a demand for one finding per category.

@@ -1,0 +1,3 @@
+# The experiment judges the observed mechanism rather than injecting a CWE
+# checklist derived from the discovery model's potentially incorrect label.
+cwe_prompts: {}

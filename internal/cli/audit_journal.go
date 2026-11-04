@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/block/codecrucible/internal/auditcore"
+	"github.com/block/codecrucible/internal/ingest"
 	"github.com/block/codecrucible/internal/llm"
 	"github.com/block/codecrucible/internal/provenance"
 	"github.com/block/codecrucible/internal/sarif"
@@ -16,6 +17,35 @@ type auditJournal struct {
 	policy    string
 	revisions map[string]string
 	accepted  map[string]auditcore.Decision
+}
+
+// Excluded candidates remain reconstructable observations with explicit policy
+// reasons. Finish gives each one a filtered terminal disposition.
+func (j *auditJournal) excludeCandidates(candidates []NewFinding, fileMap ingest.FileMap) error {
+	if j == nil || j.ledger == nil {
+		return nil
+	}
+	for _, candidate := range candidates {
+		doc := sarif.AssignFindingIDs(buildAuditCandidate(candidate, fileMap))
+		doc.ProducerID = candidate.ProducerID
+		doc.ObservationOffset = candidate.ProducerOrdinal
+		op := fmt.Sprintf("audit-excluded/%s/%d", candidate.ProducerID, candidate.ProducerOrdinal)
+		if err := j.ledger.Observe(op, &doc); err != nil {
+			return err
+		}
+		raw, err := json.Marshal(candidate)
+		if err != nil {
+			return err
+		}
+		for _, run := range doc.Runs {
+			for _, result := range run.Results {
+				if err := j.ledger.Discard(op, result.Properties.Provenance.RevisionID, "audit_discovery_disabled", raw); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
 }
 
 func newAuditJournal(client llm.Client, doc sarif.SARIFDocument, policy string) *auditJournal {
