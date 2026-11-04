@@ -159,7 +159,7 @@ func claimIDs(t *testing.T, req llm.ChatRequest) []string {
 		t.Fatal("request has no claims")
 	}
 	var body struct {
-		Claims []auditClaimV2 `json:"claims_to_verify"`
+		Claims []auditClaim `json:"claims_to_verify"`
 	}
 	if err := json.NewDecoder(strings.NewReader(content[i:])).Decode(&body); err != nil {
 		t.Fatal(err)

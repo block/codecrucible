@@ -18,6 +18,7 @@ type Import struct {
 
 type importRequest struct {
 	name       string
+	exact      string // Prefer an existing literal path over inferred extensions.
 	candidates []string
 	many       bool
 	skip       string
@@ -78,7 +79,11 @@ func (ix *Index) buildImports() {
 				imp.Status, imp.Reason = "skipped", req.skip
 			} else {
 				vendor := false
-				for _, candidate := range req.candidates {
+				candidates := req.candidates
+				if _, exists := ix.files[req.exact]; req.exact != "" && exists {
+					candidates = []string{req.exact}
+				}
+				for _, candidate := range candidates {
 					if vendored(candidate) {
 						vendor = true
 						continue

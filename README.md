@@ -741,11 +741,20 @@ roots), explicit Kotlin imports, and quoted C/C++ includes. External and
 vendored imports are skipped; missing and ambiguous candidates remain
 unresolved. Unsupported import forms use the existing directory grouping.
 Language-specific readers produce source facts, not security rules or verdicts.
+Relative JavaScript/TypeScript imports prefer an exact admitted file, then
+try source extensions and index files, including dotted basenames such as
+`./config.types`. Multiple inferred matches remain ambiguous.
 
 Small repositories keep the single-chunk path. Larger scans keep whole files
 together where the token budget permits, assign dependencies alongside their
 importers, and use short declaration summaries for dependencies in other
-chunks. A few small, high-priority files can be shared. Files larger than a
+chunks. Graph grouping is compared with directory grouping at the same budget.
+It is selected only when it improves chunk count, unique dependency-edge
+co-location, or duplicated bytes without worsening another measure; ties and
+tradeoffs keep directory grouping. Both candidates retain cross-chunk summaries
+and are checked against the rendered XML budget. These are packing measures,
+not evidence of better vulnerability detection.
+A few small, high-priority files can be shared. Files larger than a
 chunk budget remain in the coverage report and cause an incomplete-analysis
 warning; a manifest entry alone does not count as analyzed source.
 
@@ -819,6 +828,11 @@ with jitter and respect `Retry-After`. HTML 403 responses from intermediaries
 use the same policy; JSON/plain-text permission errors and HTTP 401 fail
 immediately. Cancellation stops retries. Audit additionally retries malformed,
 truncated, or incomplete verdict output once after attempting local JSON repair.
+Valid verdicts are retained, and only unassessed claims are retried. Both audit
+contracts match by `finding_id`, so a refined title or location cannot invalidate
+another finding's verdict. Older responses without IDs can match only an exact,
+unique original title/file/line key. Primary source and retrieved excerpts use
+the same original line numbering.
 Both generations count toward reported token usage and cost. Transport retry
 exhaustion does not start a second audit-level HTTP retry cycle.
 

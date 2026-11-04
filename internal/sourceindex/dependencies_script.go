@@ -16,6 +16,7 @@ func javascriptImports(file, text string) []importRequest {
 		raw := m[1]
 		req := importRequest{name: raw}
 		if strings.HasPrefix(raw, "./") || strings.HasPrefix(raw, "../") {
+			req.exact = path.Join(dir, raw)
 			req.candidates = resolveJSImport(dir, raw)
 		} else {
 			req.skip = "external_or_unsupported_import"

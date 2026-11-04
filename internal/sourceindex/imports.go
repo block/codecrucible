@@ -34,11 +34,15 @@ func resolveJSImport(dir, importPath string) []string {
 	resolved := path.Join(dir, importPath)
 
 	ext := path.Ext(resolved)
-	if ext != "" {
-		return []string{resolved}
+	for _, supported := range jsExtensions {
+		if ext == supported {
+			return []string{resolved}
+		}
 	}
 
-	var candidates []string
+	// A dotted basename (e.g. config.types) can still omit the source
+	// extension. Exact admitted files take precedence during resolution.
+	candidates := []string{resolved}
 	for _, e := range jsExtensions {
 		candidates = append(candidates, resolved+e)
 	}

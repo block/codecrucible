@@ -505,6 +505,11 @@ func (l *PromptLoader) AssembleAuditMessages(params AuditParams) ([]Message, err
 	userContent = strings.ReplaceAll(userContent, "{supplementary_context}", supSection)
 
 	system := strings.ReplaceAll(ap.SystemMessage, "{production_only_gate}", prodGate)
+	if ap.Contract != "v2" {
+		system += "\nReturn exactly one audited_findings entry per claim, copying its finding_id exactly. " +
+			"The ID identifies the original claim independently of its title or source location. " +
+			"Source lines use N| prefixes; cite those original line numbers. Put refined source walkthroughs in code_path."
+	}
 
 	// Append JSON formatting rules with schema.
 	jsonRules := strings.ReplaceAll(ap.JSONFormattingRules, "{schema}", params.Schema)

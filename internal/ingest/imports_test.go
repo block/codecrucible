@@ -14,6 +14,7 @@ import * as baz from './components/baz.ts'
 	got := ParseImports("src/app.ts", content)
 
 	want := map[string]bool{
+		"src/utils":             true,
 		"src/utils.ts":          true,
 		"src/utils.tsx":         true,
 		"src/utils.js":          true,
@@ -27,6 +28,7 @@ import * as baz from './components/baz.ts'
 		"src/utils/index.mjs":   true,
 		"src/utils/index.cjs":   true,
 		"lib/bar.ts":            true,
+		"lib/bar":               true,
 		"lib/bar.tsx":           true,
 		"lib/bar.js":            true,
 		"lib/bar.jsx":           true,

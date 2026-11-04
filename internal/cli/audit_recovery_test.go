@@ -157,12 +157,12 @@ func TestAuditTotalTransportFailureAndCancellation(t *testing.T) {
 }
 
 func TestAuditRejectsDuplicateOrForeignVerdicts(t *testing.T) {
-	expected := map[auditFindingKey]bool{{"a.go", 1, "First"}: true}
+	expected := []auditClaim{{FindingID: "first", FilePath: "a.go", StartLine: 1, Issue: "First"}}
 	valid := AuditedFinding{OriginalIssue: "First", FilePath: "a.go", StartLine: 1, Verdict: "confirmed", Confidence: .9}
 	foreign := valid
 	foreign.FilePath = "b.go"
 	for _, verdicts := range [][]AuditedFinding{{valid, valid}, {foreign}} {
-		if validateAuditCoverage(AuditResult{AuditedFindings: verdicts}, expected) == nil {
+		if accepted, err := acceptLegacyVerdicts(expected, verdicts); err == nil || len(accepted) != 0 {
 			t.Fatal("invalid verdict coverage accepted")
 		}
 	}
