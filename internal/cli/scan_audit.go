@@ -139,7 +139,7 @@ func runAuditPhase(
 	// Files shared across batches get sent more than once — a deliberate
 	// tradeoff: more tokens, but each call is stateless and can be retried
 	// without coordination.
-	auditCall := func(batch []auditClaim, label string) (*llm.ChatResponse, error) {
+	auditCall := func(batch []auditClaim, label, repair string) (*llm.ChatResponse, error) {
 		var cweIDs []string
 		filesNeeded := make(map[string]bool)
 		for _, f := range batch {
@@ -201,6 +201,9 @@ func runAuditPhase(
 		})
 		if err != nil {
 			return nil, fmt.Errorf("assemble audit prompt: %w", err)
+		}
+		if repair != "" {
+			messages[len(messages)-1].Content += "\n\n" + repair
 		}
 
 		var estTokens int

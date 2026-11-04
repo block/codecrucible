@@ -787,7 +787,11 @@ chunk budget remain in the coverage report and cause an incomplete-analysis
 warning; a manifest entry alone does not count as analyzed source.
 
 Audit can request additional numbered excerpts from the same indexed bytes,
-independent of the original analysis chunk. `--audit-from` builds a fresh index
+independent of the original analysis chunk. Retrieval includes caller and route
+snippets together with locally resolved wrapper or middleware definitions, including
+function values passed to registration calls. These are evidence candidates;
+the auditor must still establish which controls apply and in what order.
+`--audit-from` builds a fresh index
 of the supplied checkout and keeps its existing drift checks and finding IDs.
 Supplementary context retains its separate loading, packing, and compression
 policy.
@@ -933,7 +937,10 @@ behavior. Explicit supplementary context can support an assumption, but cannot
 become a source location.
 
 V3 retries invalid claims individually and permits one bounded local-context
-expansion. Its context artifacts record included ranges and omissions. Grouped
+expansion. It can request up to eight admitted source ranges or exact declaration
+names in a specified local file. Ambiguous names, unavailable files, and exhausted
+budgets are reported explicitly; no source is executed or fetched. Its context
+artifacts record requests, included ranges, and omissions. Grouped
 claims can produce separately audited children with stable IDs and `split_from`
 lineage. An unresolved remainder remains visible unless the child records retain
 all original material. `--semantic-dedup report` adds attributed duplicate

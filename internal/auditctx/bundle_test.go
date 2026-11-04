@@ -27,3 +27,39 @@ func TestBundleBoundedAndRepeatable(t *testing.T) {
 		t.Fatal("omissions lost")
 	}
 }
+
+func TestNamedContextRequestsRespectAdmissionAndBudget(t *testing.T) {
+	ix := NewIndex(map[string]string{
+		"entry.ts":    "export function run() { return value; }\n",
+		"identity.ts": "export function bindOwner(req) { req.owner = req.auth.id; }\n",
+		"overload.ts": "export function choose(x: string) {}\nexport function choose(x: number) {}\n",
+	})
+	requests := []auditcore.ContextRequest{
+		{File: "identity.ts", Symbol: "bindOwner"},
+		{File: "overload.ts", Symbol: "choose"},
+		{File: "identity.ts", Symbol: "missing"},
+		{File: "../identity.ts", Symbol: "bindOwner"},
+		{File: "identity.ts", Start: 1, End: 121},
+	}
+	count := func(s string) int { return len(s) }
+	b := ix.Bundle([]Claim{{"entry.ts", 1, 1}}, nil, 5000, count, requests)
+	want := []string{"included", "ambiguous_symbol", "symbol_not_found", "outside_scope", "invalid_range"}
+	for i, status := range want {
+		if b.Requests[i].Status != status {
+			t.Fatalf("request %d: %+v", i, b.Requests[i])
+		}
+	}
+	if !strings.Contains(b.PromptText(), "req.owner = req.auth.id") || !strings.Contains(b.PromptText(), "symbol_not_found") {
+		t.Fatal("request evidence or omissions absent", b.PromptText())
+	}
+	if again := ix.Bundle([]Claim{{"entry.ts", 1, 1}}, nil, 5000, count, requests); again.Fingerprint != b.Fingerprint {
+		t.Fatal("request bundle is not repeatable")
+	}
+	if small := ix.Bundle(nil, nil, 1, count, requests[:1]); small.Requests[0].Status != "budget_exhausted" || len(small.Included) != 0 {
+		t.Fatal("request escaped budget", small)
+	}
+	_, records := ix.ResolveRequests(make([]auditcore.ContextRequest, 100))
+	if len(records) != maxContextRequests+1 || records[maxContextRequests].Status != "request_limit" {
+		t.Fatal("request limit not enforced", records)
+	}
+}

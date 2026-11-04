@@ -126,6 +126,34 @@ func TestLegacyVerdictIdentityIsUnambiguous(t *testing.T) {
 	}
 }
 
+func TestLegacyAuditRetryExplainsIdentityMismatch(t *testing.T) {
+	doc := sarif.AssignFindingIDs(auditFixture())
+	claims := auditClaims(doc)
+	calls := 0
+	client := auditClientFunc(func(_ context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+		calls++
+		if calls == 1 {
+			return legacyResponse(
+				AuditedFinding{FindingID: claims[0].FindingID, Verdict: "confirmed", Confidence: .9},
+				AuditedFinding{FindingID: claims[1].FindingID, OriginalIssue: "rewritten title", FilePath: "wrong.go", StartLine: 99, Verdict: "confirmed", Confidence: .9}), nil
+		}
+		if got := claimIDs(t, req); !reflect.DeepEqual(got, []string{claims[1].FindingID}) {
+			t.Fatalf("unexpected retry claims: %v", got)
+		}
+		text := req.Messages[len(req.Messages)-1].Content
+		for _, want := range []string{"original_issue: expected", "file_path: expected", "start_line: expected", "required_identity", claims[1].FindingID, claims[1].Issue, claims[1].FilePath} {
+			if !strings.Contains(text, want) {
+				t.Fatalf("repair does not explain %q: %s", want, text)
+			}
+		}
+		return legacyResponse(AuditedFinding{FindingID: claims[1].FindingID, OriginalIssue: claims[1].Issue, FilePath: claims[1].FilePath, StartLine: claims[1].StartLine, Verdict: "confirmed", Confidence: .9}), nil
+	})
+	got, _, _, err := runLegacyFixture(doc, client)
+	if err != nil || calls != 2 || got.Runs[0].Results[1].Properties.AuditStatus != "confirmed" {
+		t.Fatalf("repair failed: calls=%d err=%v results=%+v", calls, err, got)
+	}
+}
+
 func TestAuditFallbackIDsCannotCollideWithSavedIDs(t *testing.T) {
 	results := []sarif.SARIFResult{
 		{},
