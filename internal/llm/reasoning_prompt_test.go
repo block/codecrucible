@@ -8,7 +8,14 @@ import (
 )
 
 func TestReasoningPromptSetContract(t *testing.T) {
-	l := NewPromptLoader(os.DirFS("../../prompts/reasoning"))
+	for _, name := range []string{"reasoning", "reasoning-recall"} {
+		t.Run(name, func(t *testing.T) { assertReasoningPromptSetContract(t, name) })
+	}
+}
+
+func assertReasoningPromptSetContract(t *testing.T, name string) {
+	t.Helper()
+	l := NewPromptLoader(os.DirFS("../../prompts/" + name))
 	if _, err := l.Fingerprint(); err != nil {
 		t.Fatal(err)
 	}
@@ -76,6 +83,22 @@ func TestReasoningPromptSetContract(t *testing.T) {
 					t.Errorf("unexpanded placeholder %s", placeholder)
 				}
 			}
+		}
+	}
+}
+
+func TestReasoningRecallIsolatesDiscovery(t *testing.T) {
+	for _, name := range []string{"audit.yaml", "cwe_deep_analysis.yaml", "feature_detection.yaml", "context_compress.yaml"} {
+		baseline, err := os.ReadFile("../../prompts/reasoning/" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		candidate, err := os.ReadFile("../../prompts/reasoning-recall/" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(baseline) != string(candidate) {
+			t.Errorf("recall experiment changes %s outside discovery", name)
 		}
 	}
 }

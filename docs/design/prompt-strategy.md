@@ -54,6 +54,23 @@ schema and excludes additions even if the model ignores it. Excluded candidates
 remain observations in the lineage ledger with an explicit policy reason and a
 filtered disposition. Other sets continue to allow additions by default.
 
+`prompts/reasoning-recall` is a separate discovery experiment. It retains the
+`reasoning` feature-detection, audit, CWE, and context-compression templates
+unchanged. Its always-included coverage prompts ask the model to review local
+authorization boundaries per operation, dangerous transformations and recursive
+object operations, credential lifecycles and retained compatibility paths,
+stateful invariants, and secondary interfaces. Independently fixable causes
+should remain separate even when they participate in the same exploit chain.
+The reporting rules require a narrow, concrete primary location for systemic
+findings. The experiment sets no finding quota and does not weaken the evidence
+requirements or introduce language-specific detector code.
+
+This variant may increase findings, output tokens, audit work, and false
+positives. Evaluate it against `reasoning` as well as `default`, recording the
+actual source bundles. A larger result count is useful only when it represents
+additional supported causes. Keep both experimental sets opt-in until held-out
+evaluation supports a change in defaults.
+
 Use the set explicitly:
 
 ```bash
