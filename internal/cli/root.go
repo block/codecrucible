@@ -65,6 +65,8 @@ for security vulnerabilities using LLM-based analysis and produces SARIF output.
 	rootCmd.AddCommand(newScanCommand())
 	rootCmd.AddCommand(newListEndpointsCommand())
 	rootCmd.AddCommand(newInitCommand())
+	rootCmd.AddCommand(newValidateLineageCommand())
+	rootCmd.AddCommand(newEvaluateAuditCommand())
 
 	return rootCmd
 }

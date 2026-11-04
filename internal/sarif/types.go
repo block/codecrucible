@@ -1,5 +1,7 @@
 package sarif
 
+import "github.com/block/codecrucible/internal/auditcore"
+
 // AnalysisResult represents the structured output from the LLM security analysis.
 type AnalysisResult struct {
 	RepoName          string          `json:"repo_name"`
@@ -18,16 +20,17 @@ type APIRoute struct {
 
 // SecurityIssue describes a single finding from the LLM analysis.
 type SecurityIssue struct {
-	Issue            string         `json:"issue"`
-	FilePath         string         `json:"file_path"`
-	StartLine        int            `json:"start_line"`
-	EndLine          int            `json:"end_line"`
-	TechnicalDetails string         `json:"technical_details"`
-	Severity         float64        `json:"severity"`
-	CWEID            string         `json:"cwe_id"`
-	Summary          string         `json:"summary"`
-	Remediation      string         `json:"remediation"`
-	CodePath         []CodePathStep `json:"code_path"`
+	FindingEvidence  []auditcore.NamedEvidence `json:"finding_evidence"`
+	Issue            string                    `json:"issue"`
+	FilePath         string                    `json:"file_path"`
+	StartLine        int                       `json:"start_line"`
+	EndLine          int                       `json:"end_line"`
+	TechnicalDetails string                    `json:"technical_details"`
+	Severity         float64                   `json:"severity"`
+	CWEID            string                    `json:"cwe_id"`
+	Summary          string                    `json:"summary"`
+	Remediation      string                    `json:"remediation"`
+	CodePath         []CodePathStep            `json:"code_path"`
 }
 
 // CodePathStep is a source-backed step in the reported exploit path.
@@ -44,9 +47,11 @@ type CodePathStep struct {
 
 // SARIFDocument is the top-level SARIF v2.1.0 envelope.
 type SARIFDocument struct {
-	Schema  string     `json:"$schema"`
-	Version string     `json:"version"`
-	Runs    []SARIFRun `json:"runs"`
+	ObservationOffset int        `json:"-"`
+	ProducerID        string     `json:"-"`
+	Schema            string     `json:"$schema"`
+	Version           string     `json:"version"`
+	Runs              []SARIFRun `json:"runs"`
 }
 
 // SARIFRun groups tool information, results, and invocations.
@@ -151,21 +156,29 @@ type FindingProvenance struct {
 // FindingProperties is the per-finding record. Rules are shared by results with
 // the same title, so finding-specific state must never be stored on the rule.
 type FindingProperties struct {
-	ReportedLocations  []SARIFLocation    `json:"reportedLocations,omitempty"`
-	LocationWarnings   []string           `json:"locationWarnings,omitempty"`
-	Provenance         *FindingProvenance `json:"provenance,omitempty"`
-	FindingID          string             `json:"findingId,omitempty"`
-	Verified           bool               `json:"verified"`
-	AuditStatus        string             `json:"auditStatus,omitempty"`
-	AuditConfidence    *float64           `json:"auditConfidence,omitempty"`
-	AuditJustification string             `json:"auditJustification,omitempty"`
-	AuditBlockingCode  string             `json:"auditBlockingCode,omitempty"`
-	AuditReasons       []string           `json:"auditReasons,omitempty"`
-	Severity           *float64           `json:"severity,omitempty"`
-	CWE                string             `json:"cwe,omitempty"`
-	Summary            string             `json:"summary,omitempty"`
-	Remediation        string             `json:"remediation,omitempty"`
-	TechnicalDetails   string             `json:"technicalDetails,omitempty"`
+	InitialEvidence    []auditcore.NamedEvidence `json:"initialEvidence,omitempty"`
+	OriginOrdinal      int                       `json:"-"`
+	AuditIntegrity     *auditcore.Outcome        `json:"auditIntegrity,omitempty"`
+	ParentFindingID    string                    `json:"parentFindingId,omitempty"`
+	ChildFindingIDs    []string                  `json:"childFindingIds,omitempty"`
+	ClaimCoverage      []auditcore.Coverage      `json:"claimCoverage,omitempty"`
+	SemanticDuplicates []string                  `json:"semanticDuplicates,omitempty"`
+	OriginProducerID   string                    `json:"-"`
+	ReportedLocations  []SARIFLocation           `json:"reportedLocations,omitempty"`
+	LocationWarnings   []string                  `json:"locationWarnings,omitempty"`
+	Provenance         *FindingProvenance        `json:"provenance,omitempty"`
+	FindingID          string                    `json:"findingId,omitempty"`
+	Verified           bool                      `json:"verified"`
+	AuditStatus        string                    `json:"auditStatus,omitempty"`
+	AuditConfidence    *float64                  `json:"auditConfidence,omitempty"`
+	AuditJustification string                    `json:"auditJustification,omitempty"`
+	AuditBlockingCode  string                    `json:"auditBlockingCode,omitempty"`
+	AuditReasons       []string                  `json:"auditReasons,omitempty"`
+	Severity           *float64                  `json:"severity,omitempty"`
+	CWE                string                    `json:"cwe,omitempty"`
+	Summary            string                    `json:"summary,omitempty"`
+	Remediation        string                    `json:"remediation,omitempty"`
+	TechnicalDetails   string                    `json:"technicalDetails,omitempty"`
 	// ReportedPath is the model's file path when it named no scanned file and
 	// was repaired to the one scanned file it uniquely matches.
 	ReportedPath string `json:"reportedPath,omitempty"`

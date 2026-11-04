@@ -79,6 +79,7 @@ type ScanControls struct {
 	SkipFeatureDetection     bool     `json:"skipFeatureDetection"`
 	SkipAudit                bool     `json:"skipAudit"`
 	AuditConfidenceThreshold float64  `json:"auditConfidenceThreshold"`
+	SemanticDedup            string   `json:"semanticDedup,omitempty"`
 	AuditBatchSize           int      `json:"auditBatchSize"`
 	ContextBudgetPct         int      `json:"contextBudgetPct"`
 }

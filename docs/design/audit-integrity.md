@@ -1,6 +1,6 @@
 # Audit integrity and finding relationships
 
-Status: proposed.
+Status: opt-in implementation; default promotion and held-out evaluation remain pending.
 
 ## Objective
 
