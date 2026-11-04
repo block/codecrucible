@@ -3,12 +3,13 @@ package llm
 import (
 	"encoding/json"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 )
 
 func TestReasoningPromptSetContract(t *testing.T) {
-	for _, name := range []string{"reasoning", "reasoning-recall"} {
+	for _, name := range []string{"reasoning", "reasoning-recall", "reasoning-investigator"} {
 		t.Run(name, func(t *testing.T) { assertReasoningPromptSetContract(t, name) })
 	}
 }
@@ -100,6 +101,37 @@ func TestReasoningRecallIsolatesDiscovery(t *testing.T) {
 		if string(baseline) != string(candidate) {
 			t.Errorf("recall experiment changes %s outside discovery", name)
 		}
+	}
+}
+
+func TestReasoningInvestigatorIsolatesFraming(t *testing.T) {
+	for _, name := range []string{"analysis_sections.yaml", "audit.yaml", "cwe_deep_analysis.yaml", "feature_detection.yaml", "context_compress.yaml"} {
+		baseline, err := os.ReadFile("../../prompts/reasoning-recall/" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		candidate, err := os.ReadFile("../../prompts/reasoning-investigator/" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(baseline) != string(candidate) {
+			t.Errorf("investigator experiment changes %s outside framing", name)
+		}
+	}
+	baseline, err := NewPromptLoader(os.DirFS("../../prompts/reasoning-recall")).LoadBasePrompt()
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate, err := NewPromptLoader(os.DirFS("../../prompts/reasoning-investigator")).LoadBasePrompt()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if baseline.SystemMessage == candidate.SystemMessage {
+		t.Fatal("investigator framing is unchanged")
+	}
+	baseline.SystemMessage, candidate.SystemMessage = "", ""
+	if !reflect.DeepEqual(baseline, candidate) {
+		t.Fatal("investigator experiment changes the discovery contract outside its system message")
 	}
 }
 

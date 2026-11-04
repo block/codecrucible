@@ -326,6 +326,9 @@ Available sets:
 | Set | Description |
 |-----|-------------|
 | `default` | General-purpose security analysis (used when no `--prompts-dir` is specified) |
+| `reasoning` | Experimental language-agnostic discovery and model-chosen audit verdicts |
+| `reasoning-recall` | Broader discovery coverage with the reasoning auditor |
+| `reasoning-investigator` | Single-pass adversarial investigator framing with reasoning-recall coverage and audit |
 | `core` | Default analysis with the v2 audit contract: evidentiary questions, code-computed verdicts, and weakness-family cards (experimental) |
 | `carlini` | Slim Carlini-style adversarial CTF-researcher prompts |
 | `carlini-curated` | Carlini v2 with targeted suppression rules and line-precision guidance |
@@ -812,6 +815,9 @@ internal/
   logging/              slog-based structured logging
 prompts/                Prompt sets (each subdirectory is a complete set of YAML templates)
   default/                  Default prompt set
+  reasoning/                Experimental model-led discovery and audit
+  reasoning-recall/         Broader discovery coverage
+  reasoning-investigator/   Single-pass adversarial investigator framing
   carlini/                  Carlini-style adversarial prompts
   carlini-curated/          Carlini v2 with targeted suppression
   exploit-proof/            Language-agnostic concrete-exploit gate
