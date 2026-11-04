@@ -756,6 +756,9 @@ func TestChatCompletion_RetriesOpenAIWithoutTemperature(t *testing.T) {
 	if _, ok := reqBody["temperature"]; ok {
 		t.Fatalf("retried request still contains temperature: %v", reqBody["temperature"])
 	}
+	if resp.Sent == nil || !resp.Sent.TemperatureOmitted || resp.Sent.MaxTokensParam != "max_tokens" {
+		t.Fatalf("Sent = %+v, want the retried request's settings", resp.Sent)
+	}
 	if _, ok := modelParams["temperature"]; !ok {
 		t.Fatal("request retry mutated caller-owned model params")
 	}
@@ -1348,5 +1351,21 @@ func TestErrorTypes_ErrorAndUnwrap(t *testing.T) {
 				t.Errorf("Unwrap() = %v, want %v", unwrapped, base)
 			}
 		})
+	}
+}
+
+func TestRequestModel(t *testing.T) {
+	for _, tc := range []struct {
+		req  ChatRequest
+		want string
+	}{
+		{ChatRequest{Model: "kimi", ModelParams: map[string]any{"model": "deployment-id"}}, "deployment-id"},
+		{ChatRequest{Model: "kimi", ModelParams: map[string]any{"model": ""}}, "kimi"},
+		{ChatRequest{Model: "kimi", Endpoint: "serving"}, "kimi"},
+		{ChatRequest{Endpoint: "serving"}, "serving"},
+	} {
+		if got := RequestModel(tc.req); got != tc.want {
+			t.Errorf("RequestModel(%+v) = %q, want %q", tc.req, got, tc.want)
+		}
 	}
 }

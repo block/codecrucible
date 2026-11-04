@@ -15,6 +15,7 @@ import (
 type phaseArtifactWriter struct {
 	paths    map[string]string
 	metadata *sarif.ScanMetadata
+	usage    *modelUsage
 }
 
 type featureDetectionArtifact struct {
@@ -82,6 +83,7 @@ func (w phaseArtifactWriter) WriteFeatureDetection(artifact featureDetectionArti
 
 func (w phaseArtifactWriter) WriteSARIF(phase string, doc sarif.SARIFDocument) error {
 	var err error
+	w.usage.apply(w.metadata)
 	doc, err = prepareSARIF(doc, w.metadata, phase)
 	if err != nil {
 		return err

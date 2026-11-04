@@ -51,7 +51,7 @@ func newScanMetadata(cfg *config.Config) *sarif.ScanMetadata {
 			},
 		},
 		Execution: sarif.ScanExecution{
-			Phases: map[string]sarif.PhaseExecution{}, DetectedFeatures: []string{},
+			Phases: map[string]sarif.PhaseExecution{}, DetectedFeatures: []string{}, Models: []string{},
 			ContextSources: []sarif.ContextExecution{}, ContextPacking: map[string]sarif.ContextPacking{},
 		},
 	}
