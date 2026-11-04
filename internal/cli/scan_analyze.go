@@ -81,18 +81,19 @@ func analyzeChunk(
 
 	chunkLabel := fmt.Sprintf("analysis chunk %d/%d", c.Index+1, c.Total)
 	resp, err := client.ChatCompletion(ctx, llm.ChatRequest{
-		Label:                  chunkLabel,
-		Endpoint:               endpoint,
-		Model:                  modelCfg.Name,
-		Messages:               messages,
-		Temperature:            modelCfg.Temperature,
-		OmitTemperature:        modelCfg.OmitTemperature,
-		MaxTokens:              modelCfg.MaxOutputTokens,
-		UseMaxCompletionTokens: modelCfg.UseMaxCompletionTokens,
-		ResponseSchema:         schema,
-		OutputMode:             outputMode,
-		NativeStructuredOutput: modelCfg.NativeStructuredOutput,
-		ModelParams:            modelParams,
+		Label:                   chunkLabel,
+		SourceBundleFingerprint: fingerprint([]byte(c.XML)),
+		Endpoint:                endpoint,
+		Model:                   modelCfg.Name,
+		Messages:                messages,
+		Temperature:             modelCfg.Temperature,
+		OmitTemperature:         modelCfg.OmitTemperature,
+		MaxTokens:               modelCfg.MaxOutputTokens,
+		UseMaxCompletionTokens:  modelCfg.UseMaxCompletionTokens,
+		ResponseSchema:          schema,
+		OutputMode:              outputMode,
+		NativeStructuredOutput:  modelCfg.NativeStructuredOutput,
+		ModelParams:             modelParams,
 	})
 	if err != nil {
 		// Context overflow is recoverable by the caller (split and retry).
@@ -173,11 +174,16 @@ func analyzeChunk(
 	//   3. Ask the model to reformat its own output against the schema.
 	// Only the third costs money, and only runs when 1+2 both fail.
 	var result sarif.AnalysisResult
+	producer := resp.ProducerID
 	parseErr := json.Unmarshal([]byte(resp.Content), &result)
 	if parseErr != nil {
 		if repaired, changed := llm.RepairJSON(resp.Content); changed {
 			if err := json.Unmarshal([]byte(repaired), &result); err == nil {
 				slog.Info("recovered malformed LLM response via local repair", "chunk", c.Index)
+				producer, err = parsedProducer(client, resp, repaired)
+				if err != nil {
+					return sarif.SARIFDocument{}, usage, chunkCost, err
+				}
 				parseErr = nil
 			}
 		}
@@ -211,9 +217,11 @@ func analyzeChunk(
 			"parse_error", parseErr,
 		)
 		repairResp, repairErr := client.ChatCompletion(ctx, llm.ChatRequest{
-			Label:    chunkLabel + " repair",
-			Endpoint: endpoint,
-			Model:    modelCfg.Name,
+			Label:                   chunkLabel + " repair",
+			Repairs:                 resp.ProducerID,
+			SourceBundleFingerprint: fingerprint([]byte(c.XML)),
+			Endpoint:                endpoint,
+			Model:                   modelCfg.Name,
 			Messages: []llm.Message{{
 				Role: "user",
 				Content: "The following output failed to parse against the required schema " +
@@ -236,6 +244,10 @@ func analyzeChunk(
 			repaired, _ := llm.RepairJSON(repairResp.Content)
 			if err := json.Unmarshal([]byte(repaired), &result); err == nil {
 				slog.Info("recovered malformed LLM response via model reformat", "chunk", c.Index)
+				producer, err = parsedProducer(client, repairResp, repaired)
+				if err != nil {
+					return sarif.SARIFDocument{}, usage, chunkCost, err
+				}
 				parseErr = nil
 			}
 		}
@@ -256,6 +268,7 @@ func analyzeChunk(
 	doc := sarif.Build(result, sarif.FileMap(fileMap), sarif.BuilderConfig{
 		ToolVersion: version,
 	})
+	doc.ProducerID = producer
 	return sarif.ValidateSourceLocations(doc, sarif.FileMap(fileMap)), usage, chunkCost, nil
 }
 

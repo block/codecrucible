@@ -44,7 +44,9 @@ func TestLineageRetainsOriginalAndReplaysIdempotently(t *testing.T) {
 		if err := dec.Decode(&e); err != nil {
 			t.Fatal(err)
 		}
-		records = append(records, e)
+		if e.Type != "operation" {
+			records = append(records, e)
+		}
 	}
 	if records[0].Result.Properties.TechnicalDetails != "original evidence" {
 		t.Fatal("original mutated")
@@ -156,7 +158,7 @@ func TestConcurrentObservationIdentityDoesNotDependOnCompletionOrder(t *testing.
 			t.Fatal("completion order changed identity")
 		}
 	}
-	if lines := bytes.Count(out.Bytes(), []byte{'\n'}); lines != count {
+	if lines := bytes.Count(out.Bytes(), []byte{'\n'}); lines != count*2 {
 		t.Fatalf("concurrent writes lost observations: %d", lines)
 	}
 }

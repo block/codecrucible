@@ -475,7 +475,7 @@ func (l *PromptLoader) AssembleAuditMessages(params AuditParams) ([]Message, err
 
 	// Build CWE-specific analysis section.
 	var cweSection string
-	if ap.Contract == "v2" {
+	if ap.Contract == "v2" || ap.Contract == "v3" {
 		if cweSection, err = l.buildFamilySection(params.CWEIDs); err != nil {
 			return nil, err
 		}
@@ -505,7 +505,7 @@ func (l *PromptLoader) AssembleAuditMessages(params AuditParams) ([]Message, err
 	userContent = strings.ReplaceAll(userContent, "{supplementary_context}", supSection)
 
 	system := strings.ReplaceAll(ap.SystemMessage, "{production_only_gate}", prodGate)
-	if ap.Contract != "v2" {
+	if ap.Contract != "v2" && ap.Contract != "v3" {
 		system += "\nReturn exactly one audited_findings entry per claim, copying its finding_id exactly. " +
 			"The ID identifies the original claim independently of its title or source location. " +
 			"Source lines use N| prefixes; cite those original line numbers. Put refined source walkthroughs in code_path."

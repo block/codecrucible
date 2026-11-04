@@ -93,9 +93,16 @@ request headers and API credentials are not recorded. It is written incrementall
 with owner-only permissions. No lineage file is written for stdout-only scans
 without an artifact directory.
 
-The current ledger records derivation and merge relationships. Explicit child
-claim splitting and semantic duplicate relationships remain separate audit-policy
-work; a recorded model verdict is not proof of exploitability.
+The v2 ledger binds observations to model responses (including repair operations),
+records individual accepted, retried and unresolved audit decisions, and supports
+split and semantic duplicate relationships. Validate either ledger version and
+optionally reconcile final SARIF with:
+
+```bash
+codecrucible validate-lineage results.lineage.jsonl --sarif results.sarif
+```
+
+A recorded model verdict or source quote is not proof of exploitability.
 
 To compare audit prompts or models without analysis variance, replay the audit
 on saved findings: `codecrucible scan REPO --audit-from results.analysis.sarif`.
@@ -266,6 +273,7 @@ Per-phase flags follow the pattern `--{phase}-{flag}` (e.g. `--audit-model`, `--
   --audit-batch-size int               split audit into N-finding batches (default 25)
   --audit-confidence-threshold float   reject findings below this confidence (default 0.3)
   --audit-from string                  audit a saved analysis SARIF instead of running analysis
+  --semantic-dedup string              v3 duplicate relationships: off or report (default report)
   --base-url string                    override default provider URL
   --compress                           compress whitespace in source files to save tokens
   --concurrency int                    max parallel chunks (default 3)
@@ -334,7 +342,7 @@ Available sets:
 
 See [PROMPT_SETS.md](PROMPT_SETS.md) for a fuller walkthrough of when to reach for each set.
 
-Each prompt set directory must contain: `security_analysis_base.yaml`, `analysis_sections.yaml`, `feature_detection.yaml`, `audit.yaml`, and optionally `context_compress.yaml`. A v1 audit (`audit.yaml` without `contract: v2`) also reads `cwe_deep_analysis.yaml`; a v2 audit requires `audit_families.yaml` instead.
+Each prompt set directory must contain: `security_analysis_base.yaml`, `analysis_sections.yaml`, `feature_detection.yaml`, `audit.yaml`, and optionally `context_compress.yaml`. A legacy audit (`audit.yaml` without a contract) also reads `cwe_deep_analysis.yaml`; v2 and v3 audits require `audit_families.yaml` instead.
 
 ## Configuration
 
@@ -906,7 +914,45 @@ evidence never rejects. A v2 audit has no confidence, so
 `--audit-confidence-threshold` does not apply. Findings are matched by
 `findingId`, and claims the response omits are retried once.
 
-Both audit contracts carry more than the files the findings cite. Up to about 24K
+The opt-in `prompts/core` set uses `contract: v3`. V3 binds each assessment to
+an immutable claim revision and digest. It asks separately about attacker
+control, the source weakness, the security boundary, the missing control, and
+the claimed impact. Established and refuted answers require source evidence.
+Consumer and guard expressions must occur in their respective quotes; renamed
+values require explicit, quoted flow steps. A missing guard is represented by
+`guard_state: not_found` with source evidence for the actual protection point. These checks establish source
+correspondence, not whole-program data flow. Unsupported impact stays unresolved.
+Version-dependent framework assumptions require the runtime, version and cited
+behavior. Explicit supplementary context can support an assumption, but cannot
+become a source location.
+
+V3 retries invalid claims individually and permits one bounded local-context
+expansion. Its context artifacts record included ranges and omissions. Grouped
+claims can produce separately audited children with stable IDs and `split_from`
+lineage. An unresolved remainder remains visible unless the child records retain
+all original material. `--semantic-dedup report` adds attributed duplicate
+relationships without hiding findings; `off` disables those extra requests.
+Suppression is deliberately unavailable until held-out duplicate-precision and
+claim-preservation checks pass. Legacy and v2 prompt sets retain their contracts.
+
+Use frozen analysis artifacts to compare audit implementations. The offline
+scorer accepts independently adjudicated labels:
+
+```bash
+codecrucible evaluate-audit results.sarif --labels labels.json
+```
+
+The label file contains `cases` and `pairs` arrays. A case identifies a
+`finding_id` and labels `weakness` as `valid`, `invalid`, or `unknown`; optional
+`impact` is `supported`, `unsupported`, or `unknown`. A child can instead be
+selected by `parent_id`, `file`, `line`, and `claim_contains`. A pair contains
+`left`, `right`, and a Boolean `duplicate`. The report includes missing cases,
+known-positive suppression, invalid/unsupported-impact confirmations, labeled
+duplicate precision with 95% intervals, and recorded audit-model usage. Keep
+tuning cases separate from held-out evaluation and record elapsed time alongside
+each replay.
+
+All audit contracts carry more than the files the findings cite. Up to about 24K
 tokens of excerpts are retrieved per batch, with real line numbers, so the
 auditor can check what decides a claim:
 

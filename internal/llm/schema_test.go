@@ -141,7 +141,7 @@ func TestStrictSchemaObjects(t *testing.T) {
 			}
 		}
 	}
-	for _, raw := range []*json.RawMessage{SecurityAnalysisSchema(), FeatureDetectionSchema(), AuditSchema()} {
+	for _, raw := range []*json.RawMessage{SecurityAnalysisSchema(), SecurityAnalysisSchemaV3(), FeatureDetectionSchema(), AuditSchema(), AuditSchemaV2(), AuditSchemaV3(), DuplicateSchemaV3()} {
 		check(decodeSchemaPayload(t, raw)["schema"])
 	}
 }
