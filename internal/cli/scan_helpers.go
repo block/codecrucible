@@ -240,7 +240,7 @@ func capManifest(paths []string, charBudget int) []string {
 }
 
 // outputEmptySARIF produces a valid SARIF document with zero findings.
-func outputEmptySARIF(cfg *config.Config) error {
+func outputEmptySARIF(cfg *config.Config, startedAt time.Time) error {
 	metadata := newScanMetadata(cfg)
 	source := sourceindex.New(nil)
 	snapshot := source.Snapshot()
@@ -255,6 +255,7 @@ func outputEmptySARIF(cfg *config.Config) error {
 		metadata.Recipe.Prompts.Fingerprint, _ = loader.Fingerprint()
 	}
 	artifacts := newPhaseArtifactWriter(cfg)
+	artifacts.startedAt = startedAt
 	artifacts.metadata = metadata
 	doc := sarif.Build(sarif.AnalysisResult{}, nil, sarif.BuilderConfig{
 		ToolVersion: version,
@@ -274,6 +275,7 @@ func outputEmptySARIF(cfg *config.Config) error {
 	if err != nil {
 		return err
 	}
+	doc = stampInvocationTimes(doc, startedAt, time.Now())
 	output, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshaling SARIF: %w", err)
