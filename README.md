@@ -207,9 +207,13 @@ reasoning, and the 131,072-token output allowance were accepted in a live
 request, and a complete analysis/audit scan was verified. This does not
 establish maximum-length generation or a fully occupied 1M-token context.
 
-Pricing is unconfigured: reported costs exclude this model, and `--max-cost`
-cannot enforce its spend. Configure contract pricing under `models:` before
-relying on cost estimates.
+Planning estimates use **$0.0313 per million input tokens** and **$0.0846 per
+million output tokens**, the headline rates on the
+[OpenRouter model page](https://openrouter.ai/z-ai/glm-5.3-flash) as of
+2026-11-04. Provider prices on that page vary; these reference rates are not
+verified Cerebras billing rates. Reported costs and `--max-cost` use this
+assumption. Configure deployment-specific pricing under `models:` before
+relying on the budget to reflect actual spend.
 
 When switching deployments, update the `model` override in local
 `model-params` / `PHASES_ANALYSIS_MODEL_PARAMS_JSON` as well as the selected

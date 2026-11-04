@@ -357,14 +357,18 @@ var defaultModels = []ModelConfig{
 		// explicitly select this profile or configure their own capabilities.
 		// Upstream specifies a 1M context and 128K output. Cerebras defaults
 		// reasoning_effort to max; keep deployment-specific routing in config.
+		// Planning prices use the OpenRouter model-page headline on 2026-11-04:
+		// https://openrouter.ai/z-ai/glm-5.3-flash (not Cerebras billing rates).
 		Name:                     "zai-glm-5.3-flash",
 		ExactMatch:               true,
 		Provider:                 "cerebras",
 		Endpoint:                 "zai-glm-5.3-flash/invocations",
 		ContextLimit:             1048576,
 		MaxOutputTokens:          131072,
+		InputPricePerM:           0.0313,
+		OutputPricePerM:          0.0846,
 		Encoding:                 "cl100k_base",
-		ExecutionWarning:         "zai-glm-5.3-flash uses upstream 1M context and 128K output limits; Cerebras deployment limits may differ and contract pricing is unverified. Override models: with deployment-specific settings",
+		ExecutionWarning:         "zai-glm-5.3-flash uses OpenRouter reference rates of $0.0313/M input and $0.0846/M output for planning, not verified Cerebras billing rates. Upstream limits are 1M context and 128K output; Cerebras deployment limits may differ. Override models: with deployment-specific settings. Cost limits use these assumed rates and cannot guarantee actual billed spend",
 		SupportsStructuredOutput: true,
 	},
 }
