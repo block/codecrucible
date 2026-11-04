@@ -296,6 +296,7 @@ func loadSupplementaryContext(
 	promptLoader *llm.PromptLoader,
 	contextLimit int,
 	metadata *sarif.ScanMetadata,
+	usage *modelUsage,
 ) (analysisCtx, auditCtx supctx.PackResult, err error) {
 	if len(cfg.ContextSources) == 0 {
 		return
@@ -360,7 +361,7 @@ func loadSupplementaryContext(
 				setPhaseStatus(metadata, "context-compress", "failed", "prompt unavailable; using original context")
 			} else {
 				compressor := supctx.Compressor{
-					Client:                 ccClient,
+					Client:                 usage.wrap("context-compress", ccClient, cc.ModelCfg),
 					Prompt:                 *cp,
 					Counter:                counter,
 					Model:                  cc.ModelCfg.Name,

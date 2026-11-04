@@ -61,6 +61,44 @@ type ChatResponse struct {
 	// prompt-processing and thinking overhead.
 	TimeToFirstToken time.Duration `json:"-"`
 	GenerationTime   time.Duration `json:"-"`
+
+	// Sent describes the request body that produced this response, after the
+	// client's learned fallbacks. Nil when the transport builds no body.
+	Sent *SentRequest `json:"-"`
+}
+
+// SentRequest records request settings as sent on the wire.
+type SentRequest struct {
+	TemperatureOmitted bool   // The body carried no temperature.
+	MaxTokensParam     string // "max_tokens", "max_completion_tokens", or empty.
+}
+
+// RequestModel returns the model ID a request sends to the provider: a
+// model-params override, then the model name, then the serving endpoint.
+func RequestModel(req ChatRequest) string {
+	if model, ok := req.ModelParams["model"].(string); ok && model != "" {
+		return model
+	}
+	if req.Model != "" {
+		return req.Model
+	}
+	return req.Endpoint
+}
+
+func sentRequest(body []byte) *SentRequest {
+	var wire map[string]json.RawMessage
+	if json.Unmarshal(body, &wire) != nil {
+		return nil
+	}
+	sent := &SentRequest{}
+	_, hasTemperature := wire["temperature"]
+	sent.TemperatureOmitted = !hasTemperature
+	if _, ok := wire["max_completion_tokens"]; ok {
+		sent.MaxTokensParam = "max_completion_tokens"
+	} else if _, ok := wire["max_tokens"]; ok {
+		sent.MaxTokensParam = "max_tokens"
+	}
+	return sent
 }
 
 // TokenUsage tracks input and output token consumption.
@@ -339,6 +377,7 @@ func (c *httpClient) ChatCompletion(ctx context.Context, req ChatRequest) (*Chat
 			continue
 		}
 
+		chatResp.Sent = sentRequest(body)
 		return chatResp, nil
 	}
 
