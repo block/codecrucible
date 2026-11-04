@@ -433,6 +433,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	usage := newModelUsage()
 
 	slog.Info("LLM provider configured", "provider", analysis.Provider, "model", modelCfg.Name)
 
@@ -455,11 +456,13 @@ func runScan(cmd *cobra.Command, args []string) error {
 	}
 	artifacts := newPhaseArtifactWriter(cfg)
 	artifacts.metadata = metadata
+	artifacts.usage = usage
 	lineage, lineageFile, err := openLineage(artifacts, metadata)
 	if err != nil {
 		return err
 	}
-	client = traceClient(client, lineage)
+	usage.lineage = lineage
+	client = usage.wrap("analysis", client, modelCfg)
 	if lineageFile != nil {
 		defer func() { _ = lineageFile.Close() }()
 	}
@@ -473,7 +476,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 	}
 
 	// --- Stage 5.25: Load & pack supplementary context ---
-	analysisCtx, auditCtx, err := loadSupplementaryContext(cmd.Context(), cfg, counter, promptLoader, modelCfg.ContextLimit, metadata)
+	analysisCtx, auditCtx, err := loadSupplementaryContext(cmd.Context(), cfg, counter, promptLoader, modelCfg.ContextLimit, metadata, usage)
 	if err != nil {
 		return err
 	}
@@ -504,7 +507,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 		outcome, err := runAnalysisPhases(cmd.Context(), analysisInputs{
 			cfg: cfg, analysis: analysis, client: client, endpoint: endpoint,
 			promptLoader: promptLoader, schema: schema, outputMode: outputMode, repoName: repoName,
-			counter: counter, analysisCtx: analysisCtx, metadata: metadata, artifacts: artifacts, lineage: lineage,
+			counter: counter, analysisCtx: analysisCtx, metadata: metadata, artifacts: artifacts, lineage: lineage, usage: usage,
 			source: source, flatResult: &flatResult, totalTokens: totalTokens,
 		})
 		if err != nil {
@@ -527,10 +530,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 				"provider", audit.Provider, "model", audit.ModelCfg.Name)
 		}
 		recordActualPhase(metadata, "audit", *audit, cfg, auditErr != nil)
-		// Fallback may already be traced; avoid recording it twice.
-		if _, traced := auditClient.(*lineageClient); !traced {
-			auditClient = traceClient(auditClient, lineage)
-		}
+		auditClient = usage.wrap("audit", auditClient, audit.ModelCfg)
 		auditOutputMode := llm.OutputModeForConfig(audit.ModelCfg)
 
 		auditedDoc, auditUsage, auditCost, auditErr := runAuditPhase(
@@ -590,6 +590,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 	}
 
 	// --- Stage 7: Output ---
+	usage.apply(metadata)
 	merged, err = prepareSARIF(merged, metadata, "final")
 	if err != nil {
 		return err
@@ -711,6 +712,7 @@ type analysisInputs struct {
 	metadata     *sarif.ScanMetadata
 	artifacts    phaseArtifactWriter
 	lineage      *provenance.Ledger
+	usage        *modelUsage
 	source       *sourceindex.Index
 	flatResult   *ingest.FlattenResult
 	totalTokens  int
@@ -778,6 +780,7 @@ func runAnalysisPhases(ctx context.Context, in analysisInputs) (out analysisOutc
 				"provider", fd.Provider, "model", fd.ModelCfg.Name)
 		}
 		recordActualPhase(metadata, "feature-detection", *fd, cfg, fdErr != nil)
+		fdClient = in.usage.wrap("feature-detection", fdClient, fd.ModelCfg)
 		fdOutputMode := llm.OutputModeForConfig(fd.ModelCfg)
 		var fdCorrection float64
 		detectedFeatures, fdCorrection, err = runFeatureDetection(ctx, source, repoName, fdClient, fdEndpoint, fd.ModelCfg, promptLoader, fdOutputMode, fd.ModelParams, counter, metadata)

@@ -78,12 +78,13 @@ func checkpointAudit(l *provenance.Ledger, doc *sarif.SARIFDocument) error {
 type lineageClient struct {
 	base     llm.Client
 	ledger   *provenance.Ledger
+	phase    string
 	mu       sync.Mutex
 	attempts map[string]int
 }
 
-func traceClient(base llm.Client, ledger *provenance.Ledger) llm.Client {
-	return &lineageClient{base: base, ledger: ledger, attempts: map[string]int{}}
+func traceClient(base llm.Client, ledger *provenance.Ledger, phase string) llm.Client {
+	return &lineageClient{base: base, ledger: ledger, phase: phase, attempts: map[string]int{}}
 }
 func (c *lineageClient) ChatCompletion(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
 	c.mu.Lock()
@@ -93,7 +94,7 @@ func (c *lineageClient) ChatCompletion(ctx context.Context, req llm.ChatRequest)
 	response, err := c.base.ChatCompletion(ctx, req)
 	prompt, _ := json.Marshal(req.Messages)
 	schema, _ := json.Marshal(req.ResponseSchema)
-	e := provenance.Exchange{Label: req.Label, Model: req.Model, PromptFingerprint: fingerprint(prompt), SchemaFingerprint: fingerprint(schema), Failed: err != nil}
+	e := provenance.Exchange{Label: req.Label, Model: llm.RequestModel(req), PromptFingerprint: fingerprint(prompt), SchemaFingerprint: fingerprint(schema), Failed: err != nil}
 	if response != nil {
 		e.Content = response.Content
 		e.FinishReason = response.FinishReason
@@ -101,7 +102,7 @@ func (c *lineageClient) ChatCompletion(ctx context.Context, req llm.ChatRequest)
 			e.Model = response.Model
 		}
 	}
-	if writeErr := c.ledger.ModelResponse(fmt.Sprintf("request/%s/%d", req.Label, attempt), e); writeErr != nil {
+	if writeErr := c.ledger.ModelResponse(fmt.Sprintf("request/%s/%s/%d", c.phase, req.Label, attempt), e); writeErr != nil {
 		return nil, writeErr
 	}
 	return response, err
