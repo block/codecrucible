@@ -1056,7 +1056,7 @@ func TestApplyAuditVerdicts_NewFindings(t *testing.T) {
 				Confidence:       0.95,
 			},
 			{
-				// Below threshold — should be filtered out.
+				// Below threshold — retained as a suppressed candidate.
 				Issue:      "maybe issue",
 				FilePath:   "src/x.go",
 				StartLine:  1,
@@ -1067,11 +1067,14 @@ func TestApplyAuditVerdicts_NewFindings(t *testing.T) {
 
 	out := applyAuditVerdicts(doc, audit, ingest.FileMap{}, 0.5)
 
-	if len(out.Runs[0].Results) != 1 {
-		t.Fatalf("expected 1 new result, got %d", len(out.Runs[0].Results))
+	if len(out.Runs[0].Results) != 2 {
+		t.Fatalf("expected 2 recorded candidates, got %d", len(out.Runs[0].Results))
 	}
-	if len(out.Runs[0].Tool.Driver.Rules) != 1 {
-		t.Fatalf("expected 1 new rule, got %d", len(out.Runs[0].Tool.Driver.Rules))
+	if len(out.Runs[0].Tool.Driver.Rules) != 2 {
+		t.Fatalf("expected 2 new rules, got %d", len(out.Runs[0].Tool.Driver.Rules))
+	}
+	if len(out.Runs[0].Results[0].Suppressions) != 0 || len(out.Runs[0].Results[1].Suppressions) != 1 {
+		t.Fatal("confidence must affect visibility without losing the candidate")
 	}
 }
 

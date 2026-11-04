@@ -209,17 +209,6 @@ func firstSentence(s string) string {
 	return limitReviewText(strings.TrimRight(s, ".!? "), 300)
 }
 
-func reviewLocation(r SARIFResult) string {
-	if len(r.Locations) == 0 {
-		return "Finding"
-	}
-	p := r.Locations[0].PhysicalLocation
-	if p.Region == nil {
-		return p.ArtifactLocation.URI
-	}
-	return fmt.Sprintf("%s:%d", p.ArtifactLocation.URI, p.Region.StartLine)
-}
-
 func reviewStatus(r SARIFResult) string {
 	p := r.Properties
 	var status string

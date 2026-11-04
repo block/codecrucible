@@ -252,7 +252,9 @@ func (r *auditV2Run) call(ctx context.Context, claims []auditClaim, label string
 			fmt.Fprintf(&codeCtx, "<file path=\"%s\">\n%s</file>\n\n", p, numberedSource(content))
 		}
 	}
-	retrieved, excerpts := r.retrieve(claims, files)
+	cited, _ := citedAuditContext(r.index, r.source, claims, files, r.counter)
+	codeCtx.WriteString(cited)
+	retrieved, excerpts := r.retrieve(claims, files, auditRetrievalBudget-r.counter.Count(cited))
 	codeCtx.WriteString(retrieved)
 	recordSourceBundle(r.metadata, "audit", label, codeCtx.String())
 
@@ -300,16 +302,16 @@ func (r *auditV2Run) call(ctx context.Context, claims []auditClaim, label string
 // retrieve renders context the claims' own files lack. Excerpts are taken
 // round-robin across claims, so each claim gets its most useful context
 // before any claim gets its next.
-func (r *auditV2Run) retrieve(claims []auditClaim, sent map[string]bool) (string, int) {
+func (r *auditV2Run) retrieve(claims []auditClaim, sent map[string]bool, budgets ...int) (string, int) {
 	locations := make([]auditctx.Claim, len(claims))
 	for i, c := range claims {
 		locations[i] = auditctx.Claim{File: c.FilePath, Start: c.StartLine, End: c.EndLine}
 	}
-	return retrieveAuditContext(r.index, locations, sent, r.counter)
+	return retrieveAuditContext(r.index, locations, sent, r.counter, budgets...)
 }
 
 // retrieveAuditContext shares the same extraction and ordering for both audit contracts.
-func retrieveAuditContext(index *auditctx.Index, claims []auditctx.Claim, sent map[string]bool, counter *chunk.TokenCounter) (string, int) {
+func retrieveAuditContext(index *auditctx.Index, claims []auditctx.Claim, sent map[string]bool, counter *chunk.TokenCounter, budgets ...int) (string, int) {
 	if index == nil {
 		return "", 0
 	}
@@ -330,7 +332,11 @@ func retrieveAuditContext(index *auditctx.Index, claims []auditctx.Claim, sent m
 			break
 		}
 	}
-	return auditctx.Render(index, ordered, auditRetrievalBudget, counter.Count)
+	budget := auditRetrievalBudget
+	if len(budgets) > 0 {
+		budget = max(0, budgets[0])
+	}
+	return auditctx.Render(index, ordered, budget, counter.Count)
 }
 
 // otherClaims lists the claims outside batch, one line each.

@@ -98,9 +98,11 @@ type auditFindingKey struct {
 // fall back to location matching, and conflicting duplicates are both ignored.
 func acceptLegacyVerdicts(claims []auditClaim, findings []AuditedFinding) ([]AuditedFinding, error) {
 	want := make(map[string]bool, len(claims))
+	originals := make(map[string]auditClaim, len(claims))
 	byKey := make(map[auditFindingKey]string, len(claims))
 	for _, claim := range claims {
 		want[claim.FindingID] = true
+		originals[claim.FindingID] = claim
 		key := auditFindingKey{claim.FilePath, claim.StartLine, claim.Issue}
 		if _, exists := byKey[key]; exists {
 			byKey[key] = "" // Ambiguous old-style keys must not select a finding.
@@ -132,6 +134,13 @@ func acceptLegacyVerdicts(claims []auditClaim, findings []AuditedFinding) ([]Aud
 	for _, finding := range matched {
 		if counts[finding.FindingID] != 1 {
 			note(fmt.Errorf("audit returned duplicate finding_id %q", finding.FindingID))
+			continue
+		}
+		original := originals[finding.FindingID]
+		if (finding.OriginalIssue != "" && finding.OriginalIssue != original.Issue) ||
+			(finding.FilePath != "" && finding.FilePath != original.FilePath) ||
+			(finding.StartLine != 0 && finding.StartLine != original.StartLine) {
+			note(fmt.Errorf("audit claim identity mismatch for %s", finding.FindingID))
 			continue
 		}
 		switch finding.Verdict {

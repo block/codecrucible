@@ -203,7 +203,7 @@ func analyzeChunk(
 					"chunk %d/%d: %s", c.Index+1, c.Total, message)},
 			}},
 		}}
-		return doc, usage, chunkCost, nil
+		return sarif.ValidateSourceLocations(doc, sarif.FileMap(fileMap)), usage, chunkCost, nil
 	}
 	if parseErr != nil {
 		slog.Warn("local JSON repair failed; asking model to reformat",
@@ -250,13 +250,13 @@ func analyzeChunk(
 				Message: sarif.SARIFMessage{Text: fmt.Sprintf("chunk %d/%d: failed to parse LLM response: %v", c.Index+1, c.Total, parseErr)},
 			}},
 		}}
-		return doc, usage, chunkCost, nil
+		return sarif.ValidateSourceLocations(doc, sarif.FileMap(fileMap)), usage, chunkCost, nil
 	}
 
 	doc := sarif.Build(result, sarif.FileMap(fileMap), sarif.BuilderConfig{
 		ToolVersion: version,
 	})
-	return doc, usage, chunkCost, nil
+	return sarif.ValidateSourceLocations(doc, sarif.FileMap(fileMap)), usage, chunkCost, nil
 }
 
 // runFeatureDetection performs a lightweight LLM call to detect which security-relevant

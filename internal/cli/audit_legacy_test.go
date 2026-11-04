@@ -27,7 +27,7 @@ func runLegacyFixture(doc sarif.SARIFDocument, client llm.Client) (*sarif.SARIFD
 		ingest.FileMap{"a.go": "input()\nsink()", "b.go": "input()\nsink()"}, .3, nil, "", 2, true, chunk.NewTokenCounter("", nil), nil, nil)
 }
 
-func TestLegacyAuditMatchesStableIDsAfterLocationAndTitleRefinement(t *testing.T) {
+func TestLegacyAuditMatchesStableIDsWithRefinedEvidence(t *testing.T) {
 	doc := sarif.AssignFindingIDs(auditFixture())
 	before, _ := json.Marshal(doc)
 	ids := auditFindingIDs(doc.Runs[0].Results)
@@ -40,11 +40,11 @@ func TestLegacyAuditMatchesStableIDsAfterLocationAndTitleRefinement(t *testing.T
 		if !strings.Contains(req.Messages[1].Content, "1| input()\n2| sink()") || !strings.Contains(req.Messages[0].Content, "copying its finding_id exactly") {
 			t.Fatal("request lost numbered source or stable-ID instructions")
 		}
-		// Reverse order and change every old identity field. The IDs still
-		// identify exactly which finding each verdict belongs to.
+		// Reverse order while preserving the immutable original claim fields.
+		original := auditClaims(doc)
 		return legacyResponse(
-			AuditedFinding{FindingID: ids[1], OriginalIssue: "Refined second", FilePath: "a.go", StartLine: 2, Verdict: "unverified", Confidence: .2},
-			AuditedFinding{FindingID: ids[0], OriginalIssue: "Refined first", FilePath: "b.go", StartLine: 2, Verdict: "confirmed", Confidence: .9},
+			AuditedFinding{FindingID: ids[1], OriginalIssue: original[1].Issue, FilePath: original[1].FilePath, StartLine: original[1].StartLine, RefinedTechnicalDetails: "Refined second evidence", Verdict: "unverified", Confidence: .2},
+			AuditedFinding{FindingID: ids[0], OriginalIssue: original[0].Issue, FilePath: original[0].FilePath, StartLine: original[0].StartLine, RefinedTechnicalDetails: "Refined first evidence", Verdict: "confirmed", Confidence: .9},
 		), nil
 	})
 	got, _, _, err := runLegacyFixture(doc, client)
@@ -143,5 +143,13 @@ func TestAuditFallbackIDsCannotCollideWithSavedIDs(t *testing.T) {
 	}
 	if got[1] != "result-1" || got[3] != "result-3" {
 		t.Fatal("fallback displaced saved identities", got)
+	}
+}
+
+func TestLegacyRejectsCrossWiredClaimIdentity(t *testing.T) {
+	claims := []auditClaim{{FindingID: "a", Issue: "SQL injection", FilePath: "query.go", StartLine: 4}, {FindingID: "b", Issue: "XSS", FilePath: "view.go", StartLine: 8}}
+	got, err := acceptLegacyVerdicts(claims, []AuditedFinding{{FindingID: "a", OriginalIssue: "XSS", FilePath: "view.go", StartLine: 8, Verdict: "confirmed"}, {FindingID: "b", OriginalIssue: "XSS", FilePath: "view.go", StartLine: 8, Verdict: "confirmed"}})
+	if err == nil || len(got) != 1 || got[0].FindingID != "b" {
+		t.Fatalf("cross-wired identity accepted: %+v %v", got, err)
 	}
 }

@@ -76,9 +76,26 @@ export GOOGLE_API_KEY=your-google-key
 
 When `--output results.sarif` writes to a file, CodeCrucible also writes
 phase artifacts beside it: `results.feature-detection.json`,
-`results.analysis.sarif`, and `results.audit.sarif` (when audit runs). Use
+`results.analysis.sarif`, `results.audit.sarif` (when audit runs), and
+`results.lineage.jsonl`. Use
 `--phase-output-dir DIR` to choose an explicit artifact directory, including
 for stdout workflows.
+
+The versioned lineage file records model responses, immutable observations before
+merge/filtering, subsequent finding revisions and each observation's final
+disposition. SARIF results link to it through `properties.provenance`; existing
+finding IDs and partial fingerprints remain the correlation keys. A shared
+location and CWE no longer suffice to discard different evidence. Original
+observations remain available even when the final result is suppressed or its
+evidence is refined. A missing `run-complete` event indicates an interrupted run.
+Lineage contains source excerpts and model output, like the other phase artifacts;
+request headers and API credentials are not recorded. It is written incrementally
+with owner-only permissions. No lineage file is written for stdout-only scans
+without an artifact directory.
+
+The current ledger records derivation and merge relationships. Explicit child
+claim splitting and semantic duplicate relationships remain separate audit-policy
+work; a recorded model verdict is not proof of exploitability.
 
 To compare audit prompts or models without analysis variance, replay the audit
 on saved findings: `codecrucible scan REPO --audit-from results.analysis.sarif`.

@@ -15,6 +15,7 @@ import (
 	"github.com/block/codecrucible/internal/config"
 	"github.com/block/codecrucible/internal/ingest"
 	"github.com/block/codecrucible/internal/llm"
+	"github.com/block/codecrucible/internal/provenance"
 	"github.com/block/codecrucible/internal/sarif"
 	"github.com/block/codecrucible/internal/sourceindex"
 	"github.com/block/codecrucible/internal/supctx"
@@ -454,6 +455,14 @@ func runScan(cmd *cobra.Command, args []string) error {
 	}
 	artifacts := newPhaseArtifactWriter(cfg)
 	artifacts.metadata = metadata
+	lineage, lineageFile, err := openLineage(artifacts, metadata)
+	if err != nil {
+		return err
+	}
+	client = traceClient(client, lineage)
+	if lineageFile != nil {
+		defer func() { _ = lineageFile.Close() }()
+	}
 	recordActualPhase(metadata, "analysis", *analysis, cfg, false)
 	if artifacts.Enabled() {
 		slog.Info("phase artifacts enabled",
@@ -479,7 +488,13 @@ func runScan(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
-		merged = replayed
+		merged = sarif.ValidateSourceLocations(replayed, sarif.FileMap(flatResult.FileMap))
+		if err := lineage.Observe("audit-replay", &merged); err != nil {
+			return err
+		}
+		if err := lineage.Checkpoint("analysis", &merged); err != nil {
+			return err
+		}
 		metadata.Recipe.AuditReplay = source
 		setPhaseStatus(metadata, "feature-detection", "skipped", "audit replay")
 		setPhaseStatus(metadata, "analysis", "skipped", "audit replay")
@@ -489,7 +504,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 		outcome, err := runAnalysisPhases(cmd.Context(), analysisInputs{
 			cfg: cfg, analysis: analysis, client: client, endpoint: endpoint,
 			promptLoader: promptLoader, schema: schema, outputMode: outputMode, repoName: repoName,
-			counter: counter, analysisCtx: analysisCtx, metadata: metadata, artifacts: artifacts,
+			counter: counter, analysisCtx: analysisCtx, metadata: metadata, artifacts: artifacts, lineage: lineage,
 			source: source, flatResult: &flatResult, totalTokens: totalTokens,
 		})
 		if err != nil {
@@ -512,6 +527,10 @@ func runScan(cmd *cobra.Command, args []string) error {
 				"provider", audit.Provider, "model", audit.ModelCfg.Name)
 		}
 		recordActualPhase(metadata, "audit", *audit, cfg, auditErr != nil)
+		// Fallback may already be traced; avoid recording it twice.
+		if _, traced := auditClient.(*lineageClient); !traced {
+			auditClient = traceClient(auditClient, lineage)
+		}
 		auditOutputMode := llm.OutputModeForConfig(audit.ModelCfg)
 
 		auditedDoc, auditUsage, auditCost, auditErr := runAuditPhase(
@@ -524,7 +543,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 		totalUsage.CompletionTokens += auditUsage.CompletionTokens
 		totalCost += auditCost
 		if auditedDoc != nil {
-			merged = *auditedDoc
+			merged = sarif.ValidateSourceLocations(*auditedDoc, sarif.FileMap(flatResult.FileMap))
 		}
 		if auditErr != nil {
 			// A provider request can time out while the scan context is still
@@ -539,6 +558,9 @@ func runScan(cmd *cobra.Command, args []string) error {
 			}
 		} else {
 			setPhaseStatus(metadata, "audit", "completed", "")
+		}
+		if err := checkpointAudit(lineage, &merged); err != nil {
+			return err
 		}
 		if err := artifacts.WriteSARIF("audit", merged); err != nil {
 			return fmt.Errorf("writing audit artifact: %w", err)
@@ -559,6 +581,14 @@ func runScan(cmd *cobra.Command, args []string) error {
 		"total_cost", fmt.Sprintf("$%.4f", totalCost),
 	)
 
+	// Persist revisions before presentation can rewrite derived SARIF messages.
+	if err := checkpointAudit(lineage, &merged); err != nil {
+		return err
+	}
+	if err := lineage.Finish(merged); err != nil {
+		return err
+	}
+
 	// --- Stage 7: Output ---
 	merged, err = prepareSARIF(merged, metadata, "final")
 	if err != nil {
@@ -576,6 +606,15 @@ func runScan(cmd *cobra.Command, args []string) error {
 		slog.Info("SARIF written", "path", cfg.Output)
 	} else {
 		fmt.Println(string(output))
+	}
+
+	if err := lineage.Metadata("run-complete", metadata); err != nil {
+		return err
+	}
+	if lineageFile != nil {
+		if err := lineageFile.Sync(); err != nil {
+			return err
+		}
 	}
 
 	if err := scanExecutionError(merged); err != nil {
@@ -671,6 +710,7 @@ type analysisInputs struct {
 	analysisCtx  supctx.PackResult
 	metadata     *sarif.ScanMetadata
 	artifacts    phaseArtifactWriter
+	lineage      *provenance.Ledger
 	source       *sourceindex.Index
 	flatResult   *ingest.FlattenResult
 	totalTokens  int
@@ -923,11 +963,12 @@ func runAnalysisPhases(ctx context.Context, in analysisInputs) (out analysisOutc
 	}
 
 	type chunkResult struct {
-		index int
-		doc   sarif.SARIFDocument
-		usage llm.TokenUsage
-		cost  float64
-		err   error
+		index      int
+		doc        sarif.SARIFDocument
+		usage      llm.TokenUsage
+		cost       float64
+		err        error
+		lineageErr error
 	}
 
 	results := make([]chunkResult, len(chunks))
@@ -946,7 +987,11 @@ func runAnalysisPhases(ctx context.Context, in analysisInputs) (out analysisOutc
 				modelCfg, promptLoader, schema, outputMode,
 				cfg.CustomRequirements, analysisCtx.Rendered, detectedFeatures, flatResult.FileMap, analysis.ModelParams,
 			)
-			results[idx] = chunkResult{index: idx, doc: doc, usage: usage, cost: cost, err: aErr}
+			var lineageErr error
+			if in.lineage != nil {
+				lineageErr = in.lineage.Observe(fmt.Sprintf("analysis/chunk/%d", idx), &doc)
+			}
+			results[idx] = chunkResult{index: idx, doc: doc, usage: usage, cost: cost, err: aErr, lineageErr: lineageErr}
 		}(i, c)
 	}
 	wg.Wait()
@@ -957,6 +1002,9 @@ func runAnalysisPhases(ctx context.Context, in analysisInputs) (out analysisOutc
 	var totalCost float64
 	var overflowPaths []string
 	for i, r := range results {
+		if r.lineageErr != nil {
+			return out, r.lineageErr
+		}
 		if errors.Is(r.err, llm.ErrContextLengthExceeded) {
 			overflowPaths = append(overflowPaths, chunks[i].Paths...)
 			metadata.Execution.Chunks.Overflowed++
@@ -1005,6 +1053,11 @@ func runAnalysisPhases(ctx context.Context, in analysisInputs) (out analysisOutc
 					modelCfg, promptLoader, schema, outputMode,
 					cfg.CustomRequirements, analysisCtx.Rendered, detectedFeatures, flatResult.FileMap, analysis.ModelParams,
 				)
+				if in.lineage != nil {
+					if err := in.lineage.Observe(fmt.Sprintf("recovery/chunk/%d", rc.Index), &doc); err != nil {
+						return out, err
+					}
+				}
 				coverage.complete(rc.Paths, doc, aErr)
 				recordChunkOutcome(metadata, doc, aErr)
 				if errors.Is(aErr, llm.ErrContextLengthExceeded) {
@@ -1025,10 +1078,20 @@ func runAnalysisPhases(ctx context.Context, in analysisInputs) (out analysisOutc
 
 	// --- Stage 6: Merge ---
 	merged := sarif.Merge(sarifDocs)
+	if in.lineage != nil {
+		if err := in.lineage.Checkpoint("merge", &merged); err != nil {
+			return out, err
+		}
+	}
 
 	// --- Stage 6.5: Post-process (dedup + deprioritize non-source) ---
 	// IDs are assigned before the audit so a refined CWE cannot change them.
 	merged = sarif.AssignFindingIDs(sarif.PostProcess(merged))
+	if in.lineage != nil {
+		if err := in.lineage.Checkpoint("analysis", &merged); err != nil {
+			return out, err
+		}
+	}
 
 	slog.Info("initial analysis complete",
 		"total_findings", len(merged.Runs[0].Results),

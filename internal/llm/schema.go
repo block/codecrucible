@@ -188,7 +188,7 @@ const auditSchemaJSON = `{
           "properties": {
             "finding_id": {
               "type": "string",
-              "description": "The claim's finding_id, copied exactly. This identifies the finding even when its title or source location is refined."
+              "description": "The claim's finding_id, copied exactly. Copy the original title and location fields as well; revised locations belong in code_path."
             },
             "original_issue": {
               "type": "string",

@@ -40,6 +40,7 @@ func newPhaseArtifactWriter(cfg *config.Config) phaseArtifactWriter {
 			"feature-detection": filepath.Join(dir, "feature-detection.json"),
 			"analysis":          filepath.Join(dir, "analysis.sarif"),
 			"audit":             filepath.Join(dir, "audit.sarif"),
+			"lineage":           filepath.Join(dir, "lineage.jsonl"),
 		}}
 	}
 
@@ -59,6 +60,7 @@ func newPhaseArtifactWriter(cfg *config.Config) phaseArtifactWriter {
 		"feature-detection": filepath.Join(dir, stem+".feature-detection.json"),
 		"analysis":          filepath.Join(dir, stem+".analysis.sarif"),
 		"audit":             filepath.Join(dir, stem+".audit.sarif"),
+		"lineage":           filepath.Join(dir, stem+".lineage.jsonl"),
 	}}
 }
 

@@ -167,7 +167,9 @@ func runAuditPhase(
 		for i, f := range batch {
 			claims[i] = auditctx.Claim{File: f.FilePath, Start: f.StartLine, End: f.EndLine}
 		}
-		retrieved, _ := retrieveAuditContext(retrieval, claims, filesNeeded, counter)
+		cited, _ := citedAuditContext(retrieval, source, batch, filesNeeded, counter)
+		codeCtx.WriteString(cited)
+		retrieved, _ := retrieveAuditContext(retrieval, claims, filesNeeded, counter, auditRetrievalBudget-counter.Count(cited))
 		codeCtx.WriteString(retrieved)
 		recordSourceBundle(metadata, "audit", label, codeCtx.String())
 
@@ -301,7 +303,7 @@ func applyAuditVerdicts(
 	run := doc.Runs[0]
 
 	// Normalize legacy responses only when their original key is unique.
-	// A supplied finding_id is authoritative; changed locations are not identity.
+	// Supplied original fields must agree with the identified claim.
 	claims := auditClaims(doc)
 	verdicts, _ := acceptLegacyVerdicts(claims, audit.AuditedFindings)
 	auditByID := make(map[string]AuditedFinding, len(verdicts))
@@ -430,10 +432,6 @@ func applyAuditVerdicts(
 	// Add new findings from the audit phase.
 	newCount := 0
 	for _, nf := range audit.NewFindings {
-		if nf.Confidence < confidenceThreshold {
-			continue
-		}
-
 		issue := sarif.SecurityIssue{
 			Issue:            nf.Issue,
 			FilePath:         nf.FilePath,
@@ -455,6 +453,14 @@ func applyAuditVerdicts(
 			confidence := nf.Confidence
 			newDoc.Runs[0].Results[0].Properties.AuditStatus = "new"
 			newDoc.Runs[0].Results[0].Properties.AuditConfidence = &confidence
+			// Keep discarded candidates reconstructable, just as we do for
+			// rejected initial findings. Confidence controls visibility only.
+			if nf.Confidence < confidenceThreshold {
+				newDoc.Runs[0].Results[0].Properties.AuditStatus = "rejected"
+				newDoc.Runs[0].Results[0].Properties.AuditReasons = []string{"below_confidence_threshold"}
+				newDoc.Runs[0].Results[0].Suppressions = []sarif.SARIFSuppression{{Kind: "external", Status: "accepted",
+					Justification: fmt.Sprintf("New audit candidate confidence %.0f%% is below the %.0f%% threshold", nf.Confidence*100, confidenceThreshold*100)}}
+			}
 			keptResults = append(keptResults, newDoc.Runs[0].Results...)
 			for _, rule := range newDoc.Runs[0].Tool.Driver.Rules {
 				if _, exists := ruleByID[rule.ID]; !exists {

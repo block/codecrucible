@@ -101,6 +101,7 @@ type ContextIdentity struct {
 }
 
 type ScanExecution struct {
+	RunID            string                    `json:"runId,omitempty"`
 	SourceIndex      *sourceindex.Snapshot     `json:"sourceIndex,omitempty"`
 	SourceBundles    []SourceBundle            `json:"sourceBundles,omitempty"`
 	SourceCoverage   *SourceCoverage           `json:"sourceCoverage,omitempty"`
