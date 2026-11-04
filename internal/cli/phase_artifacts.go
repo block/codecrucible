@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/block/codecrucible/internal/config"
 	"github.com/block/codecrucible/internal/sarif"
@@ -14,9 +15,10 @@ import (
 )
 
 type phaseArtifactWriter struct {
-	paths    map[string]string
-	metadata *sarif.ScanMetadata
-	usage    *modelUsage
+	paths     map[string]string
+	metadata  *sarif.ScanMetadata
+	usage     *modelUsage
+	startedAt time.Time
 }
 
 type featureDetectionArtifact struct {
@@ -101,6 +103,7 @@ func (w phaseArtifactWriter) WriteSARIF(phase string, doc sarif.SARIFDocument) e
 	if err != nil {
 		return err
 	}
+	doc = stampInvocationTimes(doc, w.startedAt, time.Now())
 	return w.writeJSON(phase, doc)
 }
 
