@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/block/codecrucible/internal/chunk"
 	"github.com/block/codecrucible/internal/config"
@@ -307,6 +308,7 @@ func logModelExecutionWarnings(warnings []modelExecutionWarning) {
 }
 
 func runScan(cmd *cobra.Command, args []string) error {
+	startedAt := time.Now()
 	cfg, err := config.Load(v)
 	if err != nil {
 		return err
@@ -405,7 +407,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 	// Handle empty repo.
 	if len(filtered) == 0 {
 		slog.Info("no source files after filtering, producing empty SARIF")
-		return outputEmptySARIF(cfg)
+		return outputEmptySARIF(cfg, startedAt)
 	}
 
 	if cfg.DryRun {
@@ -459,6 +461,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	artifacts := newPhaseArtifactWriter(cfg)
+	artifacts.startedAt = startedAt
 	artifacts.metadata = metadata
 	artifacts.usage = usage
 	lineage, lineageFile, err := openLineage(artifacts, metadata)
@@ -600,6 +603,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	merged = stampInvocationTimes(merged, startedAt, time.Now())
 	output, err := json.MarshalIndent(merged, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshaling SARIF: %w", err)
