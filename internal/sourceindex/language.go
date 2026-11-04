@@ -1,4 +1,4 @@
-package auditctx
+package sourceindex
 
 import (
 	"path"
@@ -15,12 +15,14 @@ type languageAdapter interface {
 
 type sourceInfo struct {
 	adapter     languageAdapter
+	mode        string
 	language    string
 	code        []string // syntax adapters mask comments/literals; fallback is lexical
 	defs        []Def
 	calls       []call
 	packageName string
 	imports     map[string]string
+	importPaths []string
 	unbound     [][2]int // scopes in which parameter identity is not established
 }
 
@@ -164,53 +166,3 @@ type defID struct {
 }
 
 func (d Def) id() defID { return defID{d.File, d.Name, d.Line, d.Type} }
-
-// Follow just one hop, and only explicit identifier arguments. Expressions,
-// aliases, nested declarations and unsupported signatures are not taint traced.
-func (ix *Index) forwarded(d Def, c boundCall, seen map[defID]bool) []Excerpt {
-	param := d.boundParameter(c)
-	if param == "" || d.bodyEnd <= d.bodyStart {
-		return nil
-	}
-	var out []Excerpt
-	for _, next := range ix.sources[d.File].calls {
-		if next.start < d.bodyStart || next.end > d.bodyEnd || next.line >= d.Line+maxDefLines || genericNames[next.name] {
-			continue
-		}
-		// A nested function's parameter may shadow this one.
-		nested := false
-		for _, span := range ix.sources[d.File].unbound {
-			if span[0] >= d.bodyStart && span[1] <= d.bodyEnd && next.start >= span[0] && next.end <= span[1] {
-				nested = true
-				break
-			}
-		}
-		for _, child := range ix.byFile[d.File] {
-			if child.id() != d.id() && child.bodyStart >= d.bodyStart && child.bodyEnd <= d.bodyEnd && next.start >= child.bodyStart && next.end <= child.bodyEnd {
-				nested = true
-				break
-			}
-		}
-		if nested {
-			continue
-		}
-		for _, a := range next.args {
-			if a.direct != param {
-				continue
-			}
-			f, ok := ix.resolve(d.File, next.reference, false)
-			if !ok {
-				f, ok = ix.resolve(d.File, next.reference, true)
-			}
-			if ok && !seen[f.id()] {
-				seen[f.id()] = true
-				out = append(out, defExcerpt(f, "possible use of "+d.Name+" parameter "+param+" in "+next.name))
-			}
-			break
-		}
-		if len(out) == maxForwarded {
-			break
-		}
-	}
-	return out
-}

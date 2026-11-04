@@ -16,6 +16,7 @@ import (
 	"github.com/block/codecrucible/internal/ingest"
 	"github.com/block/codecrucible/internal/llm"
 	"github.com/block/codecrucible/internal/sarif"
+	"github.com/block/codecrucible/internal/sourceindex"
 	"github.com/block/codecrucible/internal/supctx"
 )
 
@@ -241,6 +242,10 @@ func capManifest(paths []string, charBudget int) []string {
 // outputEmptySARIF produces a valid SARIF document with zero findings.
 func outputEmptySARIF(cfg *config.Config) error {
 	metadata := newScanMetadata(cfg)
+	source := sourceindex.New(nil)
+	snapshot := source.Snapshot()
+	metadata.Execution.SourceIndex = &snapshot
+	metadata.Execution.SourceCoverage = newSourceCoverage(source).report()
 	for phase := range metadata.Execution.Phases {
 		setPhaseStatus(metadata, phase, "skipped", "no source files")
 	}

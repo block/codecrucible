@@ -16,6 +16,7 @@ import (
 	"github.com/block/codecrucible/internal/ingest"
 	"github.com/block/codecrucible/internal/llm"
 	"github.com/block/codecrucible/internal/sarif"
+	"github.com/block/codecrucible/internal/sourceindex"
 	"github.com/block/codecrucible/internal/supctx"
 	"github.com/spf13/cobra"
 )
@@ -365,9 +366,10 @@ func runScan(cmd *cobra.Command, args []string) error {
 	flattenCfg := ingest.FlattenConfig{Compress: cfg.Compress}
 	flatResult := ingest.FlattenFileMapOnly(filtered)
 
-	// --- Stage 3.5: Build import graph and export summaries ---
-	importGraph := ingest.ResolveImports(filtered)
-	exportSummaries := buildExportSummaries(filtered)
+	// --- Stage 3.5: Index the admitted source once for all phases ---
+	source := sourceindex.New(flatResult.FileMap)
+	importGraph := source.ImportGraph()
+	exportSummaries := source.ExportSummaries()
 
 	slog.Info("import graph built",
 		"files_with_imports", len(importGraph),
@@ -444,6 +446,8 @@ func runScan(cmd *cobra.Command, args []string) error {
 	repoName := filepath.Base(repoRoot)
 
 	metadata := newScanMetadata(cfg)
+	snapshot := source.Snapshot()
+	metadata.Execution.SourceIndex = &snapshot
 	metadata.Recipe.Prompts.Fingerprint, err = promptLoader.Fingerprint()
 	if err != nil {
 		return err
@@ -486,8 +490,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 			cfg: cfg, analysis: analysis, client: client, endpoint: endpoint,
 			promptLoader: promptLoader, schema: schema, outputMode: outputMode, repoName: repoName,
 			counter: counter, analysisCtx: analysisCtx, metadata: metadata, artifacts: artifacts,
-			filtered: filtered, flatResult: &flatResult, totalTokens: totalTokens,
-			importGraph: importGraph, exportSummaries: exportSummaries,
+			source: source, flatResult: &flatResult, totalTokens: totalTokens,
 		})
 		if err != nil {
 			return err
@@ -515,7 +518,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 			cmd.Context(), merged, repoName,
 			auditClient, auditEndpoint, audit.ModelCfg, promptLoader,
 			auditOutputMode, flatResult.FileMap, cfg.AuditConfidenceThreshold, audit.ModelParams, auditCtx.Rendered,
-			cfg.AuditBatchSize, !cfg.IncludeTests, counter, metadata,
+			cfg.AuditBatchSize, !cfg.IncludeTests, counter, metadata, source,
 		)
 		totalUsage.PromptTokens += auditUsage.PromptTokens
 		totalUsage.CompletionTokens += auditUsage.CompletionTokens
@@ -633,6 +636,10 @@ func maxActiveSeverity(doc sarif.SARIFDocument) float64 {
 }
 
 func markAuditIncomplete(doc sarif.SARIFDocument, message string) sarif.SARIFDocument {
+	return markInvocationWarning(doc, message)
+}
+
+func markInvocationWarning(doc sarif.SARIFDocument, message string) sarif.SARIFDocument {
 	if len(doc.Runs) == 0 {
 		return doc
 	}
@@ -652,23 +659,21 @@ func markAuditIncomplete(doc sarif.SARIFDocument, message string) sarif.SARIFDoc
 // analysisInputs is the scan setup that feature detection and chunk analysis
 // read. flatResult is shared so analysis can release the full XML.
 type analysisInputs struct {
-	cfg             *config.Config
-	analysis        *config.PhaseConfig
-	client          llm.Client
-	endpoint        string
-	promptLoader    *llm.PromptLoader
-	schema          *json.RawMessage
-	outputMode      llm.OutputMode
-	repoName        string
-	counter         *chunk.TokenCounter
-	analysisCtx     supctx.PackResult
-	metadata        *sarif.ScanMetadata
-	artifacts       phaseArtifactWriter
-	filtered        []ingest.SourceFile
-	flatResult      *ingest.FlattenResult
-	totalTokens     int
-	importGraph     map[string][]string
-	exportSummaries map[string]string
+	cfg          *config.Config
+	analysis     *config.PhaseConfig
+	client       llm.Client
+	endpoint     string
+	promptLoader *llm.PromptLoader
+	schema       *json.RawMessage
+	outputMode   llm.OutputMode
+	repoName     string
+	counter      *chunk.TokenCounter
+	analysisCtx  supctx.PackResult
+	metadata     *sarif.ScanMetadata
+	artifacts    phaseArtifactWriter
+	source       *sourceindex.Index
+	flatResult   *ingest.FlattenResult
+	totalTokens  int
 }
 
 type analysisOutcome struct {
@@ -683,8 +688,8 @@ func runAnalysisPhases(ctx context.Context, in analysisInputs) (out analysisOutc
 	cfg, analysis, client, endpoint := in.cfg, in.analysis, in.client, in.endpoint
 	promptLoader, schema, outputMode, repoName := in.promptLoader, in.schema, in.outputMode, in.repoName
 	counter, analysisCtx, metadata, artifacts := in.counter, in.analysisCtx, in.metadata, in.artifacts
-	filtered, flatResult, totalTokens := in.filtered, in.flatResult, in.totalTokens
-	importGraph, exportSummaries := in.importGraph, in.exportSummaries
+	source, flatResult, totalTokens := in.source, in.flatResult, in.totalTokens
+	importGraph, exportSummaries := source.ImportGraph(), source.ExportSummaries()
 	modelCfg := analysis.ModelCfg
 
 	// --- Stage 5.5: Estimate whether we need chunking ---
@@ -735,7 +740,7 @@ func runAnalysisPhases(ctx context.Context, in analysisInputs) (out analysisOutc
 		recordActualPhase(metadata, "feature-detection", *fd, cfg, fdErr != nil)
 		fdOutputMode := llm.OutputModeForConfig(fd.ModelCfg)
 		var fdCorrection float64
-		detectedFeatures, fdCorrection, err = runFeatureDetection(ctx, filtered, repoName, fdClient, fdEndpoint, fd.ModelCfg, promptLoader, fdOutputMode, fd.ModelParams, counter)
+		detectedFeatures, fdCorrection, err = runFeatureDetection(ctx, source, repoName, fdClient, fdEndpoint, fd.ModelCfg, promptLoader, fdOutputMode, fd.ModelParams, counter, metadata)
 		if err != nil {
 			setPhaseStatus(metadata, "feature-detection", "failed", "using all sections")
 			if wErr := artifacts.WriteFeatureDetection(featureDetectionArtifact{
@@ -900,6 +905,9 @@ func runAnalysisPhases(ctx context.Context, in analysisInputs) (out analysisOutc
 		"effective_limit", effectiveLimit,
 	)
 
+	coverage := newSourceCoverage(source)
+	coverage.plan(chunks)
+	recordAnalysisBundles(metadata, chunks, modelCfg.ContextLimit, false)
 	metadata.Execution.Chunks.Initial = len(chunks)
 	metadata.Execution.Chunks.Budget = chunkBudget
 
@@ -954,6 +962,7 @@ func runAnalysisPhases(ctx context.Context, in analysisInputs) (out analysisOutc
 			metadata.Execution.Chunks.Overflowed++
 			continue
 		}
+		coverage.complete(chunks[i].Paths, r.doc, r.err)
 		recordChunkOutcome(metadata, r.doc, r.err)
 		sarifDocs = append(sarifDocs, r.doc)
 		totalUsage.PromptTokens += r.usage.PromptTokens
@@ -988,12 +997,15 @@ func runAnalysisPhases(ctx context.Context, in analysisInputs) (out analysisOutc
 		} else {
 			slog.Info("overflow recovery pass starting", "chunks", len(retryChunks))
 			metadata.Execution.Chunks.Recovery = len(retryChunks)
+			coverage.plan(retryChunks)
+			recordAnalysisBundles(metadata, retryChunks, modelCfg.ContextLimit, true)
 			for _, rc := range retryChunks {
 				doc, usage, cost, aErr := analyzeChunk(
 					ctx, rc, repoName, client, endpoint,
 					modelCfg, promptLoader, schema, outputMode,
 					cfg.CustomRequirements, analysisCtx.Rendered, detectedFeatures, flatResult.FileMap, analysis.ModelParams,
 				)
+				coverage.complete(rc.Paths, doc, aErr)
 				recordChunkOutcome(metadata, doc, aErr)
 				if errors.Is(aErr, llm.ErrContextLengthExceeded) {
 					slog.Error("overflow recovery chunk still exceeds context; files skipped",
@@ -1025,7 +1037,14 @@ func runAnalysisPhases(ctx context.Context, in analysisInputs) (out analysisOutc
 		"completion_tokens", totalUsage.CompletionTokens,
 		"total_cost", fmt.Sprintf("$%.4f", totalCost),
 	)
+	metadata.Execution.SourceCoverage = coverage.report()
 	setPhaseStatus(metadata, "analysis", "completed", "")
+	if missing := len(metadata.Execution.SourceCoverage.Unanalyzed); missing > 0 {
+		message := fmt.Sprintf("analysis incomplete: %d admitted files were not successfully analyzed; see sourceCoverage in run metadata", missing)
+		slog.Warn(message)
+		merged = markInvocationWarning(merged, message)
+		setPhaseStatus(metadata, "analysis", "incomplete", "admitted source was not fully analyzed")
+	}
 	if metadata.Execution.Chunks.Failed > 0 {
 		setPhaseStatus(metadata, "analysis", "failed", "one or more chunks failed")
 	}

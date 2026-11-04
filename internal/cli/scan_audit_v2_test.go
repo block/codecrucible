@@ -182,7 +182,7 @@ func v2Reply(t *testing.T, resp auditResponseV2) *llm.ChatResponse {
 
 func runV2Audit(doc sarif.SARIFDocument, files ingest.FileMap, client llm.Client, metadata *sarif.ScanMetadata) (*sarif.SARIFDocument, error) {
 	got, _, _, err := runAuditPhase(context.Background(), doc, "fixture", client, "", config.ModelConfig{Name: "test"},
-		v2PromptLoader(), llm.OutputModeNone, files, .3, nil, "", 0, true, chunk.NewTokenCounter("", nil), metadata)
+		v2PromptLoader(), llm.OutputModeNone, files, .3, nil, "", 0, true, chunk.NewTokenCounter("", nil), metadata, nil)
 	return got, err
 }
 
@@ -320,7 +320,7 @@ func TestAuditV2RequestCarriesRetrievedContextAndOtherClaims(t *testing.T) {
 		return v2Reply(t, auditResponseV2{Assessments: out}), nil
 	})
 	_, _, _, err := runAuditPhase(context.Background(), doc, "fixture", client, "", config.ModelConfig{Name: "test"},
-		v2PromptLoader(), llm.OutputModeNone, files, .3, nil, "", 2, true, chunk.NewTokenCounter("", nil), nil)
+		v2PromptLoader(), llm.OutputModeNone, files, .3, nil, "", 2, true, chunk.NewTokenCounter("", nil), nil, nil)
 	if err != nil || len(prompts) != 2 {
 		t.Fatalf("prompts=%d err=%v", len(prompts), err)
 	}

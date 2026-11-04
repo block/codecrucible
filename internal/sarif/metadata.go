@@ -1,5 +1,7 @@
 package sarif
 
+import "github.com/block/codecrucible/internal/sourceindex"
+
 // RunProperties contains the versioned CodeCrucible extension to SARIF.
 // Authentication material must never be copied into these types.
 type RunProperties struct {
@@ -99,6 +101,9 @@ type ContextIdentity struct {
 }
 
 type ScanExecution struct {
+	SourceIndex      *sourceindex.Snapshot     `json:"sourceIndex,omitempty"`
+	SourceBundles    []SourceBundle            `json:"sourceBundles,omitempty"`
+	SourceCoverage   *SourceCoverage           `json:"sourceCoverage,omitempty"`
 	ArtifactStage    string                    `json:"artifactStage"`
 	Phases           map[string]PhaseExecution `json:"phases"`
 	DetectedFeatures []string                  `json:"detectedFeatures"`
@@ -109,6 +114,25 @@ type ScanExecution struct {
 	// AuditLeads are the v2 audit's notes on possible issues outside the
 	// audited findings, for a human to follow up. They are not findings.
 	AuditLeads []string `json:"auditLeads,omitempty"`
+}
+
+// SourceBundle fingerprints the source context assembled for one phase call.
+// Content and absolute checkout paths are deliberately not retained.
+type SourceBundle struct {
+	Phase       string `json:"phase"`
+	Label       string `json:"label"`
+	Fingerprint string `json:"fingerprint"`
+}
+
+// SourceCoverage distinguishes scheduling coverage from successful analysis.
+// Whole source files are currently the analysis coverage unit.
+type SourceCoverage struct {
+	Admitted      int      `json:"admitted"`
+	Planned       int      `json:"planned"`
+	Analyzed      int      `json:"analyzed"`
+	RepeatedFiles int      `json:"repeatedFiles"`
+	Unplanned     []string `json:"unplanned"`
+	Unanalyzed    []string `json:"unanalyzed"`
 }
 
 type PhaseExecution struct {

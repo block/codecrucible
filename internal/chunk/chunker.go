@@ -23,7 +23,7 @@ type Chunk struct {
 
 // ChunkOptions provides optional import-aware grouping hints.
 type ChunkOptions struct {
-	// ImportGraph maps file path → list of local imports (from ingest.ResolveImports).
+	// ImportGraph maps file path to resolved imports in the admitted source index.
 	ImportGraph map[string][]string
 	// ExportSummaries maps file path → short one-line summary of exports.
 	ExportSummaries map[string]string
@@ -305,6 +305,11 @@ func (c *defaultChunker) Chunk(input ingest.FlattenResult, budget int, opts *Chu
 				"after", len(groups),
 			)
 		}
+	}
+
+	// Shared files still need an analysis chunk when no ordinary group fits.
+	if len(groups) == 0 && len(sharedFiles) > 0 {
+		groups = append(groups, nil)
 	}
 
 	// If all files were skipped, return a single empty chunk.

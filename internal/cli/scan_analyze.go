@@ -14,6 +14,7 @@ import (
 	"github.com/block/codecrucible/internal/ingest"
 	"github.com/block/codecrucible/internal/llm"
 	"github.com/block/codecrucible/internal/sarif"
+	"github.com/block/codecrucible/internal/sourceindex"
 )
 
 // analyzeChunk processes a single chunk: assembles the prompt, calls the LLM, parses
@@ -41,35 +42,7 @@ func analyzeChunk(
 		"tokens", c.Tokens,
 	)
 
-	// Build manifest of files not in this chunk.
-	var otherPaths []string
-	if c.Total > 1 {
-		pathSet := make(map[string]bool, len(c.Paths))
-		for _, p := range c.Paths {
-			pathSet[p] = true
-		}
-		for _, p := range c.Manifest {
-			if !pathSet[p] {
-				otherPaths = append(otherPaths, p)
-			}
-		}
-	}
-
-	// Build manifest with summaries for cross-chunk context.
-	// Cap manifest size to ~10% of context limit (in characters, ~4 chars/token)
-	// to avoid crowding out file content in large repos.
-	manifestCharBudget := modelCfg.ContextLimit / 10 * 4
-	manifest := capManifest(otherPaths, manifestCharBudget)
-	if len(c.RelatedSummaries) > 0 {
-		// Prepend related summaries before the raw path list.
-		var enriched []string
-		enriched = append(enriched, "Related files (summaries):")
-		enriched = append(enriched, c.RelatedSummaries...)
-		enriched = append(enriched, "")
-		enriched = append(enriched, "Other files:")
-		enriched = append(enriched, manifest...)
-		manifest = enriched
-	}
+	manifest := analysisManifest(c, modelCfg.ContextLimit)
 
 	// Expand per-chunk placeholders in custom requirements so that prompt
 	// templates can reference the files in this specific chunk, the chunk
@@ -291,7 +264,7 @@ func analyzeChunk(
 // the analysis to fall back to including all sections.
 func runFeatureDetection(
 	ctx context.Context,
-	files []ingest.SourceFile,
+	source *sourceindex.Index,
 	repoName string,
 	client llm.Client,
 	endpoint string,
@@ -300,22 +273,14 @@ func runFeatureDetection(
 	outputMode llm.OutputMode,
 	modelParams map[string]any,
 	counter *chunk.TokenCounter,
+	metadata *sarif.ScanMetadata,
 ) ([]string, float64, error) {
 	// Build file manifest, capped to fit within the model's context.
 	// Reserve ~50% of context for the manifest, rest for samples + prompt overhead.
 	manifestCharBudget := modelCfg.ContextLimit / 2 * 4 // tokens → chars
-	allPaths := make([]string, len(files))
-	for i, f := range files {
-		allPaths[i] = f.Path
-	}
-	manifest := capManifest(allPaths, manifestCharBudget)
-
-	// Build representative code samples (capped at ~2000 tokens).
-	fileEntries := make([]llm.FileEntry, len(files))
-	for i, f := range files {
-		fileEntries[i] = llm.FileEntry{Path: f.Path, Content: f.Content}
-	}
-	samples := llm.BuildFeatureSamples(fileEntries, 2000)
+	manifest := capManifest(source.Paths(), manifestCharBudget)
+	samples := source.FeatureSamples(2000)
+	recordSourceBundle(metadata, "feature-detection", "feature-detection", strings.Join(manifest, "\n")+"\n"+samples)
 
 	messages, err := promptLoader.AssembleFeatureDetectionMessages(llm.FeaturePromptParams{
 		RepoName: repoName,
@@ -391,4 +356,38 @@ func truncationMessage(completionTokens, requested int) string {
 		return detail + "The reported cutoff is below the requested limit. Check provider/deployment caps, request parameter overrides, and reasoning-token accounting; increasing the local limit alone may not help."
 	}
 	return detail + "Increase --max-output-tokens within the deployment's limits; thinking tokens count against the output budget."
+}
+
+func analysisManifest(c chunk.Chunk, contextLimit int) []string {
+	// Build manifest of files not in this chunk.
+	var otherPaths []string
+	if c.Total > 1 {
+		pathSet := make(map[string]bool, len(c.Paths))
+		for _, p := range c.Paths {
+			pathSet[p] = true
+		}
+		for _, p := range c.Manifest {
+			if !pathSet[p] {
+				otherPaths = append(otherPaths, p)
+			}
+		}
+	}
+
+	// Build manifest with summaries for cross-chunk context.
+	// Cap manifest size to ~10% of context limit (in characters, ~4 chars/token)
+	// to avoid crowding out file content in large repos.
+	manifestCharBudget := contextLimit / 10 * 4
+	manifest := capManifest(otherPaths, manifestCharBudget)
+	if len(c.RelatedSummaries) > 0 {
+		// Prepend related summaries before the raw path list.
+		var enriched []string
+		enriched = append(enriched, "Related files (summaries):")
+		enriched = append(enriched, c.RelatedSummaries...)
+		enriched = append(enriched, "")
+		enriched = append(enriched, "Other files:")
+		enriched = append(enriched, manifest...)
+		manifest = enriched
+	}
+
+	return manifest
 }

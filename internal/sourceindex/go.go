@@ -1,4 +1,4 @@
-package auditctx
+package sourceindex
 
 import (
 	"go/ast"
@@ -33,24 +33,17 @@ func (goAdapter) parse(file, text string) *sourceInfo {
 		// Broken/incomplete input remains useful lexical context, but cannot
 		// supply argument bindings from a partially recovered AST.
 		fallback := parseLexical(file, text, goFallbackDef)
+		fallback.mode = "fallback"
+		fallback.imports, fallback.importPaths = goImports(root)
 		if root != nil && root.Name != nil {
 			fallback.packageName = root.Name.Name
 		}
 		return fallback
 	}
-	s := &sourceInfo{adapter: goAdapter{}, language: language(file), packageName: root.Name.Name,
+	s := &sourceInfo{mode: "syntax", adapter: goAdapter{}, language: language(file), packageName: root.Name.Name,
 		imports: map[string]string{}, code: strings.Split(maskSource(text, false), "\n")}
-	for _, imp := range root.Imports {
-		p, err := strconv.Unquote(imp.Path.Value)
-		if err != nil {
-			continue
-		}
-		name := path.Base(p)
-		if imp.Name != nil {
-			name = imp.Name.Name
-		}
-		s.imports[name] = p
-	}
+	s.imports, s.importPaths = goImports(root)
+
 	pos := func(p token.Pos) int { return fset.Position(p).Offset }
 	line := func(p token.Pos) int { return fset.Position(p).Line }
 	ast.Inspect(root, func(n ast.Node) bool {
@@ -162,4 +155,25 @@ func (goAdapter) resolve(ix *Index, file string, ref reference, typ bool) (Def, 
 		}
 	}
 	return onlyDefinition(methods)
+}
+
+func goImports(root *ast.File) (map[string]string, []string) {
+	imports := map[string]string{}
+	var paths []string
+	if root == nil {
+		return imports, paths
+	}
+	for _, imp := range root.Imports {
+		p, err := strconv.Unquote(imp.Path.Value)
+		if err != nil {
+			continue
+		}
+		name := path.Base(p)
+		if imp.Name != nil {
+			name = imp.Name.Name
+		}
+		imports[name] = p
+		paths = append(paths, p)
+	}
+	return imports, paths
 }

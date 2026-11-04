@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/block/codecrucible/internal/sourceindex"
 	"io/fs"
 	"strings"
 	"sync"
@@ -387,97 +388,14 @@ func sectionEnabled(section AnalysisSection, enabledFeatures []string) bool {
 	return false
 }
 
-// FileEntry represents a file with its path and content for feature sample building.
-type FileEntry struct {
-	Path    string
-	Content string
-}
+// FileEntry is retained for callers that build feature samples directly.
+type FileEntry = sourceindex.FileEntry
 
-// BuildFeatureSamples selects a representative subset of files to include as samples
-// for feature detection. It prioritizes dependency manifests and entrypoint files,
-// and caps total output at roughly maxTokens * 4 characters.
 func BuildFeatureSamples(files []FileEntry, maxTokens int) string {
-	maxChars := maxTokens * 4
-
-	// Dependency manifest filenames to always include.
-	manifests := map[string]bool{
-		"package.json":     true,
-		"go.mod":           true,
-		"go.sum":           false, // skip, too large and not informative
-		"requirements.txt": true,
-		"Cargo.toml":       true,
-		"Gemfile":          true,
-		"pom.xml":          true,
-		"build.gradle":     true,
-		"composer.json":    true,
-		"pyproject.toml":   true,
-		"setup.py":         true,
-		"Pipfile":          true,
-		"pubspec.yaml":     true,
-		"Package.swift":    true,
-		"mix.exs":          true,
-		"project.clj":      true,
-	}
-
-	var out strings.Builder
-	written := 0
-
-	addFile := func(path, content string, maxLines int) bool {
-		if written >= maxChars {
-			return false
-		}
-		var trimmed string
-		if maxLines > 0 {
-			lines := strings.SplitN(content, "\n", maxLines+1)
-			if len(lines) > maxLines {
-				lines = lines[:maxLines]
-			}
-			trimmed = strings.Join(lines, "\n")
-		} else {
-			trimmed = content
-		}
-		entry := fmt.Sprintf("<file path=\"%s\">\n%s\n</file>\n", path, trimmed)
-		if written+len(entry) > maxChars {
-			remaining := maxChars - written
-			if remaining < 100 {
-				return false
-			}
-			entry = entry[:remaining]
-		}
-		out.WriteString(entry)
-		written += len(entry)
-		return written < maxChars
-	}
-
-	// Pass 1: dependency manifests (full content).
-	for _, f := range files {
-		base := baseName(f.Path)
-		if include, ok := manifests[base]; ok && include {
-			if !addFile(f.Path, f.Content, 0) {
-				return out.String()
-			}
-		}
-	}
-
-	// Pass 2: entrypoints and routers (first ~50 lines).
-	for _, f := range files {
-		if isEntrypoint(f.Path) {
-			if !addFile(f.Path, f.Content, 50) {
-				return out.String()
-			}
-		}
-	}
-
-	return out.String()
+	return sourceindex.BuildFeatureSamples(files, maxTokens)
 }
-
-// baseName returns the last component of a slash-separated path.
-func baseName(path string) string {
-	if i := strings.LastIndex(path, "/"); i >= 0 {
-		return path[i+1:]
-	}
-	return path
-}
+func baseName(path string) string   { return sourceindex.BaseName(path) }
+func isEntrypoint(path string) bool { return sourceindex.IsEntrypoint(path) }
 
 // LoadAuditPrompt reads and parses the audit.yaml template.
 // The result is cached after the first successful load.
@@ -726,32 +644,6 @@ func (l *PromptLoader) buildCWESection(cweIDs []string) (string, error) {
 }
 
 // isEntrypoint returns true if the file path looks like an entrypoint or router file.
-func isEntrypoint(path string) bool {
-	base := strings.ToLower(baseName(path))
-	lower := strings.ToLower(path)
-
-	entrypointNames := []string{
-		"main.go", "main.py", "main.ts", "main.js", "main.rs", "main.rb",
-		"server.go", "server.py", "server.ts", "server.js",
-		"app.go", "app.py", "app.ts", "app.js", "app.rb",
-		"index.ts", "index.js",
-	}
-	for _, name := range entrypointNames {
-		if base == name {
-			return true
-		}
-	}
-
-	routerDirs := []string{"/routes/", "/handlers/", "/controllers/", "/api/", "/middleware/"}
-	for _, dir := range routerDirs {
-		if strings.Contains(lower, dir) {
-			return true
-		}
-	}
-
-	return false
-}
-
 // Fingerprint snapshots all supported templates before a scan. Optional missing
 // templates remain missing; unrelated files and installation paths are excluded.
 // Subsequent reads use these exact bytes, so the digest describes the prompts

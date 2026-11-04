@@ -17,6 +17,7 @@ import (
 	"github.com/block/codecrucible/internal/ingest"
 	"github.com/block/codecrucible/internal/llm"
 	"github.com/block/codecrucible/internal/sarif"
+	"github.com/block/codecrucible/internal/sourceindex"
 )
 
 // The v2 audit asks the model evidentiary questions about each claim and
@@ -100,6 +101,7 @@ type auditV2Run struct {
 	// claims are all of the scan's claims, so each batch can list the rest.
 	claims []auditClaimV2
 	index  *auditctx.Index
+	source *sourceindex.Index
 }
 
 // auditRetrievalBudget caps the tokens of retrieved context per batch, on
@@ -109,7 +111,12 @@ const auditRetrievalBudget = 24000
 func (r *auditV2Run) run(ctx context.Context, doc sarif.SARIFDocument, batchSize int) (*sarif.SARIFDocument, llm.TokenUsage, float64, error) {
 	claims := auditClaimsV2(doc)
 	r.claims = claims
-	r.index = auditctx.NewIndex(r.fileMap)
+	if r.source == nil {
+		r.source = sourceindex.New(r.fileMap)
+	}
+	if r.index == nil {
+		r.index = auditctx.NewRetriever(r.source)
+	}
 	if batchSize <= 0 || batchSize >= len(claims) {
 		batchSize = len(claims)
 	}
@@ -254,12 +261,13 @@ func (r *auditV2Run) call(ctx context.Context, claims []auditClaimV2, label stri
 	sort.Strings(paths)
 	var codeCtx strings.Builder
 	for _, p := range paths {
-		if content, ok := r.fileMap[p]; ok {
+		if content, ok := r.source.Content(p); ok {
 			fmt.Fprintf(&codeCtx, "<file path=\"%s\">\n%s</file>\n\n", p, numberedSource(content))
 		}
 	}
 	retrieved, excerpts := r.retrieve(claims, files)
 	codeCtx.WriteString(retrieved)
+	recordSourceBundle(r.metadata, "audit", label, codeCtx.String())
 
 	schema := llm.AuditSchemaV2()
 	messages, err := r.promptLoader.AssembleAuditMessages(llm.AuditParams{
@@ -306,12 +314,21 @@ func (r *auditV2Run) call(ctx context.Context, claims []auditClaimV2, label stri
 // round-robin across claims, so each claim gets its most useful context
 // before any claim gets its next.
 func (r *auditV2Run) retrieve(claims []auditClaimV2, sent map[string]bool) (string, int) {
-	if r.index == nil {
+	locations := make([]auditctx.Claim, len(claims))
+	for i, c := range claims {
+		locations[i] = auditctx.Claim{File: c.FilePath, Start: c.StartLine, End: c.EndLine}
+	}
+	return retrieveAuditContext(r.index, locations, sent, r.counter)
+}
+
+// retrieveAuditContext shares the same extraction and ordering for both audit contracts.
+func retrieveAuditContext(index *auditctx.Index, claims []auditctx.Claim, sent map[string]bool, counter *chunk.TokenCounter) (string, int) {
+	if index == nil {
 		return "", 0
 	}
 	perClaim := make([][]auditctx.Excerpt, len(claims))
 	for i, c := range claims {
-		perClaim[i] = r.index.Retrieve(auditctx.Claim{File: c.FilePath, Start: c.StartLine, End: c.EndLine}, sent)
+		perClaim[i] = index.Retrieve(c, sent)
 	}
 	var ordered []auditctx.Excerpt
 	for depth := 0; ; depth++ {
@@ -326,7 +343,7 @@ func (r *auditV2Run) retrieve(claims []auditClaimV2, sent map[string]bool) (stri
 			break
 		}
 	}
-	return auditctx.Render(r.index, ordered, auditRetrievalBudget, r.counter.Count)
+	return auditctx.Render(index, ordered, auditRetrievalBudget, counter.Count)
 }
 
 // otherClaims lists the claims outside batch, one line each.

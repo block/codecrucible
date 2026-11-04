@@ -9,11 +9,13 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/block/codecrucible/internal/auditctx"
 	"github.com/block/codecrucible/internal/chunk"
 	"github.com/block/codecrucible/internal/config"
 	"github.com/block/codecrucible/internal/ingest"
 	"github.com/block/codecrucible/internal/llm"
 	"github.com/block/codecrucible/internal/sarif"
+	"github.com/block/codecrucible/internal/sourceindex"
 )
 
 // AuditResult represents the structured output from the audit phase LLM call.
@@ -84,14 +86,19 @@ func runAuditPhase(
 	productionOnly bool,
 	counter *chunk.TokenCounter,
 	metadata *sarif.ScanMetadata,
+	source *sourceindex.Index,
 ) (*sarif.SARIFDocument, llm.TokenUsage, float64, error) {
 	if len(doc.Runs) == 0 || len(doc.Runs[0].Results) == 0 {
 		return &doc, llm.TokenUsage{}, 0, nil
 	}
+	if source == nil {
+		source = sourceindex.New(fileMap)
+	}
+	retrieval := auditctx.NewRetriever(source)
 	if ap, err := promptLoader.LoadAuditPrompt(); err == nil && ap.Contract == "v2" {
 		v2 := &auditV2Run{repoName: repoName, client: client, endpoint: endpoint, modelCfg: modelCfg, promptLoader: promptLoader,
 			outputMode: outputMode, fileMap: fileMap, modelParams: modelParams, supContext: supContext,
-			productionOnly: productionOnly, counter: counter, metadata: metadata}
+			productionOnly: productionOnly, counter: counter, metadata: metadata, source: source, index: retrieval}
 		return v2.run(ctx, doc, batchSize)
 	}
 	slog.Info("starting audit phase",
@@ -203,10 +210,18 @@ func runAuditPhase(
 		}
 		sort.Strings(paths)
 		for _, path := range paths {
-			if content, ok := fileMap[path]; ok {
+			if content, ok := source.Content(path); ok {
 				fmt.Fprintf(&codeCtx, "<file path=\"%s\">\n%s\n</file>\n\n", path, content)
 			}
 		}
+
+		claims := make([]auditctx.Claim, len(batch))
+		for i, f := range batch {
+			claims[i] = auditctx.Claim{File: f.FilePath, Start: f.StartLine, End: f.EndLine}
+		}
+		retrieved, _ := retrieveAuditContext(retrieval, claims, filesNeeded, counter)
+		codeCtx.WriteString(retrieved)
+		recordSourceBundle(metadata, "audit", label, codeCtx.String())
 
 		messages, err := promptLoader.AssembleAuditMessages(llm.AuditParams{
 			RepoName:             repoName,
