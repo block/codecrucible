@@ -12,9 +12,6 @@ func TestMatchDef(t *testing.T) {
 		name string
 		typ  bool
 	}{
-		{"func (a *App) PageSearch(w http.ResponseWriter, r *http.Request) {", "PageSearch", false},
-		{"func Search[T any](q string) {", "Search", false},
-		{"type User struct {", "User", true},
 		{"export async function performRedirect () {", "performRedirect", false},
 		{"export const isRedirectAllowed = (url: string) => {", "isRedirectAllowed", false},
 		{"const sanitize = async function (x) {", "sanitize", false},
@@ -22,16 +19,11 @@ func TestMatchDef(t *testing.T) {
 		{"module.exports = function serveMetrics () {", "serveMetrics", false},
 		{"    def load_user(self, user_id):", "load_user", false},
 		{"class UserSerializer(serializers.ModelSerializer):", "UserSerializer", true},
-		{"  suspend fun findAccount(id: Long): Account {", "findAccount", false},
 		{"    public ResponseEntity<User> getUser(@PathVariable Long id) {", "getUser", false},
 		{"export interface Basket {", "Basket", true},
 		{"export type Role = 'admin' | 'user'", "Role", true},
 		{"pub(crate) async fn handle_upload(req: Request) -> Response {", "handle_upload", false},
 		{"  validate(input) {", "validate", false},
-		{"object PaymentLimits {", "PaymentLimits", true},
-		{"enum class Direction {", "Direction", true},
-		{"internal data class Party(", "Party", true},
-		{"@JvmInline value class Token(val raw: String)", "Token", true},
 	} {
 		d, ok := matchDef(tc.line)
 		if !ok || d.Name != tc.name || d.Type != tc.typ {
@@ -47,7 +39,7 @@ func TestMatchDef(t *testing.T) {
 
 func goRepo() map[string]string {
 	return map[string]string{
-		"internal/handlers/pages.go": `package handlers
+		"internal/handlers/pages.go": `package handlers; import "example/internal/models"
 
 var searchTmpl *texttmpl.Template
 
@@ -98,8 +90,8 @@ func TestRetrieveFindsCallersTemplatesAndDefinitions(t *testing.T) {
 	want := []string{
 		"main.go:1-10 reference to PageSearch",
 		"web/templates/search.html:1-2 template search.html",
-		"internal/db/queries.go:3-7 definition of SearchDocuments",
-		"internal/models/models.go:3-7 type User",
+		"internal/db/queries.go:3-6 definition of SearchDocuments",
+		"internal/models/models.go:3-6 type User",
 	}
 	var have []string
 	for _, e := range got {
@@ -123,7 +115,7 @@ func TestRetrieveSkipsCommonNames(t *testing.T) {
 		files[fmt.Sprintf("u%d.go", i)] = "package u\n\nvar _ = handler\nvar _ = Sink2\n"
 	}
 	files["a.go"] = "package a\n\nfunc handler() {\n\tSink2()\n}\n"
-	files["b.go"] = "package b\n\nfunc Sink2() {}\n"
+	files["b.go"] = "package a\n\nfunc Sink2() {}\n"
 	ix := NewIndex(files)
 	for _, e := range ix.Retrieve(Claim{File: "a.go", Start: 4}, nil) {
 		if strings.HasPrefix(e.Reason, "reference to") {
@@ -226,39 +218,14 @@ func TestRetrieveFollowsFlaggedValueIntoConstructor(t *testing.T) {
 		"app/src/main/kotlin/pay/TransferService.kt:1-8 reference to buildTransfer",
 		"app/src/test/kotlin/pay/RequestTransferActionTest.kt:1-8 reference to buildTransfer",
 		// The constructor receiving the amount, then where it passes it.
-		"app/src/main/kotlin/pay/Transfer.kt:3-15 receives the flagged value: Transfer",
-		"app/src/main/kotlin/pay/PaymentLimits.kt:6-12 Transfer passes amount to requireValid",
+		"app/src/main/kotlin/pay/Transfer.kt:3-14 receives the flagged expression: Transfer",
+		"app/src/main/kotlin/pay/PaymentLimits.kt:6-10 possible use of Transfer parameter amount in requireValid",
 		// Money.of is a library call: the unrelated crypto.of is not retrieved.
-		"app/src/main/kotlin/pay/AccountClient.kt:4-6 definition of lookUp",
-		"app/src/main/kotlin/pay/Direction.kt:3-7 type Direction",
+		"app/src/main/kotlin/pay/AccountClient.kt:4-4 definition of lookUp",
+		"app/src/main/kotlin/pay/Direction.kt:3-6 type Direction",
 	}
 	if strings.Join(have, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("Retrieve =\n%s\nwant\n%s", strings.Join(have, "\n"), strings.Join(want, "\n"))
-	}
-}
-
-func TestContainingCallsAndParameters(t *testing.T) {
-	lines := strings.Split(`fun build(req: Req) =
-  outer(
-    Transfer(
-      req.id,
-      Money.of(req.code, req.amount),
-    ),
-  )`, "\n")
-	got := containingCalls(lines, 5, 1)
-	if len(got) != 2 || got[0] != (call{name: "Transfer", arg: 1}) || got[1].name != "outer" || got[1].arg != -1 {
-		t.Fatalf("containingCalls = %+v", got)
-	}
-	got = containingCalls([]string{"x = Library.make(", "  amount = v,"}, 2, 1)
-	if len(got) != 1 || got[0] != (call{qualifier: "Library", name: "make", arg: 0, param: "amount"}) {
-		t.Fatalf("named argument call = %+v", got)
-	}
-	params, after := parameters([]string{"class Transfer(", "  private val id: String,", "  amount: Money = Money.ZERO,", ") {", "}"}, 0, 5)
-	if strings.Join(params, ",") != "id,amount" || after != 4 {
-		t.Fatalf("parameters = %v, %d", params, after)
-	}
-	if params, _ := parameters([]string{"public Transfer(String id, Money amount) {"}, 0, 1); strings.Join(params, ",") != "id,amount" {
-		t.Fatalf("Java parameters = %v", params)
 	}
 }
 
