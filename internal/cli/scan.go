@@ -396,6 +396,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 	}
 
 	if len(filtered) == 0 {
+		slog.Info("no source files after filtering, producing empty SARIF")
 		return outputEmptySARIF(cfg, startedAt)
 	}
 	costEstimate := estimateScanCost(totalTokens, cfg)
@@ -407,9 +408,6 @@ func runScan(cmd *cobra.Command, args []string) error {
 		costEstimate, err = planScanCost(flatResult, cfg, loader, filepath.Base(repoRoot), counter, &chunk.ChunkOptions{ImportGraph: importGraph, ExportSummaries: exportSummaries})
 		if err != nil {
 			return err
-		}
-		for _, model := range costEstimate.plan.Unpriced {
-			slog.Warn("cost estimate incomplete: missing pricing", "model", model)
 		}
 	}
 	scopeAttrs := []any{

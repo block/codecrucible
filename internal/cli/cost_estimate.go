@@ -166,6 +166,7 @@ func planScanCost(flat ingest.FlattenResult, cfg *config.Config, loader *llm.Pro
 		if loadErr != nil {
 			return e, fmt.Errorf("planning audit prompt: %w", loadErr)
 		}
+		// Match runAuditPhase: only the v2 contract selects the v2 schema.
 		if ap.Contract == "v2" {
 			auditSchema = llm.AuditSchemaV2()
 		}
@@ -224,7 +225,7 @@ func explicitMaxCost(cmd *cobra.Command, settings *viper.Viper, limit float64) b
 
 func (e scanCostEstimate) checkConfiguredBudget(limit float64, explicit bool) error {
 	if !explicit && e.plan != nil && len(e.plan.Unpriced) > 0 {
-		slog.Warn("default $25 cap is not being enforced for unpriced models", "models", strings.Join(e.plan.Unpriced, ", "), "action", "add model pricing or set an explicit max-cost")
+		slog.Warn(fmt.Sprintf("default $%.0f cap is not being enforced for unpriced models", config.DefaultMaxCost), "models", strings.Join(e.plan.Unpriced, ", "), "action", "add model pricing or set an explicit max-cost")
 		// Keep enforcing the known priced portion under the implicit cap.
 		priced := e
 		priced.plan = nil
