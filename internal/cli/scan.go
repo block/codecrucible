@@ -395,7 +395,23 @@ func runScan(cmd *cobra.Command, args []string) error {
 		flatResult.BuildFullXML(filtered, flattenCfg)
 	}
 
+	if len(filtered) == 0 {
+		return outputEmptySARIF(cfg, startedAt)
+	}
 	costEstimate := estimateScanCost(totalTokens, cfg)
+	if cfg.DryRun || cfg.MaxCost > 0 {
+		loader, loadErr := resolvePromptLoader(cfg.PromptsDir)
+		if loadErr != nil {
+			return fmt.Errorf("loading prompts: %w", loadErr)
+		}
+		costEstimate, err = planScanCost(flatResult, cfg, loader, filepath.Base(repoRoot), counter, &chunk.ChunkOptions{ImportGraph: importGraph, ExportSummaries: exportSummaries})
+		if err != nil {
+			return err
+		}
+		for _, model := range costEstimate.plan.Unpriced {
+			slog.Warn("cost estimate incomplete: missing pricing", "model", model)
+		}
+	}
 	scopeAttrs := []any{
 		"files", len(filtered),
 		"tokens", totalTokens,
@@ -403,12 +419,6 @@ func runScan(cmd *cobra.Command, args []string) error {
 		"context_limit", modelCfg.ContextLimit,
 	}
 	slog.Info("analysis scope", append(scopeAttrs, costEstimate.logAttrs()...)...)
-
-	// Handle empty repo.
-	if len(filtered) == 0 {
-		slog.Info("no source files after filtering, producing empty SARIF")
-		return outputEmptySARIF(cfg, startedAt)
-	}
 
 	if cfg.DryRun {
 		fmt.Printf("Dry run — analysis scope:\n")
@@ -419,10 +429,6 @@ func runScan(cmd *cobra.Command, args []string) error {
 		for _, warning := range modelWarnings {
 			fmt.Printf("  Warning: %s (model: %s; phases: %s)\n",
 				warning.Message, warning.Model, strings.Join(warning.Phases, ", "))
-		}
-		if totalTokens > modelCfg.ContextLimit {
-			chunks := (totalTokens / modelCfg.ContextLimit) + 1
-			fmt.Printf("  Will require ~%d chunks\n", chunks)
 		}
 		return nil
 	}
@@ -440,12 +446,10 @@ func runScan(cmd *cobra.Command, args []string) error {
 
 	slog.Info("LLM provider configured", "provider", analysis.Provider, "model", modelCfg.Name)
 
-	// Load prompt templates.
 	promptLoader, err := resolvePromptLoader(cfg.PromptsDir)
 	if err != nil {
 		return fmt.Errorf("loading prompts: %w", err)
 	}
-
 	schema := llm.SecurityAnalysisSchema()
 	if ap, err := promptLoader.LoadAuditPrompt(); err == nil && ap.Contract == "v3" {
 		schema = llm.SecurityAnalysisSchemaV3()
