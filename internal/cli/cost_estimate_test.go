@@ -181,7 +181,7 @@ func TestUnpricedBudgetDefaultWarnsButExplicitLimitRejects(t *testing.T) {
 	if err := e.checkConfiguredBudget(25, false); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(logs.String(), "default $25 cap is not being enforced") {
+	if !strings.Contains(logs.String(), fmt.Sprintf("default $%.0f cap is not being enforced", config.DefaultMaxCost)) {
 		t.Fatal(logs.String())
 	}
 	if err := e.checkConfiguredBudget(25, true); err == nil || !strings.Contains(err.Error(), "--max-cost 0") {
