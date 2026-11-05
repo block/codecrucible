@@ -276,3 +276,20 @@ func TestNormalizeRuleID(t *testing.T) {
 		})
 	}
 }
+
+func TestMergePreservesWeaknessAndStrongestDuplicate(t *testing.T) {
+	mk := func(cwe string, severity float64) SARIFDocument {
+		return Build(AnalysisResult{SecurityIssues: []SecurityIssue{{Issue: "unsafe input", FilePath: "a.go", StartLine: 1,
+			CWEID: cwe, Severity: severity, TechnicalDetails: "same evidence"}}}, FileMap{"a.go": "sink(input)"}, BuilderConfig{})
+	}
+	a, b := mk("CWE-89", 2), mk("CWE-89", 9)
+	for _, docs := range [][]SARIFDocument{{a, b}, {b, a}} {
+		merged := Merge(docs)
+		if len(merged.Runs[0].Results) != 1 || *merged.Runs[0].Results[0].Properties.Severity != 9 {
+			t.Fatal("weaker duplicate won")
+		}
+	}
+	if got := Merge([]SARIFDocument{a, mk("CWE-78", 9)}); len(got.Runs[0].Results) != 2 {
+		t.Fatal("different weaknesses were merged")
+	}
+}

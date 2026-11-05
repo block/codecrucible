@@ -8,6 +8,7 @@ import (
 
 	"github.com/block/codecrucible/internal/config"
 	"github.com/block/codecrucible/internal/llm"
+	"github.com/block/codecrucible/internal/provenance"
 	"github.com/block/codecrucible/internal/sarif"
 )
 
@@ -15,8 +16,9 @@ import (
 // clients run concurrently, so calls update this guarded state and apply
 // copies it into the scan metadata from the scan goroutine.
 type modelUsage struct {
-	mu     sync.Mutex
-	phases map[string]map[string]*sarif.ModelExecution
+	mu      sync.Mutex
+	phases  map[string]map[string]*sarif.ModelExecution
+	lineage *provenance.Ledger
 }
 
 func newModelUsage() *modelUsage {
@@ -28,11 +30,22 @@ func (u *modelUsage) wrap(phase string, client llm.Client, model config.ModelCon
 	if u == nil || client == nil {
 		return client
 	}
-	// A phase that falls back to another phase's client is tallied as itself.
-	if recording, ok := client.(*recordingClient); ok {
-		client = recording.next
+	// A fallback reuses the transport, not the originating phase's observers.
+	// Remove both wrappers regardless of their order so the call is counted
+	// and traced exactly once under the phase that actually made it.
+	for {
+		switch c := client.(type) {
+		case *recordingClient:
+			client = c.next
+		case *lineageClient:
+			client = c.base
+		default:
+			if u.lineage != nil {
+				client = traceClient(client, u.lineage, phase)
+			}
+			return &recordingClient{next: client, usage: u, phase: phase, model: model}
+		}
 	}
-	return &recordingClient{next: client, usage: u, phase: phase, model: model}
 }
 
 type recordingClient struct {

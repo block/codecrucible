@@ -14,22 +14,32 @@ import * as baz from './components/baz.ts'
 	got := ParseImports("src/app.ts", content)
 
 	want := map[string]bool{
+		"src/utils":             true,
 		"src/utils.ts":          true,
 		"src/utils.tsx":         true,
 		"src/utils.js":          true,
 		"src/utils.jsx":         true,
+		"src/utils.mjs":         true,
+		"src/utils.cjs":         true,
 		"src/utils/index.ts":    true,
 		"src/utils/index.tsx":   true,
 		"src/utils/index.js":    true,
 		"src/utils/index.jsx":   true,
+		"src/utils/index.mjs":   true,
+		"src/utils/index.cjs":   true,
 		"lib/bar.ts":            true,
+		"lib/bar":               true,
 		"lib/bar.tsx":           true,
 		"lib/bar.js":            true,
 		"lib/bar.jsx":           true,
+		"lib/bar.mjs":           true,
+		"lib/bar.cjs":           true,
 		"lib/bar/index.ts":      true,
 		"lib/bar/index.tsx":     true,
 		"lib/bar/index.js":      true,
 		"lib/bar/index.jsx":     true,
+		"lib/bar/index.mjs":     true,
+		"lib/bar/index.cjs":     true,
 		"src/components/baz.ts": true,
 	}
 
@@ -145,6 +155,8 @@ from ..shared import helpers
 
 	want := map[string]bool{
 		"src/app/__init__.py":        true,
+		"src/app/utils.py":           true,
+		"src/app/utils/__init__.py":  true,
 		"src/app/models.py":          true,
 		"src/app/models/__init__.py": true,
 		"src/shared.py":              true,

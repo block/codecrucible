@@ -19,6 +19,16 @@ func newTestChunker(encoding string) Chunker {
 	return NewChunker(tc, slog.Default())
 }
 
+func TestChunkSharedFilesStillProduceAChunk(t *testing.T) {
+	input := ingest.FlattenResult{FileMap: ingest.FileMap{"main.go": "package main\nfunc main() {}"}}
+	for _, opts := range []*ChunkOptions{nil, {ImportGraph: map[string][]string{"main.go": {"missing.go"}}}} {
+		chunks, err := newTestChunker("").Chunk(input, 10000, opts)
+		if err != nil || len(chunks) != 1 || len(chunks[0].Paths) != 1 || chunks[0].Paths[0] != "main.go" || !strings.Contains(chunks[0].XML, "func main") {
+			t.Fatalf("shared file disappeared: chunks=%+v err=%v", chunks, err)
+		}
+	}
+}
+
 func TestChunk_EmptyInput(t *testing.T) {
 	ch := newTestChunker("cl100k_base")
 	input := makeFlattenResult(nil)
