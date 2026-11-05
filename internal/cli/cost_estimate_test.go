@@ -121,7 +121,7 @@ func TestCostPlanUsesPromptBudgetAndAuditBatches(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if repeated.plan.AuditBatches != 4 || math.Abs(repeated.AuditInput-2*larger.AuditInput) > 1e-9 {
+	if repeated.plan.AuditBatches != 4 || repeated.AuditInput <= larger.AuditInput || repeated.AuditInput >= 2*larger.AuditInput {
 		t.Fatal("audit batches not priced separately")
 	}
 	cfg.SkipAudit = true
@@ -133,7 +133,7 @@ func TestCostPlanUsesPromptBudgetAndAuditBatches(t *testing.T) {
 		t.Fatal("disabled audit still priced")
 	}
 	// Audit work must change the same gate used before client construction.
-	threshold := (disabled.Planning + repeated.Planning) / 2
+	threshold := (disabled.TotalInput + repeated.TotalInput) / 2
 	if disabled.checkBudget(threshold) != nil || repeated.checkBudget(threshold) == nil {
 		t.Fatal("audit excluded from budget decision")
 	}
@@ -218,5 +218,68 @@ func TestUnpricedBudgetDefaultWarnsButExplicitLimitRejects(t *testing.T) {
 	}
 	if !explicitMaxCost(cmd, settings, 25) {
 		t.Fatal("explicit flag default-value limit ignored")
+	}
+}
+
+func TestCostPlanMediumRepoDoesNotRepeatAllSourcePerBatch(t *testing.T) {
+	loader, err := resolvePromptLoader("../../prompts/default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	counter := chunk.NewTokenCounter("", nil)
+	var files []ingest.SourceFile
+	for i := 0; i < 1200; i++ {
+		files = append(files, ingest.SourceFile{Path: fmt.Sprintf("src/f%04d.go", i), Content: strings.Repeat("var value = 123\n", 420), LineCount: 420, Language: "go"})
+	}
+	flat := ingest.Flatten(files, ingest.FlattenConfig{})
+	flat.Tokens = counter.Count(flat.XML)
+	model := config.ModelConfig{Name: "priced", ContextLimit: 200000, MaxOutputTokens: 16000, InputPricePerM: 2, OutputPricePerM: 10}
+	cfg := &config.Config{AuditBatchSize: 25, Phases: config.Phases{Analysis: config.PhaseConfig{ModelCfg: model}, Audit: config.PhaseConfig{ModelCfg: model}}}
+	if err := estimateScanCost(flat.Tokens, cfg).checkBudget(config.DefaultMaxCost); err != nil {
+		t.Fatalf("fixture must pass base input gate: %v", err)
+	}
+	e, err := planScanCost(flat, cfg, loader, "synthetic", counter, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e.plan.AuditBatches != 48 || e.checkBudget(config.DefaultMaxCost) != nil {
+		t.Fatalf("medium repo incorrectly blocked (%d tokens): %+v", flat.Tokens, e)
+	}
+	// Includes one source pass plus per-batch prompt/retrieval, far below
+	// charging the model's full input capacity 48 times.
+	if e.AuditInput >= 14 {
+		t.Fatalf("source charged repeatedly: %f", e.AuditInput)
+	}
+	t.Logf("tokens=%d input=$%.4f scenario output bound=$%.4f", flat.Tokens, e.TotalInput, e.Planning)
+}
+
+func TestInputGateAndMixedPricing(t *testing.T) {
+	e := scanCostEstimate{TotalInput: 20, Planning: 40, plan: &scanCostPlan{}}
+	if err := e.checkBudget(25); err != nil {
+		t.Fatalf("output silently tightened gate: %v", err)
+	}
+	e.TotalInput = 26
+	if err := e.checkBudget(25); err == nil || !strings.Contains(err.Error(), "input + maximum output") {
+		t.Fatalf("missing input-gate diagnostic: %v", err)
+	}
+}
+
+func TestMixedPricingKeepsPricedGate(t *testing.T) {
+	e := scanCostEstimate{TotalInput: 26, Planning: 40, plan: &scanCostPlan{}}
+	e.plan.Unpriced = []string{"audit (unpriced)"}
+	if err := e.checkConfiguredBudget(25, false); err == nil {
+		t.Fatal("unpriced audit disabled priced analysis gate")
+	}
+	e.TotalInput = 20
+	if err := e.checkConfiguredBudget(25, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.checkConfiguredBudget(25, true); err == nil {
+		t.Fatal("explicit gate accepted incomplete estimate")
+	}
+	var summary bytes.Buffer
+	e.writeSummary(&summary)
+	if !strings.Contains(summary.String(), "Input + maximum output upper bound (scenario)") {
+		t.Fatal(summary.String())
 	}
 }
