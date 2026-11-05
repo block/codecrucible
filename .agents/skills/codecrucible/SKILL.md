@@ -40,7 +40,7 @@ Use CodeCrucible as a cost-aware security scanning CLI. Treat its output as evid
 - Use `prompts/exploit-proof` for polyglot targets or when no language-specific set fits.
 - Use `carlini`, `carlini-curated`, or `nano-analyzer` only when the user asks for that style or when the constraints described in `PROMPT_SETS.md` fit the task.
 - Prefer cheaper models for feature detection and stronger reasoning models for analysis when cost matters; use per-phase flags instead of forcing one model across every phase.
-- Keep `--max-cost` set for exploratory work. Use `--fail-on-severity` only when the user wants a gating exit code.
+- Keep `--max-cost` set for exploratory work. An explicit `--max-cost` rejects a scan whose model has no pricing; configure pricing under `models:` or pass `--max-cost 0`. Use `--fail-on-severity` only when the user wants a gating exit code.
 
 ## Provider And Config Rules
 
