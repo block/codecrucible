@@ -9,6 +9,9 @@ import (
 	"github.com/spf13/viper"
 )
 
+// DefaultMaxCost is the historical input-cost preflight limit in dollars.
+const DefaultMaxCost = 25.0
+
 // Config holds the application configuration loaded from Viper.
 type Config struct {
 	// Global options
@@ -138,7 +141,7 @@ func SetDefaults(v *viper.Viper) {
 	v.SetDefault("verbose", false)
 	v.SetDefault("model", "")
 	v.SetDefault("fail-on-severity", float64(0))
-	v.SetDefault("max-cost", float64(25)) //Set to $25 as a default
+	v.SetDefault("max-cost", DefaultMaxCost) //Set to $25 as a default
 	v.SetDefault("dry-run", false)
 	v.SetDefault("include-tests", false)
 	v.SetDefault("include-docs", false)

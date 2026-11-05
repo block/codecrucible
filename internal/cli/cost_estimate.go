@@ -65,11 +65,8 @@ func (e scanCostEstimate) checkBudget(maxCost float64) error {
 		return fmt.Errorf("cannot enforce --max-cost: missing pricing for %s; add input and output pricing or unset max-cost (--max-cost 0)", strings.Join(e.plan.Unpriced, ", "))
 	}
 	cost := e.TotalInput
-	if e.plan != nil {
-		cost = e.Planning
-	}
 	if maxCost > 0 && cost > maxCost {
-		return fmt.Errorf("estimated cost $%.4f exceeds --max-cost $%.2f; aborting (use --dry-run to preview)", cost, maxCost)
+		return fmt.Errorf("estimated input cost $%.4f exceeds --max-cost $%.2f; input + maximum output upper bound for this scenario: $%.4f; aborting (use --dry-run to preview)", cost, maxCost, e.Planning)
 	}
 	return nil
 }
@@ -89,12 +86,12 @@ func (e scanCostEstimate) writeSummary(w io.Writer) {
 		fmt.Fprintf(w, "  Estimated audit input cost:    $%.4f (model: %s)\n", e.AuditInput, e.auditModel)
 	}
 	fmt.Fprintf(w, "  Estimated total input cost:    $%.4f\n", e.TotalInput)
-	fmt.Fprintf(w, "  Rough input + output cost:    $%.4f\n", e.Planning)
+	fmt.Fprintf(w, "  Input + maximum output upper bound (scenario):    $%.4f\n", e.Planning)
 	fmt.Fprintf(w, "  Planning allowance (2–3x):    $%.2f–$%.2f (not a ceiling)\n", e.AllowanceLow, e.AllowanceHigh)
 	if e.plan != nil {
 		fmt.Fprintf(w, "  Planned analysis chunks: %d (source budget: %d tokens)\n", e.plan.Chunks, e.plan.SourceBudget)
 		fmt.Fprintf(w, "  Audit scenario: %d batches; one finding per source file, batch size %d; up to %d retrieval tokens per batch within model capacity.\n", e.plan.AuditBatches, e.plan.BatchSize, auditRetrievalBudget)
-		fmt.Fprintln(w, "  Assumptions: all analysis prompt sections; 20% context safety margin; configured maximum output per request. Audit source is a repository-sized allowance per batch, capped with prompt and retrieval by model input capacity. Actual findings and batches are unknown; this is not a spending ceiling.")
+		fmt.Fprintln(w, "  Assumptions: all analysis prompt sections; 20% context safety margin; configured maximum output per request. Each source file appears in one audit batch; each batch is capped with prompt and retrieval by model input capacity. Actual findings and batches are unknown; this is not a spending ceiling.")
 		fmt.Fprintln(w, "  Excludes feature detection, supplementary context and compression, adaptive tokenizer correction, finding payloads/CWE-specific audit sections, retries, and additional audit iterations. These may change the executed chunk plan and cost.")
 		for _, model := range e.plan.Unpriced {
 			fmt.Fprintf(w, "  Warning: missing pricing for %s; estimate is incomplete, not free.\n", model)
@@ -185,12 +182,27 @@ func planScanCost(flat ingest.FlattenResult, cfg *config.Config, loader *llm.Pro
 			base += auditCounter.Count(string(*auditSchema))
 		}
 		capacity := max(0, audit.ContextLimit-audit.MaxOutputTokens)
-		// Reserve retrieval only from capacity left after source/prompt allowance;
-		// source files already sent must never be charged twice as retrieval.
-		source := min(flat.Tokens, max(0, capacity-base))
-		retrieval := min(auditRetrievalBudget, max(0, capacity-base-source))
-		input := min(capacity, base+source+retrieval)
-		for i := 0; i < batches; i++ {
+		// The scenario assigns each file to exactly one deterministic batch.
+		// Only prompt and retrieval allowances repeat across batches.
+		paths := make([]string, 0, len(flat.FileMap))
+		for path := range flat.FileMap {
+			paths = append(paths, path)
+		}
+		sort.Strings(paths)
+		batchSize := cfg.AuditBatchSize
+		if batchSize <= 0 {
+			batchSize = max(1, len(paths))
+		}
+		for offset := 0; offset < len(paths); offset += batchSize {
+			var files []ingest.SourceFile
+			for _, path := range paths[offset:min(len(paths), offset+batchSize)] {
+				content := flat.FileMap[path]
+				files = append(files, ingest.SourceFile{Path: path, Content: content, LineCount: strings.Count(content, "\n") + 1})
+			}
+			sourceXML := ingest.Flatten(files, ingest.FlattenConfig{}).XML
+			source := min(auditCounter.Count(sourceXML), max(0, capacity-base))
+			retrieval := min(auditRetrievalBudget, max(0, capacity-base-source))
+			input := min(capacity, base+source+retrieval)
 			e.AuditInput += audit.EstimateInputCost(input)
 			e.Planning += audit.EstimateCost(input, audit.MaxOutputTokens)
 		}
@@ -207,13 +219,16 @@ func planScanCost(flat ingest.FlattenResult, cfg *config.Config, loader *llm.Pro
 // MAX_COST is the environment name used by config.BindEnvVars.
 func explicitMaxCost(cmd *cobra.Command, settings *viper.Viper, limit float64) bool {
 	flag := cmd.Flags().Lookup("max-cost")
-	return (flag != nil && flag.Changed) || settings.InConfig("max-cost") || os.Getenv("MAX_COST") != "" || limit != 25
+	return (flag != nil && flag.Changed) || settings.InConfig("max-cost") || os.Getenv("MAX_COST") != "" || limit != config.DefaultMaxCost
 }
 
 func (e scanCostEstimate) checkConfiguredBudget(limit float64, explicit bool) error {
 	if !explicit && e.plan != nil && len(e.plan.Unpriced) > 0 {
 		slog.Warn("default $25 cap is not being enforced for unpriced models", "models", strings.Join(e.plan.Unpriced, ", "), "action", "add model pricing or set an explicit max-cost")
-		return nil
+		// Keep enforcing the known priced portion under the implicit cap.
+		priced := e
+		priced.plan = nil
+		return priced.checkBudget(limit)
 	}
 	return e.checkBudget(limit)
 }

@@ -65,7 +65,7 @@ pipeline and produces SARIF output suitable for GitHub Code Scanning integration
 
 	// Analysis behaviour
 	cmd.Flags().Float64("fail-on-severity", 0, "exit non-zero if any finding meets or exceeds this severity (0-10)")
-	cmd.Flags().Float64("max-cost", 25, "maximum cost budget in dollars (0 = unlimited)")
+	cmd.Flags().Float64("max-cost", config.DefaultMaxCost, "maximum cost budget in dollars (0 = unlimited)")
 	cmd.Flags().Bool("dry-run", false, "show what would be analyzed without making LLM calls")
 	cmd.Flags().String("custom-requirements", "", "additional analysis requirements to include in the prompt")
 	cmd.Flags().StringSlice("context-source", nil, "supplementary context as key=value pairs: name=X,type=<path|repo|url|inline>,location=Y,priority=N,compress=true (repeatable)")
