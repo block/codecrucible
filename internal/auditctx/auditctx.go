@@ -68,16 +68,17 @@ func NewRetriever(source *sourceindex.Index) *Index {
 
 // Limits keep retrieval to evidence that plausibly decides a claim.
 const (
-	maxCallerFiles = 3
-	maxCallerHits  = 2
-	maxCallerSpan  = 8 // files referencing a name before it counts as too common
-	callerRadius   = 8
-	maxCallees     = 4
-	maxTypes       = 3
-	maxContaining  = 2 // calls the flagged value is passed into
-	maxForwarded   = 2 // definitions a receiving call passes the value to
-	maxDefLines    = 60
-	maxTemplate    = 400
+	maxCallerFiles       = 3
+	maxCallerHits        = 2
+	maxCallerSpan        = 8 // files referencing a name before it counts as too common
+	callerRadius         = 8
+	maxCallees           = 4
+	maxCallerDefinitions = 8
+	maxTypes             = 3
+	maxContaining        = 2 // calls the flagged value is passed into
+	maxForwarded         = 2 // definitions a receiving call passes the value to
+	maxDefLines          = 60
+	maxTemplate          = 400
 	// maxEnclosingSpan is how far below a definition a claim can sit and
 	// still count as inside it.
 	maxEnclosingSpan = 150
@@ -120,17 +121,21 @@ func (ix *Index) Retrieve(c Claim, skip map[string]bool) []Excerpt {
 			coverage[e.File] = merge(append(coverage[e.File], [2]int{e.Start, e.End}))
 		}
 	}
+	seen := map[defID]bool{}
+	if haveEnclosing {
+		seen[enclosing.ID()] = true
+	}
 	if haveEnclosing && !genericNames[enclosing.Name] && len(enclosing.Name) >= 4 {
-		for _, e := range ix.callerExcerpts(enclosing) {
+		callers := ix.callerExcerpts(enclosing)
+		for _, e := range callers {
+			add(e)
+		}
+		for _, e := range ix.callerDefinitions(enclosing, callers, seen) {
 			add(e)
 		}
 	}
 	for _, e := range ix.templateExcerpts(ix.templateLines(c.File, window), c.File) {
 		add(e)
-	}
-	seen := map[defID]bool{}
-	if haveEnclosing {
-		seen[enclosing.ID()] = true
 	}
 	n := 0
 	for _, receiver := range ix.source.ContainingCalls(c.File, c.Start, end, lo) {
@@ -179,6 +184,49 @@ func (ix *Index) Retrieve(c Claim, skip map[string]bool) []Excerpt {
 
 func defExcerpt(d Def, reason string) Excerpt {
 	return Excerpt{File: d.File, Start: d.Line, End: min(d.End, d.Line+maxDefLines-1), Reason: reason}
+}
+
+// The entry point often names a wrapper or middleware that is absent from the
+// handler itself. Resolve those local calls before lower-priority context. A
+// nearby declaration is only a candidate; the model must establish ordering and
+// applicability from the caller source, rather than assuming it is a guard.
+func (ix *Index) callerDefinitions(subject Def, callers []Excerpt, seen map[defID]bool) []Excerpt {
+	type candidate struct {
+		file   string
+		ref    sourceindex.Reference
+		direct bool
+	}
+	var candidates []candidate
+	for _, e := range callers {
+		lines := ix.source.Code(e.File)
+		refs := ix.source.Calls(e.File, e.Start, e.End)
+		for _, ref := range ix.source.NameReferences(e.File, e.Start, e.End) {
+			line := lines[ref.Line-1]
+			if strings.Contains(line, subject.Name) || routeHint.MatchString(line) {
+				refs = append(refs, ref)
+			}
+		}
+		for _, ref := range refs {
+			if keywords[ref.Name] || genericNames[ref.Name] || ix.source.IsDefinition(e.File, ref.Line, ref.Name) {
+				continue
+			}
+			candidates = append(candidates, candidate{e.File, ref, strings.Contains(lines[ref.Line-1], subject.Name)})
+		}
+	}
+	sort.SliceStable(candidates, func(i, j int) bool { return candidates[i].direct && !candidates[j].direct })
+	var out []Excerpt
+	for _, c := range candidates {
+		d, ok := ix.source.Resolve(c.file, c.ref, false)
+		if !ok || seen[d.ID()] {
+			continue
+		}
+		seen[d.ID()] = true
+		out = append(out, defExcerpt(d, "definition used by caller of "+subject.Name+": "+c.ref.Name))
+		if len(out) == maxCallerDefinitions {
+			break
+		}
+	}
+	return out
 }
 
 // Follow only the extractor's explicit one-hop parameter uses. The audit
@@ -260,6 +308,12 @@ func (ix *Index) callerExcerpts(def Def) []Excerpt {
 	sort.SliceStable(order, func(i, j int) bool { return rank(order[i]) < rank(order[j]) })
 	var out []Excerpt
 	for _, f := range order[:min(len(order), maxCallerFiles)] {
+		// A file may import or mention the name many times before registering
+		// the real handler. Spend the hit limit on registrations first.
+		sort.SliceStable(byFile[f], func(i, j int) bool {
+			lines := ix.source.Lines(f)
+			return routeHint.MatchString(lines[byFile[f][i].line-1]) && !routeHint.MatchString(lines[byFile[f][j].line-1])
+		})
 		for _, h := range byFile[f][:min(len(byFile[f]), maxCallerHits)] {
 			out = append(out, Excerpt{File: f, Start: max(1, h.line-callerRadius), End: min(len(ix.source.Lines(f)), h.line+callerRadius),
 				Reason: "reference to " + def.Name})

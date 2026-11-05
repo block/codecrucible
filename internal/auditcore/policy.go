@@ -7,7 +7,7 @@ import (
 	"unicode/utf8"
 )
 
-const PolicyVersion = "audit-v3/1"
+const PolicyVersion = "audit-v3/2"
 
 var Questions = []string{"attacker_control", "weakness", "boundary", "unmitigated", "impact"}
 
@@ -76,20 +76,30 @@ type Child struct {
 	Covers   []Coverage `json:"covers"`
 	Evidence []Evidence `json:"evidence"`
 }
+
+// ContextRequest asks for an admitted declaration or a bounded source range.
+// It is evidence retrieval only, never permission to read other files or run code.
+type ContextRequest struct {
+	File   string `json:"file"`
+	Symbol string `json:"symbol"`
+	Start  int    `json:"start_line"`
+	End    int    `json:"end_line"`
+}
 type Assessment struct {
-	CoveredMaterial []Coverage  `json:"covered_material"`
-	FindingID       string      `json:"finding_id"`
-	RevisionID      string      `json:"revision_id"`
-	Digest          string      `json:"claim_digest"`
-	Assertions      []Assertion `json:"assertions"`
-	Crux            string      `json:"crux"`
-	Missing         []Evidence  `json:"missing_evidence"`
-	Children        []Child     `json:"children"`
-	Summary         string      `json:"summary"`
-	Remediation     string      `json:"remediation"`
-	RefinedSeverity float64     `json:"refined_severity"`
-	SeverityBasis   string      `json:"severity_basis"`
-	RefinedCWE      string      `json:"refined_cwe"`
+	ContextRequests []ContextRequest `json:"context_requests"`
+	CoveredMaterial []Coverage       `json:"covered_material"`
+	FindingID       string           `json:"finding_id"`
+	RevisionID      string           `json:"revision_id"`
+	Digest          string           `json:"claim_digest"`
+	Assertions      []Assertion      `json:"assertions"`
+	Crux            string           `json:"crux"`
+	Missing         []Evidence       `json:"missing_evidence"`
+	Children        []Child          `json:"children"`
+	Summary         string           `json:"summary"`
+	Remediation     string           `json:"remediation"`
+	RefinedSeverity float64          `json:"refined_severity"`
+	SeverityBasis   string           `json:"severity_basis"`
+	RefinedCWE      string           `json:"refined_cwe"`
 }
 type Outcome struct {
 	Status     string      `json:"status"`
@@ -155,7 +165,7 @@ func Evaluate(c Claim, a Assessment, verify VerifySource, assumptionVerifiers ..
 		for i := range v.Flow {
 			v.Flow[i].Evidence = checked(v.Flow[i].Evidence, verify)
 		}
-		valid := strings.TrimSpace(v.Statement) != "" && strings.TrimSpace(v.Subject) != "" && strings.TrimSpace(v.Reason) != "" && len(v.Evidence) > 0
+		valid := strings.TrimSpace(v.Statement) != "" && strings.TrimSpace(v.Subject) != "" && strings.TrimSpace(v.Reason) != "" && len(v.Evidence) > 0 && mentions(v.Evidence, v.Subject)
 		if v.Kind == "weakness" {
 			anchored := false
 			for _, e := range v.Evidence {

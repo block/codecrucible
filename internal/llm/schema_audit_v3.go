@@ -64,6 +64,12 @@ func auditWireSchema(t reflect.Type) map[string]any {
 			describe("file", "Exact admitted repository-relative file path. Only framework assumptions may use supplementary_context.")
 			describe("quote", "Exact nontrivial source text in the stated inclusive range, without N| prefixes.")
 		}
+		if t == reflect.TypeOf(auditcore.ContextRequest{}) {
+			describe("file", "Exact admitted repository-relative file path. External dependencies and arbitrary filesystem paths are unavailable.")
+			describe("symbol", "Exact unqualified declaration name in that file when its line number is unknown. Otherwise empty. Ambiguous declarations are not guessed.")
+			describe("start_line", "Use 0 for a symbol request; otherwise the first line of a source range of at most 120 lines.")
+			describe("end_line", "Use 0 for a symbol request; otherwise the inclusive last line of the requested range.")
+		}
 		if t == reflect.TypeOf(auditcore.Coverage{}) {
 			describe("material_id", "Copy the original material ID.")
 			describe("quote", "Copy the entire original material text exactly for a whole-claim assessment; for a child, copy the exact original assertion it retains.")

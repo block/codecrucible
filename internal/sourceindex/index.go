@@ -211,6 +211,39 @@ func (ix *Index) Calls(file string, lo, hi int) []Reference {
 	}
 	return out
 }
+
+// NameReferences includes bare function values, such as middleware passed to a
+// registration function without being called there. These are name-resolution
+// candidates only; they do not establish invocation or execution order.
+func (ix *Index) NameReferences(file string, lo, hi int) []Reference {
+	src := ix.sources[file]
+	if src == nil {
+		return nil
+	}
+	code := src.code
+	if src.mode == "lexical" {
+		code = strings.Split(maskSource(strings.Join(code, "\n"), src.language == ".py"), "\n")
+	}
+	var out []Reference
+	offset := 0
+	for i, line := range code {
+		if i+1 >= lo && i+1 <= hi {
+			for _, m := range nameUse.FindAllStringSubmatchIndex(line, -1) {
+				name := line[m[4]:m[5]]
+				if len(ix.defs[name]) == 0 {
+					continue
+				}
+				r := Reference{Name: name, Offset: offset + m[0], Line: i + 1}
+				if m[2] >= 0 {
+					r.Qualifier = line[m[2]:m[3]]
+				}
+				out = append(out, r)
+			}
+		}
+		offset += len(line) + 1
+	}
+	return out
+}
 func (ix *Index) ContainingCalls(file string, start, end, lo int) []BoundCall {
 	var out []BoundCall
 	if src := ix.sources[file]; src != nil {

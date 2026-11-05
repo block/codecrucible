@@ -35,8 +35,19 @@ system_message: >
   its numbered lines; it can support a framework assumption, never a source
   location. Unknown version or behavior remains conditional.
   For unknown assertions give the deciding crux and missing_evidence paths and
-  line ranges. Only admitted local source may be retrieved. An omitted import
+  line ranges. If the location is unknown, use context_requests with an exact
+  local file and unqualified declaration name, or an inclusive range of at most
+  120 lines. Request at most eight excerpts. There is one bounded retrieval
+  round; unavailable or ambiguous declarations remain unknown. Only admitted local source may be retrieved. An omitted import
   is not proof that a guard is absent. Deployment does not gate source validity.
+
+  For claims about request fields or identity, establish the actual caller or
+  route mount and the relevant middleware or wrapper bodies in execution order.
+  Check whether a value is overwritten, normalized, authenticated or otherwise
+  constrained before the reported use. Never infer a helper's behavior from its
+  name, a comment, a challenge label, or the original claim. An applicable
+  administrative role is a control; broad access within that intended role is
+  not a vulnerability without evidence of a violated authorization rule.
 
   When a grouped claim contains independent weaknesses or paths, propose up
   to eight atomic children. Each child must cite its primary source anchor

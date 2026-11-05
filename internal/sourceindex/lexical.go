@@ -25,6 +25,7 @@ var (
 		"else": true, "do": true, "try": true, "with": true, "new": true, "typeof": true, "await": true,
 	}
 	callName = regexp.MustCompile(`(?:([A-Za-z_$][\w$]*)\s*\.\s*)?([A-Za-z_$][\w$]*)\s*\(`)
+	nameUse  = regexp.MustCompile(`\b(?:([A-Za-z_$][\w$]*)\s*\.\s*)?([A-Za-z_$][\w$]*)\b`)
 	typeName = regexp.MustCompile(`\b(?:([A-Za-z_]\w*)\s*\.\s*)?([A-Z][A-Za-z0-9_]*)\b`)
 )
 
