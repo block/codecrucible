@@ -1,7 +1,8 @@
 // Package auditctx retrieves the source an audit needs beyond the files a
 // claim cites: callers and route registrations of the flagged function,
-// templates it renders, and definitions of the functions and types the
-// flagged lines use. Retrieval is lexical and deterministic, so a replayed
+// templates it renders, the call that receives the flagged value and what it
+// passes that value to, and definitions of the functions and types the
+// flagged lines use. Retrieval is syntax-aware and deterministic, so a replayed
 // audit sees the same context, and it is bounded by a token budget.
 package auditctx
 
@@ -15,11 +16,14 @@ import (
 
 // Def is a function or type definition found in a scanned file.
 type Def struct {
-	Name string
-	Type bool // a type (struct, class, interface) rather than a function
-	File string
-	Line int
-	End  int // last line of the definition, bounded by the next definition
+	Name               string
+	Type               bool // a type (struct, class, interface) rather than a function
+	File               string
+	Line               int
+	End                int // inclusive; lexical fallback stops at the next declaration
+	owner              string
+	params             []parameter
+	bodyStart, bodyEnd int // byte offsets, exclusive end; zero if binding is unsupported
 }
 
 // Excerpt is a line range retrieved for context, 1-based and inclusive.
@@ -36,7 +40,8 @@ type Index struct {
 	defs      map[string][]Def // by name
 	byFile    map[string][]Def // in line order
 	templates map[string][]string
-	callers   map[string][]hit
+	sources   map[string]*sourceInfo
+	callers   map[defID][]hit
 }
 
 type hit struct {
@@ -45,41 +50,10 @@ type hit struct {
 }
 
 var (
-	funcPatterns = []*regexp.Regexp{
-		regexp.MustCompile(`^\s*func\s+(?:\([^)]*\)\s*)?([A-Za-z_]\w*)\s*[\[(]`),                                                                                                            // Go
-		regexp.MustCompile(`^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s*\*?\s*([A-Za-z_$][\w$]*)\s*\(`),                                                                        // JS function
-		regexp.MustCompile(`^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::[^=]+)?=\s*(?:async\s+)?(?:function\b|\(|[A-Za-z_$][\w$]*\s*=>)`),                                // JS arrow or function expression
-		regexp.MustCompile(`^\s*(?:module\.)?exports\.([A-Za-z_$][\w$]*)\s*=`),                                                                                                              // CommonJS export
-		regexp.MustCompile(`^\s*module\.exports\s*=\s*(?:async\s+)?function\s*([A-Za-z_$][\w$]*)`),                                                                                          // CommonJS default export
-		regexp.MustCompile(`^\s*(?:async\s+)?def\s+([A-Za-z_]\w*)\s*\(`),                                                                                                                    // Python
-		regexp.MustCompile(`^\s*(?:[a-z]+\s+)*fun\s+(?:<[^>]*>\s*)?(?:[\w.]+\.)?([A-Za-z_]\w*)\s*\(`),                                                                                       // Kotlin
-		regexp.MustCompile(`^\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?(?:unsafe\s+)?(?:extern\s+"[^"]*"\s+)?fn\s+([A-Za-z_]\w*)`),                                                           // Rust
-		regexp.MustCompile(`^\s*(?:@\w+(?:\([^)]*\))?\s+)*(?:(?:public|private|protected|static|final|synchronized|abstract|override|async)\s+)+(?:[\w<>\[\],.?]+\s+)?([A-Za-z_]\w*)\s*\(`), // Java, C#, TS methods with a modifier
-		regexp.MustCompile(`^\s{2,}(?:async\s+)?([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*(?::\s*[^{]+)?\{\s*$`),                                                                                     // indented method
-	}
-	typePatterns = []*regexp.Regexp{
-		regexp.MustCompile(`^\s*type\s+([A-Za-z_]\w*)\s+(?:struct|interface)\b`), // Go
-		regexp.MustCompile(`^\s*(?:export\s+)?(?:default\s+)?(?:(?:public|private|protected|internal|abstract|final|sealed|data|open|static)\s+)*(?:class|interface|struct|enum|record|trait)\s+([A-Za-z_]\w*)`), // most languages
-		regexp.MustCompile(`^\s*(?:export\s+)?type\s+([A-Za-z_]\w*)\s*(?:<[^>]*>)?\s*=`), // TypeScript
-	}
-	keywords = map[string]bool{
-		"if": true, "for": true, "while": true, "switch": true, "catch": true, "return": true, "function": true,
-		"else": true, "do": true, "try": true, "with": true, "new": true, "typeof": true, "await": true,
-	}
-	// Names too common to identify one function.
-	genericNames = map[string]bool{
-		"main": true, "init": true, "handler": true, "handle": true, "New": true, "new": true, "get": true, "set": true,
-		"run": true, "Run": true, "ServeHTTP": true, "toString": true, "constructor": true, "index": true, "render": true,
-		"String": true, "Error": true, "close": true, "Close": true, "execute": true, "apply": true, "call": true,
-	}
-	callName     = regexp.MustCompile(`([A-Za-z_$][\w$]*)\s*\(`)
-	typeName     = regexp.MustCompile(`\b([A-Z][A-Za-z0-9_]*)\b`)
-	stringLit    = regexp.MustCompile("[\"'`]([\\w./-]+)[\"'`]")
 	templateHint = regexp.MustCompile(`(?i)render|templ|tmpl|view|layout|include|parsefiles|parseglob|execute`)
 	templateVar  = regexp.MustCompile(`(?i)[A-Za-z_$][\w$]*(?:tmpl|template|view)[\w$]*`)
 	routeHint    = regexp.MustCompile(`(?i)route|router|handle|mux|\.(get|post|put|patch|delete|use|all)\s*\(|mapping|@path|path\(|url\(|register`)
 )
-
 var templateExts = map[string]bool{
 	".html": true, ".htm": true, ".ejs": true, ".pug": true, ".jade": true, ".hbs": true, ".handlebars": true,
 	".tmpl": true, ".tpl": true, ".gohtml": true, ".jinja": true, ".jinja2": true, ".j2": true, ".erb": true,
@@ -89,7 +63,7 @@ var templateExts = map[string]bool{
 // NewIndex indexes the definitions in files.
 func NewIndex(files map[string]string) *Index {
 	ix := &Index{files: files, lines: make(map[string][]string, len(files)), defs: map[string][]Def{},
-		byFile: map[string][]Def{}, templates: map[string][]string{}, callers: map[string][]hit{}}
+		byFile: map[string][]Def{}, templates: map[string][]string{}, callers: map[defID][]hit{}, sources: map[string]*sourceInfo{}}
 	paths := make([]string, 0, len(files))
 	for p := range files {
 		paths = append(paths, p)
@@ -102,43 +76,19 @@ func NewIndex(files map[string]string) *Index {
 			base := path.Base(p)
 			ix.templates[base] = append(ix.templates[base], p)
 			ix.templates[strings.TrimSuffix(base, ext)] = append(ix.templates[strings.TrimSuffix(base, ext)], p)
+			// Template claims can themselves reference included templates.
+			// They have no language bindings, but still participate in retrieval.
+			ix.sources[p] = &sourceInfo{adapter: lexicalAdapter{}, language: language(p), code: lines}
 			continue
 		}
-		var defs []Def
-		for i, line := range lines {
-			if d, ok := matchDef(line); ok {
-				d.File, d.Line = p, i+1
-				defs = append(defs, d)
-			}
+		src := adapterFor(p).parse(p, files[p])
+		ix.sources[p] = src
+		for _, d := range src.defs {
+			ix.defs[d.Name] = append(ix.defs[d.Name], d)
 		}
-		for i := range defs {
-			end := len(lines)
-			if i+1 < len(defs) {
-				end = defs[i+1].Line - 1
-			}
-			defs[i].End = end
-			ix.defs[defs[i].Name] = append(ix.defs[defs[i].Name], defs[i])
-		}
-		ix.byFile[p] = defs
+		ix.byFile[p] = src.defs
 	}
 	return ix
-}
-
-func matchDef(line string) (Def, bool) {
-	if len(line) > 300 {
-		return Def{}, false
-	}
-	for _, re := range typePatterns {
-		if m := re.FindStringSubmatch(line); m != nil {
-			return Def{Name: m[1], Type: true}, true
-		}
-	}
-	for _, re := range funcPatterns {
-		if m := re.FindStringSubmatch(line); m != nil && !keywords[m[1]] {
-			return Def{Name: m[1]}, true
-		}
-	}
-	return Def{}, false
 }
 
 // Limits keep retrieval to evidence that plausibly decides a claim.
@@ -149,6 +99,8 @@ const (
 	callerRadius   = 8
 	maxCallees     = 4
 	maxTypes       = 3
+	maxContaining  = 2 // calls the flagged value is passed into
+	maxForwarded   = 2 // definitions a receiving call passes the value to
 	maxDefLines    = 60
 	maxTemplate    = 400
 	// maxEnclosingSpan is how far below a definition a claim can sit and
@@ -168,10 +120,10 @@ type Claim struct {
 // Excerpts in skip (files already sent in full) are omitted.
 func (ix *Index) Retrieve(c Claim, skip map[string]bool) []Excerpt {
 	lines, ok := ix.lines[c.File]
-	if !ok || c.Start < 1 {
+	if !ok || c.Start < 1 || c.Start > len(lines) || ix.sources[c.File] == nil {
 		return nil
 	}
-	end := max(c.End, c.Start)
+	end := min(len(lines), max(c.End, c.Start))
 	enclosing, haveEnclosing := ix.enclosing(c.File, c.Start)
 	// A definition far above the claim is more likely a neighbor than the
 	// function containing an anonymous handler.
@@ -186,9 +138,11 @@ func (ix *Index) Retrieve(c Claim, skip map[string]bool) []Excerpt {
 	window := lines[lo-1 : hi]
 
 	var out []Excerpt
+	coverage := map[string][][2]int{}
 	add := func(e Excerpt) {
-		if !skip[e.File] {
+		if !skip[e.File] && !covered(coverage[e.File], e.Start, e.End) {
 			out = append(out, e)
+			coverage[e.File] = merge(append(coverage[e.File], [2]int{e.Start, e.End}))
 		}
 	}
 	if haveEnclosing && !genericNames[enclosing.Name] && len(enclosing.Name) >= 4 {
@@ -199,39 +153,73 @@ func (ix *Index) Retrieve(c Claim, skip map[string]bool) []Excerpt {
 	for _, e := range ix.templateExcerpts(ix.templateLines(c.File, window), c.File) {
 		add(e)
 	}
-	seen := map[string]bool{}
+	seen := map[defID]bool{}
 	if haveEnclosing {
-		seen[enclosing.Name] = true
+		seen[enclosing.id()] = true
 	}
+	src := ix.sources[c.File]
 	n := 0
-	for _, line := range window {
-		for _, m := range callName.FindAllStringSubmatch(line, -1) {
-			name := m[1]
-			if n >= maxCallees || seen[name] || keywords[name] || genericNames[name] {
-				continue
-			}
-			seen[name] = true
-			if d, ok := ix.uniqueDef(name, false, c.File); ok {
-				add(Excerpt{File: d.File, Start: d.Line, End: min(d.End, d.Line+maxDefLines-1), Reason: "definition of " + name})
-				n++
-			}
+	for _, receiver := range src.containingCalls(c.Start, end, lo) {
+		if n >= maxContaining || genericNames[receiver.name] {
+			continue
+		}
+		d, ok := ix.resolve(c.File, receiver.reference, false)
+		if !ok {
+			d, ok = ix.resolve(c.File, receiver.reference, true)
+		}
+		if !ok || seen[d.id()] {
+			continue
+		}
+		seen[d.id()] = true
+		add(defExcerpt(d, "receives the flagged expression: "+receiver.name))
+		for _, e := range ix.forwarded(d, receiver, seen) {
+			add(e)
+		}
+		n++
+	}
+	n = 0
+	for _, call := range src.calls {
+		if n >= maxCallees || call.line < lo || call.line > hi || keywords[call.name] || genericNames[call.name] {
+			continue
+		}
+		if d, ok := ix.resolve(c.File, call.reference, false); ok && !seen[d.id()] {
+			seen[d.id()] = true
+			add(defExcerpt(d, "definition of "+call.name))
+			n++
 		}
 	}
 	n = 0
-	for _, line := range window {
-		for _, m := range typeName.FindAllStringSubmatch(line, -1) {
-			name := m[1]
-			if n >= maxTypes || seen[name] {
-				continue
-			}
-			seen[name] = true
-			if d, ok := ix.uniqueDef(name, true, c.File); ok {
-				add(Excerpt{File: d.File, Start: d.Line, End: min(d.End, d.Line+maxDefLines-1), Reason: "type " + name})
-				n++
+	offset := 0
+	for i, line := range src.code {
+		if i+1 >= lo && i+1 <= hi {
+			for _, m := range typeName.FindAllStringSubmatchIndex(line, -1) {
+				ref := reference{name: line[m[4]:m[5]], offset: offset + m[0]}
+				refs := []reference{ref}
+				if m[2] >= 0 {
+					ref.qualifier = line[m[2]:m[3]]
+					// In Direction.OUTBOUND the qualifier is itself the type;
+					// in models.User the qualified member is the type.
+					refs = []reference{{name: ref.qualifier, offset: ref.offset}, ref}
+				}
+				for _, ref := range refs {
+					if n >= maxTypes {
+						break
+					}
+					if d, ok := ix.resolve(c.File, ref, true); ok && !seen[d.id()] {
+						seen[d.id()] = true
+						add(defExcerpt(d, "type "+ref.name))
+						n++
+					}
+				}
 			}
 		}
+		offset += len(line) + 1
 	}
 	return out
+}
+
+func defExcerpt(d Def, reason string) Excerpt {
+	return Excerpt{File: d.File, Start: d.Line, End: min(d.End, d.Line+maxDefLines-1), Reason: reason}
 }
 
 // enclosing returns the function definition containing line.
@@ -242,51 +230,34 @@ func (ix *Index) enclosing(file string, line int) (Def, bool) {
 		if d.Line > line {
 			break
 		}
-		if !d.Type {
+		if !d.Type && line <= d.End {
 			best, found = d, true
 		}
 	}
 	return best, found
 }
 
-// uniqueDef finds name's definition outside file. Names defined in more than
-// two places are ambiguous and skipped.
-func (ix *Index) uniqueDef(name string, typ bool, file string) (Def, bool) {
-	var match []Def
-	for _, d := range ix.defs[name] {
-		if d.Type == typ {
-			if d.File == file {
-				return Def{}, false // visible already
-			}
-			match = append(match, d)
-		}
-	}
-	if len(match) == 0 || len(match) > 2 {
-		return Def{}, false
-	}
-	return match[0], true
-}
-
 // callerExcerpts returns the lines that reference def's name in other files,
 // preferring lines that look like route registration.
 func (ix *Index) callerExcerpts(def Def) []Excerpt {
-	hits, ok := ix.callers[def.Name]
+	hits, ok := ix.callers[def.id()]
 	if !ok {
 		word := regexp.MustCompile(`(?:^|[^\w$])` + regexp.QuoteMeta(def.Name) + `(?:[^\w$]|$)`)
 		for _, p := range sortedKeys(ix.lines) {
-			if p == def.File || !strings.Contains(ix.files[p], def.Name) {
+			src := ix.sources[p]
+			if p == def.File || src == nil || src.language != ix.sources[def.File].language || !strings.Contains(ix.files[p], def.Name) {
 				continue
 			}
-			for i, line := range ix.lines[p] {
+			for i, line := range src.code {
 				if len(line) < 500 && word.MatchString(line) {
-					if d, isDef := matchDef(line); isDef && d.Name == def.Name {
+					if ix.isDefinition(p, i+1, def.Name) {
 						continue
 					}
 					hits = append(hits, hit{p, i + 1})
 				}
 			}
 		}
-		ix.callers[def.Name] = hits
+		ix.callers[def.id()] = hits
 	}
 	byFile := map[string][]hit{}
 	var order []string
@@ -307,7 +278,18 @@ func (ix *Index) callerExcerpts(def Def) []Excerpt {
 		}
 		return false
 	}
-	sort.SliceStable(order, func(i, j int) bool { return routed(order[i]) && !routed(order[j]) })
+	// Route registrations first, then callers outside tests.
+	rank := func(f string) int {
+		r := 0
+		if !routed(f) {
+			r += 2
+		}
+		if testPath(f) {
+			r++
+		}
+		return r
+	}
+	sort.SliceStable(order, func(i, j int) bool { return rank(order[i]) < rank(order[j]) })
 	var out []Excerpt
 	for _, f := range order[:min(len(order), maxCallerFiles)] {
 		for _, h := range byFile[f][:min(len(byFile[f]), maxCallerHits)] {
@@ -471,4 +453,11 @@ func merge(ranges [][2]int) [][2]int {
 		out = append(out, r)
 	}
 	return out
+}
+
+var testFile = regexp.MustCompile(`(?i)(^|/)(tests?|__tests__|spec)/|(_test|\.test|\.spec|tests?)\.[a-z]+$|(^|/)test_[^/]*$`)
+
+// testPath reports whether path looks like a test file.
+func testPath(path string) bool {
+	return testFile.MatchString(path)
 }

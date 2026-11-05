@@ -12,9 +12,6 @@ func TestMatchDef(t *testing.T) {
 		name string
 		typ  bool
 	}{
-		{"func (a *App) PageSearch(w http.ResponseWriter, r *http.Request) {", "PageSearch", false},
-		{"func Search[T any](q string) {", "Search", false},
-		{"type User struct {", "User", true},
 		{"export async function performRedirect () {", "performRedirect", false},
 		{"export const isRedirectAllowed = (url: string) => {", "isRedirectAllowed", false},
 		{"const sanitize = async function (x) {", "sanitize", false},
@@ -22,7 +19,6 @@ func TestMatchDef(t *testing.T) {
 		{"module.exports = function serveMetrics () {", "serveMetrics", false},
 		{"    def load_user(self, user_id):", "load_user", false},
 		{"class UserSerializer(serializers.ModelSerializer):", "UserSerializer", true},
-		{"  suspend fun findAccount(id: Long): Account {", "findAccount", false},
 		{"    public ResponseEntity<User> getUser(@PathVariable Long id) {", "getUser", false},
 		{"export interface Basket {", "Basket", true},
 		{"export type Role = 'admin' | 'user'", "Role", true},
@@ -43,7 +39,7 @@ func TestMatchDef(t *testing.T) {
 
 func goRepo() map[string]string {
 	return map[string]string{
-		"internal/handlers/pages.go": `package handlers
+		"internal/handlers/pages.go": `package handlers; import "example/internal/models"
 
 var searchTmpl *texttmpl.Template
 
@@ -94,8 +90,8 @@ func TestRetrieveFindsCallersTemplatesAndDefinitions(t *testing.T) {
 	want := []string{
 		"main.go:1-10 reference to PageSearch",
 		"web/templates/search.html:1-2 template search.html",
-		"internal/db/queries.go:3-7 definition of SearchDocuments",
-		"internal/models/models.go:3-7 type User",
+		"internal/db/queries.go:3-6 definition of SearchDocuments",
+		"internal/models/models.go:3-6 type User",
 	}
 	var have []string
 	for _, e := range got {
@@ -119,7 +115,7 @@ func TestRetrieveSkipsCommonNames(t *testing.T) {
 		files[fmt.Sprintf("u%d.go", i)] = "package u\n\nvar _ = handler\nvar _ = Sink2\n"
 	}
 	files["a.go"] = "package a\n\nfunc handler() {\n\tSink2()\n}\n"
-	files["b.go"] = "package b\n\nfunc Sink2() {}\n"
+	files["b.go"] = "package a\n\nfunc Sink2() {}\n"
 	ix := NewIndex(files)
 	for _, e := range ix.Retrieve(Claim{File: "a.go", Start: 4}, nil) {
 		if strings.HasPrefix(e.Reason, "reference to") {
@@ -149,5 +145,101 @@ func TestRenderMergesRangesWithinBudget(t *testing.T) {
 	want := "<file path=\"a.go\" lines=\"2-4,7-8\">\n2| l2\n3| l3\n4| l4\n...\n7| l7\n8| l8\n</file>\n\n"
 	if out != want || kept != 3 {
 		t.Fatalf("Render = %q (kept %d); want %q", out, kept, want)
+	}
+}
+
+// kotlinRepo models a handler whose client-supplied amount is validated two
+// calls away: the Transfer constructor passes it to PaymentLimits.requireValid.
+func kotlinRepo() map[string]string {
+	return map[string]string{
+		"app/src/main/kotlin/pay/RequestTransferAction.kt": `package pay
+
+class RequestTransferAction(private val accounts: AccountClient) {
+  fun handle(req: TransferRequest): TransferResponse {
+    val transfer = buildTransfer(req)
+    return TransferResponse(transfer.id)
+  }
+
+  private fun buildTransfer(req: TransferRequest): Transfer =
+    Transfer(
+      id = req.idempotencyKey,
+      direction = Direction.OUTBOUND,
+      account = accounts.lookUp(req.accountToken),
+      amount = Money.of(req.currencyCode, req.amount),
+      memo = req.memo,
+    )
+}
+`,
+		"app/src/main/kotlin/pay/Transfer.kt": `package pay
+
+class Transfer(
+  id: String,
+  direction: Direction,
+  account: Account,
+  amount: Money,
+  memo: String?,
+) {
+  val id: String = id
+  private val direction: Direction = direction
+  private val amount: Money = PaymentLimits.requireValid(amount)
+  private val memo: String? = memo?.let { Memo.truncate(it) }
+}
+`,
+		"app/src/main/kotlin/pay/PaymentLimits.kt": `package pay
+
+object PaymentLimits {
+  const val MAX_CENTS = 99_999_999L
+
+  fun requireValid(amount: Money): Money {
+    require(amount.currency() == Currency.USD) { "USD only" }
+    require(amount.cents() in 1..MAX_CENTS) { "out of range" }
+    return amount
+  }
+}
+`,
+		"app/src/main/kotlin/pay/Direction.kt":                 "package pay\n\nenum class Direction {\n  INBOUND,\n  OUTBOUND,\n}\n",
+		"app/src/main/kotlin/pay/Memo.kt":                      "package pay\n\nobject Memo {\n  fun truncate(s: String): String = s.take(140)\n}\n",
+		"app/src/main/kotlin/pay/AccountClient.kt":             "package pay\n\nclass AccountClient {\n  fun lookUp(token: String): Account = Account(token)\n}\n",
+		"app/src/main/kotlin/crypto/Context.kt":                "package crypto\n\nfun of(vararg parts: String): Context = Context(parts.toList())\n",
+		"app/src/test/kotlin/pay/RequestTransferActionTest.kt": "package pay\n\nclass RequestTransferActionTest {\n  fun builds() {\n    action.buildTransfer(request)\n  }\n}\n",
+		"app/src/main/kotlin/pay/TransferService.kt":           "package pay\n\nclass TransferService {\n  fun submit(req: TransferRequest) {\n    val t = action.buildTransfer(req)\n  }\n}\n",
+	}
+}
+
+func TestRetrieveFollowsFlaggedValueIntoConstructor(t *testing.T) {
+	ix := NewIndex(kotlinRepo())
+	claim := "app/src/main/kotlin/pay/RequestTransferAction.kt"
+	var have []string
+	for _, e := range ix.Retrieve(Claim{File: claim, Start: 14, End: 14}, map[string]bool{claim: true}) {
+		have = append(have, fmt.Sprintf("%s:%d-%d %s", e.File, e.Start, e.End, e.Reason))
+	}
+	want := []string{
+		// A caller outside tests comes before one in a test.
+		"app/src/main/kotlin/pay/TransferService.kt:1-8 reference to buildTransfer",
+		"app/src/test/kotlin/pay/RequestTransferActionTest.kt:1-8 reference to buildTransfer",
+		// The constructor receiving the amount, then where it passes it.
+		"app/src/main/kotlin/pay/Transfer.kt:3-14 receives the flagged expression: Transfer",
+		"app/src/main/kotlin/pay/PaymentLimits.kt:6-10 possible use of Transfer parameter amount in requireValid",
+		// Money.of is a library call: the unrelated crypto.of is not retrieved.
+		"app/src/main/kotlin/pay/AccountClient.kt:4-4 definition of lookUp",
+		"app/src/main/kotlin/pay/Direction.kt:3-6 type Direction",
+	}
+	if strings.Join(have, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("Retrieve =\n%s\nwant\n%s", strings.Join(have, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+func TestTestPath(t *testing.T) {
+	for path, want := range map[string]bool{
+		"app/src/test/kotlin/pay/ActionTest.kt": true,
+		"pkg/handler_test.go":                   true,
+		"web/src/login.spec.ts":                 true,
+		"tests/test_views.py":                   true,
+		"app/src/main/kotlin/pay/Action.kt":     false,
+		"internal/attestation/verify.go":        false,
+	} {
+		if got := testPath(path); got != want {
+			t.Errorf("testPath(%q) = %v, want %v", path, got, want)
+		}
 	}
 }

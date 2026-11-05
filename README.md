@@ -839,12 +839,28 @@ evidence never rejects. A v2 audit has no confidence, so
 Each v2 batch carries more than the files the findings cite. Up to about 24K
 tokens of excerpts are retrieved per batch, with real line numbers, so the
 auditor can check what decides a claim:
+
 - references to the flagged function, such as route registration;
 - templates the flagged code renders;
+- functions or constructors receiving the flagged expression, and one further
+  call using the corresponding parameter;
 - definitions of the functions and types it uses.
 
-Retrieval is lexical and deterministic, so a replayed audit sees the same
-context. Each batch also lists the scan's other findings, so the auditor
+Retrieval is deterministic. Language adapters supply syntax and name lookup;
+the shared engine controls traversal limits, ranking, excerpt coverage and the
+token budget. Go uses its standard parser. Kotlin has a dedicated syntax reader
+for ordinary functions, primary constructors, objects, named arguments and
+import aliases. Other languages retain lexical retrieval without parameter
+binding. Go parse failures also fall back to lexical retrieval.
+
+Retrieval supplies context candidates, not vulnerability verdicts or proof of
+data flow. Ambiguous definitions and unsupported Kotlin dispatch remain
+unresolved; overload selection, extension dispatch, wildcard imports and
+implicit receivers are not inferred. Comments and string contents cannot
+establish a parameter binding. Supplying an excerpt does not mark the rest of
+its file as supplied, so a helper elsewhere in that file can still be retrieved.
+
+Each batch also lists the scan's other findings, so the auditor
 doesn't repeat them as leads. Notes the auditor
 makes about possible issues outside the findings are recorded as
 `execution.auditLeads` in the run metadata, not as findings.
