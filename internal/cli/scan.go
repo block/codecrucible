@@ -427,7 +427,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	if err := costEstimate.checkBudget(cfg.MaxCost); err != nil {
+	if err := costEstimate.checkConfiguredBudget(cfg.MaxCost, explicitMaxCost(cmd, v, cfg.MaxCost)); err != nil {
 		return err
 	}
 
