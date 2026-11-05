@@ -139,6 +139,8 @@ func TestCerebrasGLMFlashScanProducesSARIF(t *testing.T) {
 	v.Set("cerebras-api-key", "test-key")
 	v.Set("base-url", server.URL)
 	v.Set("prompts-dir", filepath.Join(dir, "prompts", "default"))
+	// The mock deployment has no configured prices; disable the spend gate.
+	v.Set("max-cost", 0)
 	v.Set("skip-audit", true)
 	v.Set("skip-feature-detection", true)
 	v.Set("output", output)
