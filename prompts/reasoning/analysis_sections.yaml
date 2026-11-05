@@ -1,11 +1,59 @@
-# Always included: feature sampling must not hide an unfamiliar attack surface.
+# Always included: feature sampling must not remove a coverage sweep.
 sections:
-  coverage:
-    title: "Security boundaries and invariants"
+  boundaries:
+    title: "Identity and authorization boundaries"
     features: []
     content: |
-      Follow attacker influence across identity, permissions, data interpreters,
-      storage, outbound requests, and sensitive outputs where relevant. Also
-      consider resource and memory safety, arithmetic, lifetime, concurrency,
-      protocol state, and application-specific business invariants. Treat this
-      list as a reminder, not a limit or a demand for one finding per category.
+      Review who supplies each identity, role, tenant, credential, or capability
+      and where it becomes authoritative. Examine privileged operations and
+      each meaningful resource action: list, read, create, update, delete, share,
+      export, and administrative use. Authentication alone does not establish
+      ownership, tenant isolation, or permission for a particular action.
+      Identify the actual enforcement point and any local route, middleware,
+      policy, or consumer that could defeat the claim. Treat claims about trusted
+      proxies or upstream validation as assumptions unless supported. Preserve
+      an independently broken boundary even when another finding exploits it.
+  interpretation:
+    title: "Untrusted data and interpreters"
+    features: []
+    content: |
+      Follow untrusted values into queries and query structure, commands,
+      templates, HTML or DOM output, paths, network destinations, parsers,
+      deserializers, and dynamic evaluation. Include helper layers, wrappers,
+      recursive merges, property names, object construction, and alternate
+      encodings. Check what the actual parser, escaping operation, allowlist,
+      normalization, or library contract does before claiming a payload reaches
+      the sink. A safe helper elsewhere is relevant only if this path uses it.
+  credentials:
+    title: "Credentials, cryptography, and retained paths"
+    features: []
+    content: |
+      Review credential creation, storage, verification, reset, issuance,
+      expiration, rotation, and revocation. Include seeded accounts, static
+      secrets, weak randomness, legacy hashes or algorithms, fallback branches,
+      migration code, and compatibility modes that remain callable. Inspect
+      consumers before claiming impersonation or elevated privilege. Report a
+      demonstrated weak storage or verification mechanism with its prerequisites
+      even when the presence of old records or deployment exposure is unknown.
+  state:
+    title: "State, lifetime, and business rules"
+    features: []
+    content: |
+      Look for security-relevant limits, ownership transitions, counters, expiry,
+      single-use tokens, replay protection, quantities, and monetary or resource
+      invariants. Check alternate operations, retries, concurrency, transaction
+      boundaries, arithmetic, and state that outlives its authority. Consider
+      memory safety, object lifetime, resource exhaustion, and protocol-state
+      errors where the language and interfaces make them relevant. Tie each
+      report to a concrete invariant and a supported adverse transition.
+  surfaces:
+    title: "Secondary and indirect execution surfaces"
+    features: []
+    content: |
+      Revisit browser code, templates, static-file serving, uploads and downloads,
+      imports and exports, background work, webhooks, command-line or service
+      interfaces, debug handlers, logs, and error responses. Check both the
+      producer and consumer of sensitive data. Configuration, default accounts,
+      and secondary interfaces can expose a separate cause even when the main
+      request path is guarded. Retain unfamiliar source-backed mechanisms beyond
+      these examples. Return no finding for a category without evidence.

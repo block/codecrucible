@@ -54,6 +54,32 @@ schema and excludes additions even if the model ignores it. Excluded candidates
 remain observations in the lineage ledger with an explicit policy reason and a
 filtered disposition. Other sets continue to allow additions by default.
 
+The `reasoning` discovery prompt asks the model to review the available
+operations and security-sensitive helpers before settling on a final list, and
+to report each independently fixable cause separately, even when causes can be
+chained. A serious injection does not subsume a broken permission check,
+credential lifecycle, or state transition. A safer modern path does not
+establish that a retained compatibility or fallback path is safe. Five
+always-included coverage sections ask the model to review: identity and
+authorization boundaries for each resource action; untrusted data and
+interpreters; credentials, cryptography, and retained paths; state, lifetime,
+and business rules; and secondary and indirect execution surfaces. They declare
+no features, so feature detection cannot remove them. They are investigation
+aids, not required findings or a limit on the classes of defect the model may
+report, and a category without evidence yields no finding.
+
+The reporting contract splits causes whose fixes differ and anchors each finding
+where its own fix belongs. A systemic finding needs a narrow, concrete primary
+location, with the other demonstrated paths in `technical_details` or
+`code_path`. It sets no finding quota and does not weaken the evidence
+requirements. It adds no language-specific detector code, agent loop, tool
+access, or runnable-exploit requirement.
+
+This coverage may increase findings, output tokens, audit work, and false
+positives. A larger result count is useful only when it represents additional
+supported causes. The set stays opt-in until held-out evaluation supports a
+change in defaults.
+
 Use the set explicitly:
 
 ```bash
@@ -87,6 +113,11 @@ and variation across iterations. Reconcile raw observations, analysis results,
 audit additions, suppressed results, and final results. A lower finding count or
 an increased confirmation rate alone is not evidence of improvement. Keep private
 evaluation inputs, labels, and outputs outside the repository.
+
+Promoting `reasoning`, or any part of it, into the defaults requires
+independently labeled held-out cases evaluated across multiple models. Report
+recall of important causes and precision of active reports, each with its
+uncertainty, alongside token cost.
 
 ## Scaffolding that still needs work
 

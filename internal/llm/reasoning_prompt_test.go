@@ -8,6 +8,7 @@ import (
 )
 
 func TestReasoningPromptSetContract(t *testing.T) {
+
 	l := NewPromptLoader(os.DirFS("../../prompts/reasoning"))
 	if _, err := l.Fingerprint(); err != nil {
 		t.Fatal(err)
@@ -35,6 +36,16 @@ func TestReasoningPromptSetContract(t *testing.T) {
 	all, err := l.AssembleMessages(params)
 	if err != nil {
 		t.Fatal(err)
+	}
+	for _, title := range []string{"Identity and authorization boundaries", "Untrusted data and interpreters", "Credentials, cryptography, and retained paths", "State, lifetime, and business rules", "Secondary and indirect execution surfaces"} {
+		if !strings.Contains(all[1].Content, title) {
+			t.Errorf("missing unconditional coverage: %s", title)
+		}
+	}
+	for _, bound := range []string{"cannot run code", "inspect omitted files", "Never claim that an exploit was executed"} {
+		if !strings.Contains(all[0].Content+all[1].Content, bound) {
+			t.Errorf("missing source-only constraint: %s", bound)
+		}
 	}
 	params.EnabledFeatures = []string{"cryptography"}
 	filtered, err := l.AssembleMessages(params)
