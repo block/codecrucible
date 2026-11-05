@@ -46,7 +46,7 @@ func TestScanStructuredFlagsPreserveCommas(t *testing.T) {
 	}
 }
 
-func TestScanStructuredFlagEnvironmentCompatibility(t *testing.T) {
+func TestScanStructuredFlagEnvironmentKnownLimitation(t *testing.T) {
 	old := v
 	t.Cleanup(func() { v = old })
 	v = viper.New()
@@ -59,7 +59,9 @@ func TestScanStructuredFlagEnvironmentCompatibility(t *testing.T) {
 		t.Fatal(err)
 	}
 	bindScanFlags(cmd)
-	// Environment strings retain Viper's existing conversion, independently of flag parsing.
+	// Known limitation (codecrucible-zba): Viper splits environment values on
+	// whitespace. Preserve the observed behavior here until that bug is fixed;
+	// it is not the intended contract for structured values.
 	if got := v.GetStringSlice("custom-headers"); !reflect.DeepEqual(got, []string{"Accept:", "a,", "b"}) {
 		t.Fatalf("environment headers = %#v", got)
 	}
