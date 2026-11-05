@@ -326,6 +326,9 @@ Available sets:
 | Set | Description |
 |-----|-------------|
 | `default` | General-purpose security analysis (used when no `--prompts-dir` is specified) |
+| `reasoning` | Experimental language-agnostic discovery and model-chosen audit verdicts |
+| `reasoning-recall` | Broader discovery coverage with the reasoning auditor |
+| `reasoning-investigator` | Single-pass adversarial investigator framing with reasoning-recall coverage and audit |
 | `core` | Default analysis with the v2 audit contract: evidentiary questions, code-computed verdicts, and weakness-family cards (experimental) |
 | `carlini` | Slim Carlini-style adversarial CTF-researcher prompts |
 | `carlini-curated` | Carlini v2 with targeted suppression rules and line-precision guidance |
@@ -784,7 +787,11 @@ chunk budget remain in the coverage report and cause an incomplete-analysis
 warning; a manifest entry alone does not count as analyzed source.
 
 Audit can request additional numbered excerpts from the same indexed bytes,
-independent of the original analysis chunk. `--audit-from` builds a fresh index
+independent of the original analysis chunk. Retrieval includes caller and route
+snippets together with locally resolved wrapper or middleware definitions, including
+function values passed to registration calls. These are evidence candidates;
+the auditor must still establish which controls apply and in what order.
+`--audit-from` builds a fresh index
 of the supplied checkout and keeps its existing drift checks and finding IDs.
 Supplementary context retains its separate loading, packing, and compression
 policy.
@@ -812,6 +819,9 @@ internal/
   logging/              slog-based structured logging
 prompts/                Prompt sets (each subdirectory is a complete set of YAML templates)
   default/                  Default prompt set
+  reasoning/                Experimental model-led discovery and audit
+  reasoning-recall/         Broader discovery coverage
+  reasoning-investigator/   Single-pass adversarial investigator framing
   carlini/                  Carlini-style adversarial prompts
   carlini-curated/          Carlini v2 with targeted suppression
   exploit-proof/            Language-agnostic concrete-exploit gate
@@ -927,7 +937,10 @@ behavior. Explicit supplementary context can support an assumption, but cannot
 become a source location.
 
 V3 retries invalid claims individually and permits one bounded local-context
-expansion. Its context artifacts record included ranges and omissions. Grouped
+expansion. It can request up to eight admitted source ranges or exact declaration
+names in a specified local file. Ambiguous names, unavailable files, and exhausted
+budgets are reported explicitly; no source is executed or fetched. Its context
+artifacts record requests, included ranges, and omissions. Grouped
 claims can produce separately audited children with stable IDs and `split_from`
 lineage. An unresolved remainder remains visible unless the child records retain
 all original material. `--semantic-dedup report` adds attributed duplicate

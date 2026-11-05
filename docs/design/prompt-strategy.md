@@ -71,6 +71,15 @@ actual source bundles. A larger result count is useful only when it represents
 additional supported causes. Keep both experimental sets opt-in until held-out
 evaluation supports a change in defaults.
 
+`prompts/reasoning-investigator` isolates the discovery opening. It asks the
+model to investigate as an adversarial security researcher, construct a concrete
+source-supported attack scenario, and challenge it against relevant controls and
+language semantics. The remaining discovery instructions, coverage sections,
+feature detection, auditor, and reporting contract match `reasoning-recall`.
+It adds no agent loop, tool access, runnable-exploit requirement, or finding
+quota. Compare it directly with `reasoning-recall` using the same source bundles
+before attributing any improvement to the investigator framing.
+
 Use the set explicitly:
 
 ```bash

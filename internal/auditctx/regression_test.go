@@ -43,3 +43,39 @@ func TestRetrieveSameFileForwardedGuard(t *testing.T) {
 		t.Fatalf("guard beyond the constructor excerpt was lost: %s", got)
 	}
 }
+
+func TestRetrieveCallerIncludesMountedMiddleware(t *testing.T) {
+	files := map[string]string{
+		"handlers.ts": "export function listRecords() {\n return (req, res) => res.json(load(req.body.owner));\n}\n",
+		"router.ts":   "import { listRecords } from './handlers';\nimport { bindOwner } from './identity';\n" + strings.Repeat("// routing configuration\n", 20) + "router.get('/records', bindOwner(), listRecords());\n",
+		"identity.ts": "export function bindOwner() {\n return (req, res, next) => {\n  req.body.owner = req.auth.id;\n  next();\n };\n}\n",
+	}
+	got := retrievedText(files, "handlers.ts", 2)
+	for _, want := range []string{"router.get('/records'", "req.body.owner = req.auth.id"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("caller context missing %q: %s", want, got)
+		}
+	}
+}
+
+func TestRetrieveGoCallerIncludesWrapper(t *testing.T) {
+	files := map[string]string{
+		"handler.go":  "package app\nfunc readRecords(w Writer, r Request) {\n write(w, load(r.Owner))\n}\n",
+		"router.go":   "package app\nfunc routes(m Mux) {\n m.Handle(\"/records\", bindOwner(readRecords))\n}\n",
+		"identity.go": "package app\nfunc bindOwner(next Handler) Handler {\n return func(w Writer, r Request) { r.Owner = r.Principal; next(w, r) }\n}\n",
+	}
+	if got := retrievedText(files, "handler.go", 3); !strings.Contains(got, "r.Owner = r.Principal") {
+		t.Fatalf("Go caller wrapper missing: %s", got)
+	}
+}
+
+func TestRetrieveCallerIncludesBareMiddlewareReference(t *testing.T) {
+	files := map[string]string{
+		"handlers.ts": "export function listRecords(req, res) {\n return res.json(load(req.body.owner));\n}\n",
+		"router.ts":   "import { listRecords } from './handlers';\nimport { bindOwner } from './identity';\nrouter.get('/records', bindOwner, listRecords);\n",
+		"identity.ts": "export function bindOwner(req, res, next) {\n req.body.owner = req.auth.id;\n next();\n}\n",
+	}
+	if got := retrievedText(files, "handlers.ts", 2); !strings.Contains(got, "req.body.owner = req.auth.id") {
+		t.Fatalf("bare middleware reference missing: %s", got)
+	}
+}

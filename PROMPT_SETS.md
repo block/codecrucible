@@ -33,6 +33,7 @@ falls back to whichever template is available at `prompts/default/`.
 | `default` | First-pass, language-agnostic, two-stage (recall-tuned analyzer + adversarial audit). The right starting point for most repos. |
 | `reasoning` | Experimental, language-agnostic discovery and model-chosen audit verdicts. Uses atomic source-backed claims, explicit uncertainty, and unconditional coverage guidance. Compare it on held-out cases before adoption. |
 | `reasoning-recall` | Experimental variant of `reasoning` with broader discovery sweeps over authorization, interpreters, legacy paths, state, and secondary interfaces. Keeps the same auditor and reporting contract. |
+| `reasoning-investigator` | Experimental single-pass adversarial investigator framing. Keeps `reasoning-recall` coverage, evidence requirements, reporting, and audit unchanged. |
 | `core` | Experimental v3 evidence-bound audit with independent child claims and report-only duplicate relationships. Its strict decision policy is still being calibrated. |
 | `carlini` | Slim CTF-researcher persona. Maximizes code-to-instruction ratio — use when the context budget is tight and you want the model thinking like an attacker, not a linter. |
 | `carlini-curated` | Carlini with added suppression rules and tighter line-precision guidance. Lower false-positive rate at modest token cost. |

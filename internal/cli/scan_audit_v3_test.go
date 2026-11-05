@@ -194,3 +194,32 @@ func TestAuditV3TransportFailureRetainsFindings(t *testing.T) {
 		t.Fatal(got, err)
 	}
 }
+
+func TestAuditV3NamedContextRetrievalIsBoundedAndRecorded(t *testing.T) {
+	doc, files, l, buf := v3Fixture(t, []sarif.SecurityIssue{{Issue: "unsafe", FilePath: "a.go", StartLine: 2, EndLine: 2, TechnicalDetails: "one"}})
+	files["policy.go"] = "package a\nfunc hiddenPolicy() { denyAccess() }\n"
+	calls := 0
+	client := auditClientFunc(func(_ context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+		calls++
+		c := requestClaimsV3(t, req)[0]
+		a := assessmentV3(c, "sink(value)", "sink", "confirmed")
+		a.Assertions[3].Status = "unknown"
+		a.ContextRequests = []auditcore.ContextRequest{{File: "policy.go", Symbol: "hiddenPolicy"}}
+		text := req.Messages[len(req.Messages)-1].Content
+		if calls == 1 && strings.Contains(text, "denyAccess()") {
+			t.Fatal("unrelated declaration was included before it was requested")
+		}
+		if calls == 2 && (!strings.Contains(text, "denyAccess()") || !strings.Contains(text, `"status":"included"`)) {
+			t.Fatal("requested declaration or result missing", text)
+		}
+		return replyV3(a), nil
+	})
+	got, err := runV3(t, doc, files, l, client, "off")
+	if err != nil || calls != 2 || got.Runs[0].Results[0].Properties.AuditStatus != "unverified" || len(got.Runs[0].Results[0].Suppressions) != 0 {
+		t.Fatalf("unbounded or destructive retrieval: calls=%d err=%v doc=%+v", calls, err, got)
+	}
+	if !strings.Contains(buf.String(), `\"context_requests\"`) && !strings.Contains(buf.String(), `"requests":[`) {
+		t.Fatal("retrieval was not recorded")
+	}
+	finishV3(t, l, buf, got)
+}
