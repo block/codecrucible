@@ -2,6 +2,7 @@ package cli
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/block/codecrucible/internal/config"
@@ -53,19 +54,27 @@ func TestScanStructuredFlagEnvironmentKnownLimitation(t *testing.T) {
 	config.SetDefaults(v)
 	config.BindEnvVars(v)
 	t.Setenv("CUSTOM_HEADERS", "Accept: a, b")
-	t.Setenv("CONTEXT_SOURCES_RAW", "name=notes,type=inline,location=value")
+	t.Setenv("CONTEXT_SOURCES_RAW", "")
 	cmd := newScanCommand()
 	if err := cmd.ParseFlags(nil); err != nil {
 		t.Fatal(err)
 	}
 	bindScanFlags(cmd)
-	// Known limitation (codecrucible-zba): Viper splits environment values on
-	// whitespace. Preserve the observed behavior here until that bug is fixed;
-	// it is not the intended contract for structured values.
-	if got := v.GetStringSlice("custom-headers"); !reflect.DeepEqual(got, []string{"Accept:", "a,", "b"}) {
-		t.Fatalf("environment headers = %#v", got)
+	// Known limitation (codecrucible-zba): config.Load's unmarshal splits
+	// environment strings on commas. This records the scan path's current
+	// behavior, not the intended contract for structured values.
+	cfg, err := config.Load(v)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if got := v.GetStringSlice("context-sources-raw"); !reflect.DeepEqual(got, []string{"name=notes,type=inline,location=value"}) {
-		t.Fatalf("environment sources = %#v", got)
+	if !reflect.DeepEqual(cfg.CustomHeaders, []string{"Accept: a", " b"}) {
+		t.Fatalf("environment headers = %#v", cfg.CustomHeaders)
+	}
+	if _, err := parseCustomHeaders(cfg.CustomHeaders); err == nil || !strings.Contains(err.Error(), `invalid custom header " b"`) {
+		t.Fatalf("expected known environment header parsing failure, got %v", err)
+	}
+	t.Setenv("CONTEXT_SOURCES_RAW", "name=alpha,type=inline,location=value")
+	if _, err := config.Load(v); err == nil || !strings.Contains(err.Error(), `parsing --context-source "name=alpha"`) {
+		t.Fatalf("expected known environment source parsing failure, got %v", err)
 	}
 }
