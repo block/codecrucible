@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"github.com/block/codecrucible/internal/chunk"
 	"github.com/block/codecrucible/internal/ingest"
+	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
+	"log/slog"
 	"math"
 	"path/filepath"
 	"strings"
@@ -166,5 +169,54 @@ func TestScanPreflightRejectsBeforeProviderCall(t *testing.T) {
 	err = cmd.Execute()
 	if err == nil || !strings.Contains(err.Error(), "exceeds --max-cost") {
 		t.Fatalf("expected preflight rejection before credentials/network: %v", err)
+	}
+}
+
+func TestUnpricedBudgetDefaultWarnsButExplicitLimitRejects(t *testing.T) {
+	e := scanCostEstimate{plan: &scanCostPlan{Unpriced: []string{"analysis (unregistered)"}}}
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	defer slog.SetDefault(previous)
+	if err := e.checkConfiguredBudget(25, false); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(logs.String(), "default $25 cap is not being enforced") {
+		t.Fatal(logs.String())
+	}
+	if err := e.checkConfiguredBudget(25, true); err == nil || !strings.Contains(err.Error(), "--max-cost 0") {
+		t.Fatalf("explicit limit must reject with remedy: %v", err)
+	}
+	if err := e.checkConfiguredBudget(0, true); err != nil {
+		t.Fatal(err)
+	}
+	settings := viper.New()
+	config.SetDefaults(settings)
+	cmd := &cobra.Command{}
+	cmd.Flags().Float64("max-cost", 25, "")
+	if explicitMaxCost(cmd, settings, 25) {
+		t.Fatal("default treated as explicit")
+	}
+	if err := settings.ReadConfig(strings.NewReader("max-cost: 25\n")); err == nil {
+		t.Fatal("config type should be required")
+	}
+	settings.SetConfigType("yaml")
+	if err := settings.ReadConfig(strings.NewReader("max-cost: 25\n")); err != nil {
+		t.Fatal(err)
+	}
+	if !explicitMaxCost(cmd, settings, 25) {
+		t.Fatal("explicit config default-value limit ignored")
+	}
+	settings = viper.New()
+	t.Setenv("MAX_COST", "25")
+	if !explicitMaxCost(cmd, settings, 25) {
+		t.Fatal("environment limit ignored")
+	}
+	t.Setenv("MAX_COST", "")
+	if err := cmd.Flags().Set("max-cost", "25"); err != nil {
+		t.Fatal(err)
+	}
+	if !explicitMaxCost(cmd, settings, 25) {
+		t.Fatal("explicit flag default-value limit ignored")
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"math"
+	"os"
 	"sort"
 	"strings"
 
@@ -12,6 +13,8 @@ import (
 	"github.com/block/codecrucible/internal/config"
 	"github.com/block/codecrucible/internal/ingest"
 	"github.com/block/codecrucible/internal/llm"
+	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
 )
 
 // scanCostEstimate contains provider-independent preflight estimates. Pricing
@@ -59,7 +62,7 @@ func estimateScanCost(sourceTokens int, cfg *config.Config) scanCostEstimate {
 // budget. Unknown work means passing this gate is not a billed-spend ceiling.
 func (e scanCostEstimate) checkBudget(maxCost float64) error {
 	if maxCost > 0 && e.plan != nil && len(e.plan.Unpriced) > 0 {
-		return fmt.Errorf("cannot enforce --max-cost: missing pricing for %s; configure input and output prices", strings.Join(e.plan.Unpriced, ", "))
+		return fmt.Errorf("cannot enforce --max-cost: missing pricing for %s; add input and output pricing or unset max-cost (--max-cost 0)", strings.Join(e.plan.Unpriced, ", "))
 	}
 	cost := e.TotalInput
 	if e.plan != nil {
@@ -198,4 +201,19 @@ func planScanCost(flat ingest.FlattenResult, cfg *config.Config, loader *llm.Pro
 	e.TotalInput = e.AnalysisInput + e.AuditInput
 	e.AllowanceLow, e.AllowanceHigh = e.Planning*2, e.Planning*3
 	return e, nil
+}
+
+// explicitMaxCost distinguishes a user limit from the historical default.
+// MAX_COST is the environment name used by config.BindEnvVars.
+func explicitMaxCost(cmd *cobra.Command, settings *viper.Viper, limit float64) bool {
+	flag := cmd.Flags().Lookup("max-cost")
+	return (flag != nil && flag.Changed) || settings.InConfig("max-cost") || os.Getenv("MAX_COST") != "" || limit != 25
+}
+
+func (e scanCostEstimate) checkConfiguredBudget(limit float64, explicit bool) error {
+	if !explicit && e.plan != nil && len(e.plan.Unpriced) > 0 {
+		slog.Warn("default $25 cap is not being enforced for unpriced models", "models", strings.Join(e.plan.Unpriced, ", "), "action", "add model pricing or set an explicit max-cost")
+		return nil
+	}
+	return e.checkBudget(limit)
 }
