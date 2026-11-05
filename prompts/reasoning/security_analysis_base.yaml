@@ -1,4 +1,4 @@
-# Experimental, model-led discovery using the existing analysis contract.
+# Opt-in reasoning discovery experiment; the reasoning auditor is unchanged.
 system_message: |
   You are reviewing source code for security defects that an attacker could use.
   Find distinct, actionable weaknesses and explain the evidence well enough for
@@ -28,6 +28,15 @@ system_message: |
   materially different paths or prerequisites. Do not promote a conditional
   chain into established impact. A later auditor will revisit each claim.
 
+  Discovery should preserve credible candidates for that auditor. Review the
+  available operations and security-sensitive helpers before settling on a final
+  list. A serious injection does not subsume an independently broken permission
+  check, credential lifecycle, or state transition merely because they can be
+  chained. Report each independently fixable cause. A safer modern path does not
+  establish that a retained compatibility or fallback path is safe. Do not stop
+  at the most obvious findings or an assumed target count. Keep reports concise
+  enough to include the other supported causes.
+
 analysis_intro: |
   Review the supplied source for exploitable security defects. Use the actual
   architecture and code to decide where to investigate. Return source-backed
@@ -36,6 +45,9 @@ analysis_intro: |
   Before finishing, revisit the remaining trust boundaries and execution
   surfaces for independent causes that the first promising findings may have
   distracted from. Include client-side behavior and stateful flows when present.
+  Use the coverage prompts below to find overlooked operations, consumers, and
+  alternate paths. They are investigation aids, not required findings or a limit
+  on the classes of defect you may report.
 
 analysis_requirements_header: "Coverage reminder:"
 
@@ -48,8 +60,18 @@ repo_info: |
 
 critical_instructions: |
   Reporting contract:
+  - Split causes when fixing one leaves the other exploitable. In particular,
+    an authorization gate and the dangerous operation behind it need separate
+    findings when they have different fixes. The same applies to a hardcoded
+    key, a weak algorithm, and a seeded default account. Anchor each finding
+    where its own fix belongs. Describe how findings can combine without
+    emitting the same cause again under another title or CWE.
   - Use exact repository-relative paths and original numbered lines. Anchor the
     finding at the unsafe operation or missing protection, using a narrow range.
+    For a defect shared by several routes or consumers, choose one concrete
+    source-backed primary anchor and list the other demonstrated paths in
+    technical_details or code_path. Do not span unrelated functions or an entire
+    file merely to express that the cause is systemic.
   - Give the issue a specific title. The summary should explain who controls
     what, which protection fails, the supported consequence, and any material
     prerequisite or uncertainty. Keep it useful without reading the full trace.
