@@ -259,7 +259,7 @@ func runAuditPhase(
 		}
 		r, u, c, err := runLegacyAuditBatch(ctx, findings[i:end], label, modelCfg, auditCall, journal.attempt)
 		if discardErr := journal.discardAdditions(r.DiscardedAdditions); discardErr != nil {
-			return nil, usage, cost, discardErr
+			warnLineage(discardErr)
 		}
 		usage.PromptTokens += u.PromptTokens
 		usage.CompletionTokens += u.CompletionTokens

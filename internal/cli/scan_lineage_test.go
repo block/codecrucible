@@ -3,6 +3,8 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -120,5 +122,54 @@ func TestAuditAddedCandidatesHaveStableLedgerIdentities(t *testing.T) {
 	}
 	if counts["observation"] != 2 || counts["retained"] != 1 || counts["suppressed"] != 1 {
 		t.Fatal(counts)
+	}
+}
+
+type failedLineageWriter struct{ short bool }
+
+func (w failedLineageWriter) Write(p []byte) (int, error) {
+	if w.short {
+		return len(p) - 1, nil
+	}
+	return 0, fmt.Errorf("injected ledger failure")
+}
+func TestScanWritesSARIFDespiteLineageFailure(t *testing.T) {
+	for _, short := range []bool{false, true} {
+		t.Run(fmt.Sprint(short), func(t *testing.T) {
+			old := lineageWriter
+			defer func() { lineageWriter = old }()
+			lineageWriter = func(io.Writer) io.Writer { return failedLineageWriter{short} }
+			server := &replayServer{}
+			srv := httptest.NewServer(server.handler(t))
+			defer srv.Close()
+			repo := t.TempDir()
+			if err := os.WriteFile(filepath.Join(repo, "app.go"), []byte(replaySource), 0600); err != nil {
+				t.Fatal(err)
+			}
+			oldExit := exitFunc
+			defer func() { exitFunc = oldExit }()
+			code := 0
+			exitFunc = func(c int) { code = c }
+			threshold := "10"
+			want := 0
+			if short {
+				threshold = "1"
+				want = exitCodeFindings
+			}
+			dir, err := runReplayScan(t, repo, srv.URL, "--fail-on-severity", threshold)
+			if code != want {
+				t.Fatalf("exit=%d want=%d", code, want)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			doc := readSARIF(t, filepath.Join(dir, "final.sarif"))
+			if !doc.Runs[0].Properties.CodeCrucible.Execution.LineageIncomplete {
+				t.Fatal("missing lineage diagnostic")
+			}
+			if len(doc.Runs[0].Results) == 0 {
+				t.Fatal("lost results")
+			}
+		})
 	}
 }

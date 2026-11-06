@@ -172,3 +172,17 @@ func TestCheckpointRejectsUnknownParent(t *testing.T) {
 		t.Fatal("allowed dangling graph reference")
 	}
 }
+
+func TestBestEffortValidationKeepsHealthyWriter(t *testing.T) {
+	var b bytes.Buffer
+	l := New("validation", &b)
+	warnings := 0
+	l.BestEffort(func(error) { warnings++ })
+	_, _ = l.Transform("missing-parent", "repair", "{}")
+	if err := l.Metadata("run-complete", nil); err != nil {
+		t.Fatal(err)
+	}
+	if warnings != 1 || !bytes.Contains(b.Bytes(), []byte("run-complete")) {
+		t.Fatalf("warnings=%d output=%s", warnings, b.String())
+	}
+}

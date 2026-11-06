@@ -102,17 +102,18 @@ type ContextIdentity struct {
 }
 
 type ScanExecution struct {
-	RunID            string                    `json:"runId,omitempty"`
-	SourceIndex      *sourceindex.Snapshot     `json:"sourceIndex,omitempty"`
-	SourceBundles    []SourceBundle            `json:"sourceBundles,omitempty"`
-	SourceCoverage   *SourceCoverage           `json:"sourceCoverage,omitempty"`
-	ArtifactStage    string                    `json:"artifactStage"`
-	Phases           map[string]PhaseExecution `json:"phases"`
-	DetectedFeatures []string                  `json:"detectedFeatures"`
-	TokenCorrection  float64                   `json:"tokenCorrection"`
-	Chunks           ChunkExecution            `json:"chunks"`
-	ContextSources   []ContextExecution        `json:"contextSources"`
-	ContextPacking   map[string]ContextPacking `json:"contextPacking"`
+	LineageIncomplete bool                      `json:"lineageIncomplete,omitempty"`
+	RunID             string                    `json:"runId,omitempty"`
+	SourceIndex       *sourceindex.Snapshot     `json:"sourceIndex,omitempty"`
+	SourceBundles     []SourceBundle            `json:"sourceBundles,omitempty"`
+	SourceCoverage    *SourceCoverage           `json:"sourceCoverage,omitempty"`
+	ArtifactStage     string                    `json:"artifactStage"`
+	Phases            map[string]PhaseExecution `json:"phases"`
+	DetectedFeatures  []string                  `json:"detectedFeatures"`
+	TokenCorrection   float64                   `json:"tokenCorrection"`
+	Chunks            ChunkExecution            `json:"chunks"`
+	ContextSources    []ContextExecution        `json:"contextSources"`
+	ContextPacking    map[string]ContextPacking `json:"contextPacking"`
 	// Models lists the distinct models that served this scan's requests: the
 	// provider-reported IDs, or the requested ID when a provider reports none.
 	Models []string `json:"models"`
