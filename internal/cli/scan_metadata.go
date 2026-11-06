@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/block/codecrucible/internal/config"
 	"github.com/block/codecrucible/internal/llm"
@@ -208,6 +209,28 @@ func recordActualPhase(m *sarif.ScanMetadata, phase string, pc config.PhaseConfi
 		state.Fallback = "analysis client"
 	}
 	m.Execution.Phases[phase] = state
+}
+
+// stampInvocationTimes records the current scan's interval. Intermediate
+// artifacts cover elapsed time up to their output boundary. Copy invocation
+// slices so stamping one artifact cannot alter another snapshot or replay.
+func stampInvocationTimes(doc sarif.SARIFDocument, start, end time.Time) sarif.SARIFDocument {
+	if start.IsZero() {
+		return doc
+	}
+	doc.Runs = append([]sarif.SARIFRun(nil), doc.Runs...)
+	for i := range doc.Runs {
+		run := &doc.Runs[i]
+		run.Invocations = append([]sarif.SARIFInvocation(nil), run.Invocations...)
+		if len(run.Invocations) == 0 {
+			run.Invocations = []sarif.SARIFInvocation{{ExecutionSuccessful: true}}
+		}
+		for j := range run.Invocations {
+			run.Invocations[j].StartTimeUTC = start.UTC().Format(time.RFC3339Nano)
+			run.Invocations[j].EndTimeUTC = end.UTC().Format(time.RFC3339Nano)
+		}
+	}
+	return doc
 }
 
 // prepareSARIF is the output boundary shared by final and intermediate files.

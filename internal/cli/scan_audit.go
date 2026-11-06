@@ -127,6 +127,11 @@ func runAuditPhase(
 	numBatches := (len(findings) + batchSize - 1) / batchSize
 
 	auditSchema := llm.AuditSchema()
+	allowNewFindings := true
+	if ap, err := promptLoader.LoadAuditPrompt(); err == nil && !ap.AllowsNewFindings() {
+		allowNewFindings = false
+		auditSchema = llm.AuditSchemaExistingClaims()
+	}
 
 	// auditBatch runs one self-contained audit call: just this batch's
 	// findings, just their CWE IDs, just the files they reference. Each call
@@ -256,7 +261,14 @@ func runAuditPhase(
 		cost += c
 
 		auditResult.AuditedFindings = append(auditResult.AuditedFindings, r.AuditedFindings...)
-		auditResult.NewFindings = append(auditResult.NewFindings, r.NewFindings...)
+		if allowNewFindings {
+			auditResult.NewFindings = append(auditResult.NewFindings, r.NewFindings...)
+		} else if len(r.NewFindings) > 0 {
+			if err := journal.excludeCandidates(r.NewFindings, fileMap); err != nil {
+				return &doc, usage, cost, err
+			}
+			slog.Warn("audit additions excluded by prompt-set policy", "label", label, "candidates", len(r.NewFindings))
+		}
 		if r.AuditSummary != "" {
 			if auditResult.AuditSummary != "" {
 				auditResult.AuditSummary += "\n\n"
@@ -448,22 +460,7 @@ func applyAuditVerdicts(
 	// Add new findings from the audit phase.
 	newCount := 0
 	for _, nf := range audit.NewFindings {
-		issue := sarif.SecurityIssue{
-			Issue:            nf.Issue,
-			FilePath:         nf.FilePath,
-			StartLine:        nf.StartLine,
-			EndLine:          nf.EndLine,
-			TechnicalDetails: nf.TechnicalDetails,
-			Severity:         nf.Severity,
-			CWEID:            nf.CWEID,
-			Summary:          nf.Summary,
-			Remediation:      nf.Remediation,
-			CodePath:         nf.CodePath,
-		}
-
-		newDoc := sarif.Build(sarif.AnalysisResult{
-			SecurityIssues: []sarif.SecurityIssue{issue},
-		}, sarif.FileMap(fileMap), sarif.BuilderConfig{ToolVersion: version})
+		newDoc := buildAuditCandidate(nf, fileMap)
 
 		if len(newDoc.Runs) > 0 && len(newDoc.Runs[0].Results) > 0 {
 			confidence := nf.Confidence
@@ -529,6 +526,14 @@ func applyAuditVerdicts(
 	doc.Runs[0] = run
 
 	return doc
+}
+
+func buildAuditCandidate(nf NewFinding, fileMap ingest.FileMap) sarif.SARIFDocument {
+	return sarif.Build(sarif.AnalysisResult{SecurityIssues: []sarif.SecurityIssue{{
+		Issue: nf.Issue, FilePath: nf.FilePath, StartLine: nf.StartLine, EndLine: nf.EndLine,
+		TechnicalDetails: nf.TechnicalDetails, Severity: nf.Severity, CWEID: nf.CWEID,
+		Summary: nf.Summary, Remediation: nf.Remediation, CodePath: nf.CodePath,
+	}}}, sarif.FileMap(fileMap), sarif.BuilderConfig{ToolVersion: version})
 }
 
 // auditSuppressionJustification states why the audit suppressed a finding,
