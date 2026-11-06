@@ -57,8 +57,8 @@ func TestRetrieveFindsCallersTemplatesAndDefinitions(t *testing.T) {
 	ix := NewIndex(goRepo())
 	got := ix.Retrieve(Claim{File: "internal/handlers/pages.go", Start: 13, End: 13}, map[string]bool{"internal/handlers/pages.go": true})
 	want := []string{
-		"main.go:1-10 reference to PageSearch",
-		"web/templates/search.html:1-2 template search.html",
+		"main.go:1-9 reference to PageSearch",
+		"web/templates/search.html:1-1 template search.html",
 		"internal/db/queries.go:3-6 definition of SearchDocuments",
 		"internal/models/models.go:3-6 type User",
 	}
@@ -112,7 +112,8 @@ func TestRenderMergesRangesWithinBudget(t *testing.T) {
 		{File: "b.go", Start: 1, End: 50},
 	}, 60, count)
 	want := "<file path=\"a.go\" lines=\"2-4,7-8\">\n2| l2\n3| l3\n4| l4\n...\n7| l7\n8| l8\n</file>\n\n"
-	if out != want || kept != 3 {
+	// Three admitted excerpts plus the contained excerpt are all covered.
+	if out != want || kept != 4 {
 		t.Fatalf("Render = %q (kept %d); want %q", out, kept, want)
 	}
 }
@@ -184,8 +185,8 @@ func TestRetrieveFollowsFlaggedValueIntoConstructor(t *testing.T) {
 	}
 	want := []string{
 		// A caller outside tests comes before one in a test.
-		"app/src/main/kotlin/pay/TransferService.kt:1-8 reference to buildTransfer",
-		"app/src/test/kotlin/pay/RequestTransferActionTest.kt:1-8 reference to buildTransfer",
+		"app/src/main/kotlin/pay/TransferService.kt:1-7 reference to buildTransfer",
+		"app/src/test/kotlin/pay/RequestTransferActionTest.kt:1-7 reference to buildTransfer",
 		// The constructor receiving the amount, then where it passes it.
 		"app/src/main/kotlin/pay/Transfer.kt:3-14 receives the flagged expression: Transfer",
 		"app/src/main/kotlin/pay/PaymentLimits.kt:6-10 possible use of Transfer parameter amount in requireValid",

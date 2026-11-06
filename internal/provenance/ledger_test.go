@@ -77,6 +77,7 @@ func TestMergeAndFilterHaveCompleteLineage(t *testing.T) {
 		return sarif.Build(sarif.AnalysisResult{SecurityIssues: []sarif.SecurityIssue{{Issue: "same", FilePath: file, StartLine: 1, CWEID: "CWE-89", Severity: sev, TechnicalDetails: "same evidence"}}}, nil, sarif.BuilderConfig{})
 	}
 	a, b, c := mk("a.go", 7), mk("a.go", 7), mk("package.json", 2)
+	b.Runs[0].Results[0].Message.Text = "Reworded duplicate"
 	for i, d := range []*sarif.SARIFDocument{&a, &b, &c} {
 		if err := l.Observe(string(rune('a'+i)), d); err != nil {
 			t.Fatal(err)
