@@ -86,7 +86,8 @@ merge/filtering, subsequent finding revisions and each observation's final
 disposition. SARIF results link to it through `properties.provenance`; existing
 finding IDs and partial fingerprints remain the correlation keys. Original
 observations remain available even when the final result is suppressed or its
-evidence is refined. A missing `run-complete` event indicates an interrupted run.
+evidence is refined. A missing `run-complete` event indicates an interrupted run
+or a lineage write failure.
 Lineage contains source excerpts and model output, like the other phase artifacts;
 request headers and API credentials are not recorded. It is written incrementally
 with owner-only permissions. No lineage file is written for stdout-only scans
@@ -108,6 +109,14 @@ merged result keeps the other result's flow. A merged result keeps every
 original observation ID in `properties.provenance`, and the lineage records the
 merge as a `merged_from` revision.
 
+Lineage recording is best effort. If the lineage file cannot be opened, written,
+or synced, or an event is rejected, the scan logs a warning and continues. SARIF
+output, audit verdicts, token usage and cost, and the exit code are unaffected.
+After a write failure, no further events are written. A rejected event is
+dropped on its own, and later events are still recorded. Either way, the final
+SARIF records `execution.lineageIncomplete: true`. Treat lineage from such a run
+as partial.
+
 The v2 ledger binds observations to model responses (including repair operations),
 records individual accepted, retried and unresolved audit decisions, and supports
 split and semantic duplicate relationships. Validate either ledger version and
@@ -116,6 +125,20 @@ optionally reconcile final SARIF with:
 ```bash
 codecrucible validate-lineage results.lineage.jsonl --sarif results.sarif
 ```
+
+The ledger is single-line JSONL: one compact JSON record per line, as the writer
+emits it. Hand-formatted records that span several lines are rejected. A final
+record that is torn or not valid JSON, followed only by whitespace, is reported
+as partial lineage (`complete: false`) with
+`reasons: ["truncated final record"]` in the JSON report; unresolved
+observations from the valid prefix are preserved. Such a record followed by more non-whitespace content is corruption
+and fails validation, as does a final record that is valid JSON but not a valid
+event. Reconciliation with `--sarif` remains strict for partial ledgers.
+
+Read `reasons` whenever `complete` is `false`; currently its only value is
+`truncated final record`. A ledger is also partial, with no `reasons` entry,
+when it has no `run-complete` event or its `run-complete` event records
+`lineageIncomplete: true`.
 
 A recorded model verdict or source quote is not proof of exploitability.
 
@@ -1024,7 +1047,7 @@ Every SARIF run includes `properties.codecrucible` with `schemaVersion: 1`:
 | `recipe.phases` | Analysis, feature detection, audit, and context compression: provider/model, sanitized base URL/endpoint, transport, model parameters, context/output limits, temperature settings, output mode, timeout, tokenizer, and pricing assumptions |
 | `recipe.controls` | Scope filters, test/document inclusion, file-size limit, compression, concurrency, cost limit, severity gate, phase toggles, audit confidence/batch size, and context budget |
 | `recipeFingerprint` | SHA-256 of the canonical JSON recipe (sorted object keys, preserved array order); excludes output paths, credentials, timestamps, and execution outcomes |
-| `execution` | Artifact stage, phase statuses and actual phase configurations, fallbacks, per-phase model calls, the models used, detected features, token correction, chunk/recovery counts, source loading/compression outcomes, and packed-context fingerprints/truncation |
+| `execution` | Artifact stage, phase statuses and actual phase configurations, fallbacks, per-phase model calls, the models used, detected features, token correction, chunk/recovery counts, source loading/compression outcomes, packed-context fingerprints/truncation, and `lineageIncomplete` (set when any lineage event was not recorded) |
 | `execution.sourceIndex` | Extractor version, fingerprints of admitted source bytes and the index, file/line counts, extraction modes, and import-resolution counts |
 | `execution.sourceBundles` | Fingerprints of the source context assembled for feature detection, analysis chunks/recovery, and audit batches |
 | `execution.sourceCoverage` | Admitted, planned, and successfully analyzed file counts; repeated files (including retries), and repo-relative lists of unplanned or unanalyzed files |

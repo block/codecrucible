@@ -466,8 +466,11 @@ func runScan(cmd *cobra.Command, args []string) error {
 	artifacts.usage = usage
 	lineage, lineageFile, err := openLineage(artifacts, metadata)
 	if err != nil {
-		return err
+		warnLineage(err)
+		metadata.Execution.LineageIncomplete = true
+		lineage = provenance.New(metadata.Execution.RunID, nil)
 	}
+	lineage.BestEffort(warnLineage)
 	usage.lineage = lineage
 	client = usage.wrap("analysis", client, modelCfg)
 	if lineageFile != nil {
@@ -568,7 +571,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 			setPhaseStatus(metadata, "audit", "completed", "")
 		}
 		if err := checkpointAudit(lineage, &merged); err != nil {
-			return err
+			warnLineage(err)
 		}
 		if err := artifacts.WriteSARIF("audit", merged); err != nil {
 			return fmt.Errorf("writing audit artifact: %w", err)
@@ -591,14 +594,27 @@ func runScan(cmd *cobra.Command, args []string) error {
 
 	// Persist revisions before presentation can rewrite derived SARIF messages.
 	if err := checkpointAudit(lineage, &merged); err != nil {
-		return err
+		warnLineage(err)
 	}
 	if err := lineage.Finish(merged); err != nil {
-		return err
+		warnLineage(err)
 	}
 
 	// --- Stage 7: Output ---
 	usage.apply(metadata)
+	metadata.Execution.LineageIncomplete = metadata.Execution.LineageIncomplete || lineage.Incomplete()
+	if err := lineage.Metadata("run-complete", metadata); err != nil {
+		metadata.Execution.LineageIncomplete = true
+		warnLineage(err)
+	}
+	if lineageFile != nil {
+		if err := lineageFile.Sync(); err != nil {
+			metadata.Execution.LineageIncomplete = true
+			warnLineage(err)
+		}
+	}
+
+	metadata.Execution.LineageIncomplete = metadata.Execution.LineageIncomplete || lineage.Incomplete()
 	merged, err = prepareSARIF(merged, metadata, "final")
 	if err != nil {
 		return err
@@ -616,15 +632,6 @@ func runScan(cmd *cobra.Command, args []string) error {
 		slog.Info("SARIF written", "path", cfg.Output)
 	} else {
 		fmt.Println(string(output))
-	}
-
-	if err := lineage.Metadata("run-complete", metadata); err != nil {
-		return err
-	}
-	if lineageFile != nil {
-		if err := lineageFile.Sync(); err != nil {
-			return err
-		}
 	}
 
 	if err := scanExecutionError(merged); err != nil {
@@ -1015,7 +1022,7 @@ func runAnalysisPhases(ctx context.Context, in analysisInputs) (out analysisOutc
 	var overflowPaths []string
 	for i, r := range results {
 		if r.lineageErr != nil {
-			return out, r.lineageErr
+			warnLineage(r.lineageErr)
 		}
 		if errors.Is(r.err, llm.ErrContextLengthExceeded) {
 			overflowPaths = append(overflowPaths, chunks[i].Paths...)
@@ -1067,7 +1074,7 @@ func runAnalysisPhases(ctx context.Context, in analysisInputs) (out analysisOutc
 				)
 				if in.lineage != nil {
 					if err := in.lineage.Observe(fmt.Sprintf("recovery/chunk/%d", rc.Index), &doc); err != nil {
-						return out, err
+						warnLineage(err)
 					}
 				}
 				coverage.complete(rc.Paths, doc, aErr)
@@ -1092,7 +1099,7 @@ func runAnalysisPhases(ctx context.Context, in analysisInputs) (out analysisOutc
 	merged := sarif.Merge(sarifDocs)
 	if in.lineage != nil {
 		if err := in.lineage.Checkpoint("merge", &merged); err != nil {
-			return out, err
+			warnLineage(err)
 		}
 	}
 
@@ -1101,7 +1108,7 @@ func runAnalysisPhases(ctx context.Context, in analysisInputs) (out analysisOutc
 	merged = sarif.AssignFindingIDs(sarif.PostProcess(merged))
 	if in.lineage != nil {
 		if err := in.lineage.Checkpoint("analysis", &merged); err != nil {
-			return out, err
+			warnLineage(err)
 		}
 	}
 
