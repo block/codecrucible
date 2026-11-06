@@ -66,15 +66,33 @@ type dedupKey struct {
 	startLine int
 	cwe       string
 	evidence  string
-	title     string
 }
 
-// deduplicateResults consolidates identical claims and evidence, retaining the
-// highest severity. A shared file/line/CWE alone is not identity.
+// deduplicateResults groups by file, line and CWE, ignoring rule titles.
+// Distinct flow endpoints remain separate; anchorless results join only a
+// unique anchored group. The highest severity and available flow are retained.
 func deduplicateResults(results []SARIFResult, ruleByID map[string]SARIFRule) []SARIFResult {
 	bestIndex := make(map[dedupKey]int) // key → index into deduped slice
 	var deduped []SARIFResult
 
+	// Count structural groups before assigning anchorless observations.
+	groups := map[dedupKey]map[string]bool{}
+	for _, r := range results {
+		key := dedupKey{cwe: strings.ToUpper(strings.TrimSpace(ResultCWE(r, ruleByID[r.RuleID])))}
+		if len(r.Locations) > 0 {
+			key.fileURI = r.Locations[0].PhysicalLocation.ArtifactLocation.URI
+			if region := r.Locations[0].PhysicalLocation.Region; region != nil {
+				key.startLine = region.StartLine
+			}
+		}
+		sig := evidenceKey(r)
+		if sig != "[]" {
+			if groups[key] == nil {
+				groups[key] = map[string]bool{}
+			}
+			groups[key][sig] = true
+		}
+	}
 	for _, r := range results {
 		var fileURI string
 		var startLine int
@@ -86,14 +104,30 @@ func deduplicateResults(results []SARIFResult, ruleByID map[string]SARIFRule) []
 		}
 
 		cwe := ResultCWE(r, ruleByID[r.RuleID])
-		key := dedupKey{fileURI: fileURI, startLine: startLine, cwe: cwe, evidence: evidenceKey(r), title: ruleByID[r.RuleID].ShortDescription.Text}
+		key := dedupKey{fileURI: fileURI, startLine: startLine, cwe: strings.ToUpper(strings.TrimSpace(cwe)), evidence: evidenceKey(r)}
+
+		if key.evidence == "[]" {
+			bucket := key
+			bucket.evidence = ""
+			if len(groups[bucket]) == 1 {
+				for sig := range groups[bucket] {
+					key.evidence = sig
+				}
+			}
+		}
 
 		if idx, exists := bestIndex[key]; exists {
 			existingSev := ResultSeverity(deduped[idx], ruleByID[deduped[idx].RuleID])
 			newSev := ResultSeverity(r, ruleByID[r.RuleID])
 			if newSev > existingSev {
+				if len(r.CodeFlows) == 0 {
+					r.CodeFlows = deduped[idx].CodeFlows
+				}
 				deduped[idx] = combineProvenance(r, deduped[idx])
 			} else {
+				if len(deduped[idx].CodeFlows) == 0 {
+					deduped[idx].CodeFlows = r.CodeFlows
+				}
 				deduped[idx] = combineProvenance(deduped[idx], r)
 			}
 		} else {

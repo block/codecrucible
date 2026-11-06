@@ -101,7 +101,7 @@ func Merge(docs []SARIFDocument) SARIFDocument {
 				}
 			}
 
-			key := resultKey{ruleID: normID, filePath: fp, startLine: sl, evidence: evidenceKey(r), cwe: ResultCWE(r, localRules[r.RuleID])}
+			key := resultKey{ruleID: normID, filePath: fp, startLine: sl, evidence: evidenceKey(r), cwe: strings.ToUpper(strings.TrimSpace(ResultCWE(r, localRules[r.RuleID])))}
 			if idx, ok := seenResults[key]; ok {
 				existingRule := SARIFRule{}
 				if ruleIdx, exists := ruleIndex[normID]; exists {
