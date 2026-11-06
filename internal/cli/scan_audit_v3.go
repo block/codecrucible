@@ -165,13 +165,13 @@ func applyOutcomeV3(result *sarif.SARIFResult, a assessedV3) {
 		if a.raw.Remediation != "" {
 			p.Remediation = a.raw.Remediation
 		}
-		if a.raw.SeverityBasis != "" && a.raw.RefinedSeverity >= 0 && a.raw.RefinedSeverity <= 10 && !math.IsNaN(a.raw.RefinedSeverity) {
+		if a.raw.SeverityBasis != "" && a.raw.RefinedSeverity > 0 && a.raw.RefinedSeverity <= 10 && !math.IsNaN(a.raw.RefinedSeverity) {
 			sev := a.raw.RefinedSeverity
 			p.Severity = &sev
 			result.Level = severityLevelScan(sev)
 		}
-		if a.raw.RefinedCWE != "" {
-			p.CWE = a.raw.RefinedCWE
+		if cwe := sarif.NormalizeCWE(a.raw.RefinedCWE); cwe != "" && cwe != "CWE-0" {
+			p.CWE = cwe
 		}
 	}
 }
@@ -359,16 +359,19 @@ func (r *auditV3Run) split(ctx context.Context, doc *sarif.SARIFDocument, index 
 	// A split can add independently assessed children. Until coverage is proven,
 	// the original remains an unresolved remainder even if its broad claim failed.
 	p := doc.Runs[0].Results[index].Properties
-	p.AuditStatus = "unverified"
-	if p.AuditIntegrity != nil {
-		v := *p.AuditIntegrity
-		v.Status = "unverified"
-		v.Reasons = append(append([]string{}, v.Reasons...), "independent_subclaims")
-		p.AuditIntegrity = &v
+	rejectedParent := p.AuditStatus == "rejected"
+	if !rejectedParent {
+		p.AuditStatus = "unverified"
+		if p.AuditIntegrity != nil {
+			v := *p.AuditIntegrity
+			v.Status = "unverified"
+			v.Reasons = append(append([]string{}, v.Reasons...), "independent_subclaims")
+			p.AuditIntegrity = &v
+		}
+		p.Verified = false
+		p.AuditCrux = "Grouped claim requires independent child decisions."
+		doc.Runs[0].Results[index].Suppressions = nil
 	}
-	p.Verified = false
-	p.AuditCrux = "Grouped claim requires independent child decisions."
-	doc.Runs[0].Results[index].Suppressions = nil
 	var valid []auditcore.Child
 	var ids []string
 	proposals := a.raw.Children
@@ -404,10 +407,24 @@ func (r *auditV3Run) split(ctx context.Context, doc *sarif.SARIFDocument, index 
 		}
 		// Depth is bounded at one. Further proposed splits stay unresolved.
 		if assessed, ok := out[id]; ok && len(assessed.raw.Children) > 0 {
-			cr.Properties.AuditStatus = "unverified"
-			cr.Properties.Verified = false
-			cr.Properties.AuditCrux = "Additional subclaims require review."
-			cr.Suppressions = nil
+			supported := assessed.outcome.Status != "rejected"
+			for _, proposal := range assessed.raw.Children {
+				if _, err := auditcore.ValidateChild(cc, proposal, func(e auditcore.Evidence) (auditcore.Evidence, bool) { return r.index.Verify(assessed.bundle, e) }); err == nil {
+					supported = true
+					break
+				}
+			}
+			if supported {
+				cr.Properties.AuditStatus = "unverified"
+				cr.Properties.Verified = false
+				cr.Properties.AuditCrux = "Additional subclaims require review."
+				cr.Suppressions = nil
+				if cr.Properties.AuditIntegrity != nil {
+					integrity := *cr.Properties.AuditIntegrity
+					integrity.Status = "unverified"
+					cr.Properties.AuditIntegrity = &integrity
+				}
+			}
 		}
 		doc.Runs[0].Results = append(doc.Runs[0].Results, *cr)
 		for _, rule := range childDoc.Runs[0].Tool.Driver.Rules {
@@ -426,7 +443,7 @@ func (r *auditV3Run) split(ctx context.Context, doc *sarif.SARIFDocument, index 
 		ids = append(ids, id)
 	}
 	p.ChildFindingIDs = ids
-	if len(valid) == len(a.raw.Children) && auditcore.CompleteCoverage(parent, valid) {
+	if !rejectedParent && len(valid) == len(a.raw.Children) && auditcore.CompleteCoverage(parent, valid) {
 		p.AuditStatus = "superseded"
 		if p.AuditIntegrity != nil {
 			v := *p.AuditIntegrity
