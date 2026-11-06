@@ -177,3 +177,23 @@ func rawAssessments[T any](items []T, id func(T) string) map[string]json.RawMess
 	}
 	return out
 }
+
+func (j *auditJournal) discardAdditions(findings []NewFinding) error {
+	if j == nil || j.ledger == nil {
+		return nil
+	}
+	for _, f := range findings {
+		raw, err := json.Marshal(f)
+		if err != nil {
+			return err
+		}
+		reason := f.DiscardReason
+		if reason == "" {
+			reason = "duplicate audit addition"
+		}
+		if err := j.ledger.Discard(fmt.Sprintf("%s/addition/%d", f.ProducerID, f.ProducerOrdinal), f.ProducerID, reason, raw); err != nil {
+			return err
+		}
+	}
+	return nil
+}

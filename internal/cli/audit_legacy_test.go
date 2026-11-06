@@ -153,3 +153,60 @@ func TestLegacyRejectsCrossWiredClaimIdentity(t *testing.T) {
 		t.Fatalf("cross-wired identity accepted: %+v %v", got, err)
 	}
 }
+
+func TestAdditionStructuredIdentityAcrossOriginals(t *testing.T) {
+	for _, reverse := range []bool{false, true} {
+		original := NewFinding{Issue: "Analysis title", FilePath: "a.go", StartLine: 7, CWEID: "CWE-89"}
+		source := func(file string) []sarif.CodePathStep {
+			return []sarif.CodePathStep{{FilePath: file, StartLine: 1, Message: "source"}, {FilePath: "a.go", StartLine: 7, Message: "sink"}}
+		}
+		additions := []NewFinding{
+			{Issue: "Different prose", FilePath: "a.go", StartLine: 7, CWEID: "cwe-89", CodePath: source("one.go")},
+			{Issue: "Different prose", FilePath: "a.go", StartLine: 7, CWEID: "CWE-89", CodePath: source("two.go")},
+		}
+		if reverse {
+			additions[0], additions[1] = additions[1], additions[0]
+		}
+		kept, discarded := deduplicateLegacyAdditions(additions, &original)
+		if len(kept) != 2 || len(discarded) != 0 || len(original.CodePath) != 0 {
+			t.Fatalf("ambiguous sources merged: %v %v", kept, discarded)
+		}
+		original.CodePath = source("one.go")
+		kept, discarded = deduplicateLegacyAdditions(additions, &original)
+		if len(kept) != 1 || len(discarded) != 1 || discarded[0].DiscardReason != "duplicate of analysis finding" || kept[0].CodePath[0].FilePath != "two.go" {
+			t.Fatalf("structured identity lost: %v %v", kept, discarded)
+		}
+	}
+}
+
+func TestPathlessCWEDoesNotMergeDifferentIssues(t *testing.T) {
+	anchor := []sarif.CodePathStep{{FilePath: "source.go", StartLine: 1}, {FilePath: "db.go", StartLine: 40}}
+	finding := func(issue string, path []sarif.CodePathStep) NewFinding {
+		return NewFinding{Issue: issue, FilePath: "db.go", StartLine: 40, CWEID: "CWE-89", CodePath: path}
+	}
+	for _, firstPath := range [][]sarif.CodePathStep{nil, anchor} {
+		a, b := finding("via name", firstPath), finding("via id", nil)
+		for _, input := range [][]NewFinding{{a, b}, {b, a}} {
+			kept, discarded := deduplicateLegacyAdditions(input)
+			if len(kept) != 2 || len(discarded) != 0 {
+				t.Fatalf("pathless CWE overmerge: %v %v", kept, discarded)
+			}
+		}
+	}
+	for _, path := range [][]sarif.CodePathStep{nil, anchor} {
+		original := finding("via name", nil)
+		kept, discarded := deduplicateLegacyAdditions([]NewFinding{finding("via id", path)}, &original)
+		if len(kept) != 1 || len(discarded) != 0 || len(original.CodePath) != 0 {
+			t.Fatal("addition borrowed its own anchor", kept, discarded)
+		}
+	}
+	x, y, z := finding("X", nil), finding("X", nil), finding("Y", nil)
+	y.CWEID = "CWE-79"
+	z.CWEID = "CWE-79"
+	for _, input := range [][]NewFinding{{x, y, z}, {x, z, y}, {y, x, z}, {y, z, x}, {z, x, y}, {z, y, x}} {
+		kept, _ := deduplicateLegacyAdditions(input)
+		if len(kept) != 2 {
+			t.Fatal("order-dependent pathless merge", input, kept)
+		}
+	}
+}

@@ -119,6 +119,10 @@ codecrucible validate-lineage results.lineage.jsonl --sarif results.sarif
 
 A recorded model verdict or source quote is not proof of exploitability.
 
+When a prompt set allows audit additions, additions that repeat an analysis finding
+or another addition are discarded, with lineage reasons `duplicate of analysis finding`
+or `duplicate audit addition`. A missing code path carries over to the surviving finding.
+
 To compare audit prompts or models without analysis variance, replay the audit
 on saved findings: `codecrucible scan REPO --audit-from results.analysis.sarif`.
 Replay ingests REPO with the same filters, skips feature detection and analysis,
