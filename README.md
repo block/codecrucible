@@ -180,7 +180,9 @@ supports JSON Schema. See “Adding models via config” below. Unknown models u
 128K context, 8192 output tokens, and no schema enforcement; these assumptions
 may not match your endpoint. Use `--context-limit` and `--max-output-tokens` to
 override limits. Cerebras models with no configured pricing emit a warning:
-reported costs exclude their usage and `--max-cost` cannot enforce that spend.
+reported costs exclude their usage. Under the default `--max-cost` that spend is
+not enforced; an explicit limit rejects the scan (see
+[Cost estimates and `--max-cost`](#cost-estimates-and---max-cost)).
 Model listing discovers IDs; it does not populate pricing or capabilities.
 
 The `zai-glm-5.3-flash` profile is an explicit opt-in for Cerebras deployments
@@ -207,9 +209,10 @@ reasoning, and the 131,072-token output allowance were accepted in a live
 request, and a complete analysis/audit scan was verified. This does not
 establish maximum-length generation or a fully occupied 1M-token context.
 
-Pricing is unconfigured: reported costs exclude this model, and `--max-cost`
-cannot enforce its spend. Configure contract pricing under `models:` before
-relying on cost estimates.
+Pricing is unconfigured: reported costs exclude this model, the default
+`--max-cost` does not cover its spend, and an explicit `--max-cost` rejects the
+scan. Configure contract pricing under `models:` before relying on cost
+estimates.
 
 When switching deployments, update the `model` override in local
 `model-params` / `PHASES_ANALYSIS_MODEL_PARAMS_JSON` as well as the selected
@@ -278,6 +281,47 @@ Global Flags:
   --config string   config file (default: .codecrucible.yaml)
   --verbose         enable debug logging
 ```
+
+### Cost estimates and `--max-cost`
+
+`--dry-run` plans the scan without calling a model. It loads the prompt set, so
+it needs the same `--prompts-dir` a scan would use, and splits the source into
+analysis chunks with the scan's chunker and budget. It prints:
+
+- the estimated input cost of analysis and, when enabled, audit, and their
+  total;
+- an input + maximum output upper bound for the scenario, which charges every
+  request its configured maximum output;
+- the planned analysis chunk count and per-chunk source budget;
+- the audit scenario. Findings do not exist before analysis, so it assumes one
+  finding per source file at `--audit-batch-size`. Each file appears in exactly
+  one batch, and each batch also carries the audit prompt and up to 24K
+  retrieval tokens, capped by the audit model's input capacity;
+- what the estimate excludes: feature detection, supplementary context and
+  compression, tokenizer correction, finding payloads and CWE-specific audit
+  sections, retries, and additional audit iterations;
+- for each unpriced model, `Warning: missing pricing for <model>; estimate is
+  incomplete, not free.`
+
+The estimate is a scenario, not a spending ceiling. `--dry-run` never applies
+the cost gate.
+
+Before any model call, a scan compares the estimated **input** cost, analysis
+plus audit, against `--max-cost` (default $25; `0` disables the check). Output
+is not part of the gate. When the check fails, the error also shows the input +
+maximum output upper bound.
+
+A model missing input or output pricing, in the registry or under `models:`,
+cannot be costed:
+
+- With the implicit default limit, the scan warns that the default $25 cap is
+  not being enforced for the unpriced models and continues. Priced phases are
+  still checked against the cap.
+- With an explicit limit (`--max-cost`, `max-cost` in the config file,
+  `MAX_COST`, or any value other than the default), the scan is rejected:
+  `cannot enforce --max-cost: missing pricing for …; add input and output
+  pricing or unset max-cost (--max-cost 0)`. Add pricing under `models:` or
+  pass `--max-cost 0`.
 
 ## Agent Skill
 

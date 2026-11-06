@@ -65,7 +65,7 @@ pipeline and produces SARIF output suitable for GitHub Code Scanning integration
 
 	// Analysis behaviour
 	cmd.Flags().Float64("fail-on-severity", 0, "exit non-zero if any finding meets or exceeds this severity (0-10)")
-	cmd.Flags().Float64("max-cost", 25, "maximum cost budget in dollars (0 = unlimited)")
+	cmd.Flags().Float64("max-cost", config.DefaultMaxCost, "maximum cost budget in dollars (0 = unlimited)")
 	cmd.Flags().Bool("dry-run", false, "show what would be analyzed without making LLM calls")
 	cmd.Flags().String("custom-requirements", "", "additional analysis requirements to include in the prompt")
 	cmd.Flags().StringSlice("context-source", nil, "supplementary context as key=value pairs: name=X,type=<path|repo|url|inline>,location=Y,priority=N,compress=true (repeatable)")
@@ -389,7 +389,21 @@ func runScan(cmd *cobra.Command, args []string) error {
 		flatResult.BuildFullXML(filtered, flattenCfg)
 	}
 
+	if len(filtered) == 0 {
+		slog.Info("no source files after filtering, producing empty SARIF")
+		return outputEmptySARIF(cfg)
+	}
 	costEstimate := estimateScanCost(totalTokens, cfg)
+	if cfg.DryRun || cfg.MaxCost > 0 {
+		loader, loadErr := resolvePromptLoader(cfg.PromptsDir)
+		if loadErr != nil {
+			return fmt.Errorf("loading prompts: %w", loadErr)
+		}
+		costEstimate, err = planScanCost(flatResult, cfg, loader, filepath.Base(repoRoot), counter, &chunk.ChunkOptions{ImportGraph: importGraph, ExportSummaries: exportSummaries})
+		if err != nil {
+			return err
+		}
+	}
 	scopeAttrs := []any{
 		"files", len(filtered),
 		"tokens", totalTokens,
@@ -397,12 +411,6 @@ func runScan(cmd *cobra.Command, args []string) error {
 		"context_limit", modelCfg.ContextLimit,
 	}
 	slog.Info("analysis scope", append(scopeAttrs, costEstimate.logAttrs()...)...)
-
-	// Handle empty repo.
-	if len(filtered) == 0 {
-		slog.Info("no source files after filtering, producing empty SARIF")
-		return outputEmptySARIF(cfg)
-	}
 
 	if cfg.DryRun {
 		fmt.Printf("Dry run — analysis scope:\n")
@@ -414,14 +422,10 @@ func runScan(cmd *cobra.Command, args []string) error {
 			fmt.Printf("  Warning: %s (model: %s; phases: %s)\n",
 				warning.Message, warning.Model, strings.Join(warning.Phases, ", "))
 		}
-		if totalTokens > modelCfg.ContextLimit {
-			chunks := (totalTokens / modelCfg.ContextLimit) + 1
-			fmt.Printf("  Will require ~%d chunks\n", chunks)
-		}
 		return nil
 	}
 
-	if err := costEstimate.checkBudget(cfg.MaxCost); err != nil {
+	if err := costEstimate.checkConfiguredBudget(cfg.MaxCost, explicitMaxCost(cmd, v, cfg.MaxCost)); err != nil {
 		return err
 	}
 
@@ -435,12 +439,10 @@ func runScan(cmd *cobra.Command, args []string) error {
 
 	slog.Info("LLM provider configured", "provider", analysis.Provider, "model", modelCfg.Name)
 
-	// Load prompt templates.
 	promptLoader, err := resolvePromptLoader(cfg.PromptsDir)
 	if err != nil {
 		return fmt.Errorf("loading prompts: %w", err)
 	}
-
 	schema := llm.SecurityAnalysisSchema()
 	outputMode := llm.OutputModeForConfig(modelCfg)
 	repoName := filepath.Base(repoRoot)

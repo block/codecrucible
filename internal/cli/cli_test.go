@@ -83,7 +83,7 @@ func TestScanCommand_DryRun(t *testing.T) {
 	buf := new(bytes.Buffer)
 	cmd.SetOut(buf)
 	cmd.SetErr(buf)
-	cmd.SetArgs([]string{"scan", "--dry-run"})
+	cmd.SetArgs([]string{"scan", "--dry-run", "--prompts-dir", "../../prompts/default"})
 
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("Execute failed: %v", err)
