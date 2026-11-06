@@ -40,6 +40,8 @@ type auditEvalRate struct {
 }
 type auditEvalReport struct {
 	Cases                      int                    `json:"cases"`
+	RecallMisses               int                    `json:"recallMisses"`
+	Recall                     auditEvalRate          `json:"recall"`
 	Missing                    int                    `json:"missing"`
 	Statuses                   map[string]int         `json:"statuses"`
 	InvalidConfirmed           auditEvalRate          `json:"invalidConfirmed"`
@@ -114,30 +116,32 @@ func scoreAudit(doc sarif.SARIFDocument, labels auditEvalLabels) (auditEvalRepor
 		if len(matches) > 1 {
 			return out, fmt.Errorf("ambiguous label for %s/%s", c.FindingID, c.ParentID)
 		}
-		confirmed, suppressed := false, true
+		active, suppressed := false, false
 		if len(matches) == 0 {
 			out.Missing++
 		} else {
 			p := matches[0].Properties
 			out.Statuses[p.AuditStatus]++
 			suppressed = len(matches[0].Suppressions) > 0
-			confirmed = !suppressed && (p.AuditStatus == "confirmed" || p.AuditStatus == "refined" || p.AuditStatus == "escalated")
+			active = !suppressed
 		}
 		if c.Weakness == "invalid" {
 			invalid++
-			if confirmed {
+			if active {
 				ic++
 			}
 		}
 		if c.Impact == "unsupported" {
 			unsupported++
-			if confirmed {
+			if active {
 				uc++
 			}
 		}
 		if c.Weakness == "valid" {
 			positive++
-			if suppressed {
+			if len(matches) == 0 {
+				out.RecallMisses++
+			} else if suppressed {
 				ps++
 			}
 		}
@@ -168,6 +172,7 @@ func scoreAudit(doc sarif.SARIFDocument, labels auditEvalLabels) (auditEvalRepor
 	out.InvalidConfirmed = rate(ic, invalid)
 	out.UnsupportedImpactConfirmed = rate(uc, unsupported)
 	out.PositiveSuppressed = rate(ps, positive)
+	out.Recall = rate(positive-ps-out.RecallMisses, positive)
 	out.DuplicatePrecision = rate(tp, reported)
 	return out, nil
 }
