@@ -1,6 +1,9 @@
 package auditcore
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 func fixture() (Claim, Assessment, VerifySource) {
 	c := Seal(Claim{FindingID: "f", RevisionID: "r", Title: "unsafe", File: "a.go", Start: 2, End: 2, Material: []Material{{"title", "unsafe"}}})
@@ -64,5 +67,61 @@ func TestSplitCoverage(t *testing.T) {
 	child.Covers[0].Quote = "invented"
 	if _, err := ValidateChild(c, child, v); err == nil {
 		t.Fatal("invented claim accepted")
+	}
+}
+
+func TestUnrelatedVerifiedQuotesCannotRefuteSubject(t *testing.T) {
+	for _, kind := range []string{"attacker_control", "boundary"} {
+		c, a, _ := fixture()
+		for i := range a.Assertions {
+			if a.Assertions[i].Kind == kind {
+				a.Assertions[i].Status = "refuted"
+				a.Assertions[i].Evidence = []Evidence{{File: "other.go", Start: 1, End: 1, Quote: "unrelated(value)"}}
+			}
+		}
+		got := Evaluate(c, a, func(e Evidence) (Evidence, bool) { return e, true })
+		if got.Status != "unverified" || !slices.Contains(got.Reasons, "insufficient_evidence:"+kind) {
+			t.Fatalf("unrelated %s quote rejected claim", kind)
+		}
+	}
+}
+
+func TestMissingAnswerHasUnknownReason(t *testing.T) {
+	c, a, v := fixture()
+	missing := a.Assertions[len(a.Assertions)-1].Kind
+	a.Assertions = a.Assertions[:len(a.Assertions)-1]
+	got := Evaluate(c, a, v)
+	for _, reason := range got.Reasons {
+		if reason == "unknown:"+missing {
+			return
+		}
+	}
+	t.Fatalf("missing unknown reason for %s: %+v", missing, got)
+}
+
+func TestEstablishedUpstreamControlStillConfirms(t *testing.T) {
+	c, a, _ := fixture()
+	for i := range a.Assertions {
+		if a.Assertions[i].Kind == "attacker_control" {
+			a.Assertions[i].Evidence = []Evidence{{File: "handler.go", Start: 10, End: 10, Quote: "value := request.Query()"}}
+		}
+	}
+	if got := Evaluate(c, a, func(e Evidence) (Evidence, bool) { return e, true }); got.Status != "confirmed" {
+		t.Fatal(got)
+	}
+}
+func TestAnchoredRefutationMustNameSubject(t *testing.T) {
+	for _, kind := range []string{"attacker_control", "boundary"} {
+		c, a, _ := fixture()
+		for i := range a.Assertions {
+			if a.Assertions[i].Kind == kind {
+				a.Assertions[i].Status = "refuted"
+				a.Assertions[i].Evidence = []Evidence{{File: "a.go", Start: 2, End: 2, Quote: "sink(other)"}}
+			}
+		}
+		got := Evaluate(c, a, func(e Evidence) (Evidence, bool) { return e, true })
+		if got.Status != "unverified" || !slices.Contains(got.Reasons, "insufficient_evidence:"+kind) {
+			t.Fatal(got)
+		}
 	}
 }

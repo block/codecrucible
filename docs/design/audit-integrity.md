@@ -22,8 +22,10 @@ readers extract source facts; security policy stays in shared code.
 - `internal/sourceindex` pins admitted source and resolves local dependencies.
   `internal/auditctx` retrieves numbered excerpts from those bytes.
 - `internal/provenance` records responses, observations, revisions and terminal
-  dispositions. Explicit producer links and individual audit decisions are
-  still missing. Semantic split/duplicate edges are not yet implemented.
+  dispositions. Earlier ledgers lacked explicit producer links, individual
+  audit decisions and semantic split/duplicate edges. The v2 ledger now
+  records producers, `decision` events, and `split_from`/`duplicate_of`
+  relationships (`internal/provenance/ledger.go`).
 - `internal/cli/model_usage.go` now records every phase's usage and lineage,
   including fallback clients. Extend this common path rather than add another
   provider-specific recorder.

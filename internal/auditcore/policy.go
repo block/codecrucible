@@ -144,6 +144,17 @@ func Evaluate(c Claim, a Assessment, verify VerifySource, assumptionVerifiers ..
 	out := Outcome{Status: "unverified", Policy: PolicyVersion, Crux: strings.TrimSpace(a.Crux)}
 	if !ValidIdentity(c, a) || !ValidShape(a) {
 		out.Reasons = []string{"invalid_claim_assessment"}
+		if ValidIdentity(c, a) {
+			answered := map[string]bool{}
+			for _, assertion := range a.Assertions {
+				answered[assertion.Kind] = true
+			}
+			for _, q := range Questions {
+				if !answered[q] {
+					out.Reasons = append(out.Reasons, "unknown:"+q)
+				}
+			}
+		}
 		out.Crux = "A valid assessment bound to this claim revision is required."
 		return out
 	}
@@ -156,7 +167,10 @@ func Evaluate(c Claim, a Assessment, verify VerifySource, assumptionVerifiers ..
 			v.Flow[i].Evidence = checked(v.Flow[i].Evidence, verify)
 		}
 		valid := strings.TrimSpace(v.Statement) != "" && strings.TrimSpace(v.Subject) != "" && strings.TrimSpace(v.Reason) != "" && len(v.Evidence) > 0
-		if v.Kind == "weakness" {
+		if v.Kind == "attacker_control" || v.Kind == "boundary" {
+			valid = valid && mentions(v.Evidence, v.Subject)
+		}
+		if v.Kind == "weakness" || ((v.Kind == "attacker_control" || v.Kind == "boundary") && v.Status == "refuted") {
 			anchored := false
 			for _, e := range v.Evidence {
 				if claimAnchor(c, e) {
@@ -164,7 +178,7 @@ func Evaluate(c Claim, a Assessment, verify VerifySource, assumptionVerifiers ..
 					break
 				}
 			}
-			valid = valid && anchored
+			valid = valid && anchored && mentions(v.Evidence, v.Subject)
 		}
 		if v.Kind == "impact" || v.Kind == "unmitigated" {
 			valid = valid && mentions(v.Evidence, v.Subject) && len(v.ConsumerEvidence) > 0 && mentions(v.ConsumerEvidence, v.Consumer) && mentions(v.ConsumerEvidence, v.ConsumerInput) && follows(v.Subject, v.ConsumerInput, v.Flow)
@@ -235,7 +249,11 @@ func Evaluate(c Claim, a Assessment, verify VerifySource, assumptionVerifiers ..
 	}
 	for _, q := range Questions {
 		if states[q] != "established" {
-			out.Reasons = append(out.Reasons, states[q]+":"+q)
+			state := states[q]
+			if state == "" {
+				state = "unknown"
+			}
+			out.Reasons = append(out.Reasons, state+":"+q)
 		}
 	}
 	if out.Crux == "" {
