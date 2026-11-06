@@ -10,6 +10,7 @@ import (
 
 	"github.com/block/codecrucible/internal/config"
 	"github.com/block/codecrucible/internal/llm"
+	"github.com/block/codecrucible/internal/sarif"
 )
 
 // runLegacyAuditBatch preserves accepted verdicts and retries only unassessed
@@ -17,10 +18,8 @@ import (
 func runLegacyAuditBatch(ctx context.Context, batch []auditClaim, label string, model config.ModelConfig,
 	call func([]auditClaim, string) (*llm.ChatResponse, error),
 	observers ...func([]auditClaim, *llm.ChatResponse, map[string]json.RawMessage, map[string]bool, error) error,
-) (AuditResult, llm.TokenUsage, float64, error) {
-	var result AuditResult
-	var usage llm.TokenUsage
-	var cost float64
+) (result AuditResult, usage llm.TokenUsage, cost float64, returnErr error) {
+	defer func() { result.NewFindings, result.DiscardedAdditions = deduplicateLegacyAdditions(result.NewFindings) }()
 	var lastErr error
 	pending := batch
 	for attempt := 0; attempt < 2 && len(pending) > 0; attempt++ {
@@ -176,4 +175,99 @@ func acceptLegacyVerdicts(claims []auditClaim, findings []AuditedFinding) ([]Aud
 		note(fmt.Errorf("audit omitted valid verdicts for %d findings", len(claims)-len(accepted)))
 	}
 	return accepted, problem
+}
+
+// legacyAdditionKey groups retry candidates without model CWE relabeling.
+func legacyAdditionKey(f NewFinding) string {
+	key, _ := json.Marshal([]any{f.FilePath, f.StartLine, strings.ToLower(strings.Join(strings.Fields(f.Issue), " "))})
+	return string(key)
+}
+func legacyAdditionAnchors(f NewFinding) string {
+	if len(f.CodePath) == 0 {
+		return ""
+	}
+	first, last := f.CodePath[0], f.CodePath[len(f.CodePath)-1]
+	key, _ := json.Marshal([]any{first.FilePath, first.StartLine, last.FilePath, last.StartLine})
+	return string(key)
+}
+
+// sameLegacyAddition compares structured identity, never diagnostic prose.
+func sameLegacyAddition(a, b NewFinding) bool {
+	if a.FilePath != b.FilePath || a.StartLine != b.StartLine {
+		return false
+	}
+	ac, bc := sarif.NormalizeCWE(a.CWEID), sarif.NormalizeCWE(b.CWEID)
+	return legacyAdditionKey(a) == legacyAdditionKey(b) || (ac != "" && ac != "CWE-0" && ac == bc && legacyAdditionAnchors(a) != "" && legacyAdditionAnchors(a) == legacyAdditionAnchors(b))
+}
+
+func deduplicateLegacyAdditions(findings []NewFinding, originals ...*NewFinding) (kept, discarded []NewFinding) {
+	all := append([]NewFinding{}, findings...)
+	for _, original := range originals {
+		all = append(all, *original)
+	}
+	signature := func(f NewFinding) string {
+		sig := legacyAdditionAnchors(f)
+		if sig != "" {
+			return sig
+		}
+		anchors := map[string]bool{}
+		for _, other := range all {
+			if legacyAdditionKey(f) == legacyAdditionKey(other) {
+				if anchor := legacyAdditionAnchors(other); anchor != "" {
+					anchors[anchor] = true
+				}
+			}
+		}
+		if len(anchors) == 1 {
+			for anchor := range anchors {
+				return anchor
+			}
+		}
+		return ""
+	}
+	var identities []NewFinding
+	for _, f := range findings {
+		sig := signature(f)
+		var matches []*NewFinding
+		for i, original := range originals {
+			identity := all[len(findings)+i]
+			if sameLegacyAddition(f, identity) && sig == signature(identity) {
+				matches = append(matches, original)
+			}
+		}
+		if len(matches) == 1 {
+			if len(matches[0].CodePath) == 0 {
+				matches[0].CodePath = f.CodePath
+			}
+			f.DiscardReason = "duplicate of analysis finding"
+			discarded = append(discarded, f)
+			continue
+		}
+		match := -1
+		for i, previous := range identities {
+			if sameLegacyAddition(f, previous) && sig == signature(previous) {
+				match = i
+				break
+			}
+		}
+		if match < 0 {
+			kept = append(kept, f)
+			identities = append(identities, f)
+			continue
+		}
+		if f.Confidence > kept[match].Confidence {
+			identities[match] = f
+			discarded = append(discarded, kept[match])
+			if len(f.CodePath) == 0 {
+				f.CodePath = kept[match].CodePath
+			}
+			kept[match] = f
+		} else {
+			if len(kept[match].CodePath) == 0 {
+				kept[match].CodePath = f.CodePath
+			}
+			discarded = append(discarded, f)
+		}
+	}
+	return
 }
