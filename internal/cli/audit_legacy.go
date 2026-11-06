@@ -16,13 +16,13 @@ import (
 // claims. Transport retries remain the client's responsibility.
 func runLegacyAuditBatch(ctx context.Context, batch []auditClaim, label string, model config.ModelConfig,
 	call func([]auditClaim, string) (*llm.ChatResponse, error),
+	observers ...func([]auditClaim, *llm.ChatResponse, map[string]json.RawMessage, map[string]bool, error) error,
 ) (AuditResult, llm.TokenUsage, float64, error) {
 	var result AuditResult
 	var usage llm.TokenUsage
 	var cost float64
 	var lastErr error
 	pending := batch
-	newFindings := make(map[auditFindingKey]bool)
 	for attempt := 0; attempt < 2 && len(pending) > 0; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return result, usage, cost, err
@@ -32,6 +32,11 @@ func runLegacyAuditBatch(ctx context.Context, batch []auditClaim, label string, 
 		}
 		resp, err := call(pending, label)
 		if err != nil {
+			for _, observe := range observers {
+				if e := observe(pending, resp, nil, nil, err); e != nil {
+					return result, usage, cost, e
+				}
+			}
 			return result, usage, cost, fmt.Errorf("LLM call: %w", err)
 		}
 		usage.PromptTokens += resp.Usage.PromptTokens
@@ -49,20 +54,32 @@ func runLegacyAuditBatch(ctx context.Context, batch []auditClaim, label string, 
 			lastErr = fmt.Errorf("audit response exceeded output token limit")
 		}
 		if lastErr != nil {
+			for _, observe := range observers {
+				if e := observe(pending, resp, nil, nil, lastErr); e != nil {
+					return result, usage, cost, e
+				}
+			}
 			continue
 		}
 		accepted, err := acceptLegacyVerdicts(pending, parsed.AuditedFindings)
 		lastErr = err
+		acceptedIDs := map[string]bool{}
+		for _, a := range accepted {
+			acceptedIDs[a.FindingID] = true
+		}
+		for _, observe := range observers {
+			if e := observe(pending, resp, rawAssessments(parsed.AuditedFindings, func(a AuditedFinding) string { return a.FindingID }), acceptedIDs, err); e != nil {
+				return result, usage, cost, e
+			}
+		}
 		result.AuditedFindings = append(result.AuditedFindings, accepted...)
 		if err != nil {
 			slog.Warn("audit response contains missing or invalid verdicts", "label", label, "accepted", len(accepted), "error", err)
 		}
-		for _, finding := range parsed.NewFindings {
-			key := auditFindingKey{finding.FilePath, finding.StartLine, finding.Issue}
-			if !newFindings[key] {
-				result.NewFindings = append(result.NewFindings, finding)
-				newFindings[key] = true
-			}
+		for ordinal, finding := range parsed.NewFindings {
+			finding.ProducerID = resp.ProducerID
+			finding.ProducerOrdinal = ordinal
+			result.NewFindings = append(result.NewFindings, finding)
 		}
 		if parsed.AuditSummary != "" {
 			result.AuditSummary = strings.TrimSpace(result.AuditSummary + "\n\n" + parsed.AuditSummary)

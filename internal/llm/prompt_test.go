@@ -1181,7 +1181,7 @@ func TestAuditSchemaV2IsValidJSON(t *testing.T) {
 func TestCorePromptSetAuditFamilies(t *testing.T) {
 	loader := NewPromptLoader(os.DirFS("../../prompts/core"))
 	ap, err := loader.LoadAuditPrompt()
-	if err != nil || ap.Contract != "v2" {
+	if err != nil || ap.Contract != "v3" {
 		t.Fatalf("core audit prompt: contract=%q err=%v", ap.Contract, err)
 	}
 	ff, err := loader.LoadAuditFamilies()
@@ -1202,12 +1202,12 @@ func TestCorePromptSetAuditFamilies(t *testing.T) {
 		}
 	}
 	msgs, err := loader.AssembleAuditMessages(AuditParams{RepoName: "r", FindingsJSON: `{"claims_to_verify":[]}`, CWEIDs: []string{"CWE-89", "CWE-639", "CWE-9999"},
-		Schema: string(*AuditSchemaV2()), ProductionOnly: true})
+		Schema: string(*AuditSchemaV3()), ProductionOnly: true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	user := msgs[1].Content
-	for _, want := range []string{"### Injection", "### Authorization", "### Other weaknesses", "security_audit_v2", "excluded test, fixture"} {
+	for _, want := range []string{"### Injection", "### Authorization", "### Other weaknesses", "security_audit_v3", "excludes test and example"} {
 		if !strings.Contains(user, want) {
 			t.Errorf("core audit prompt lacks %q", want)
 		}

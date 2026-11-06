@@ -213,6 +213,8 @@ func reviewStatus(r SARIFResult) string {
 	p := r.Properties
 	var status string
 	switch {
+	case p.AuditStatus == "superseded":
+		status = "Independently assessed children: " + strings.Join(p.ChildFindingIDs, ", ")
 	case IsSuppressed(r) && p.DuplicateOf != "":
 		status = "Duplicate of " + p.DuplicateOf
 	case IsSuppressed(r):

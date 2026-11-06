@@ -119,6 +119,7 @@ func Build(result AnalysisResult, fileMap FileMap, cfg BuilderConfig) SARIFDocum
 			Level:   severityLevel(issue.Severity),
 			Message: SARIFMessage{Text: issue.TechnicalDetails},
 			Properties: &FindingProperties{
+				InitialEvidence:  issue.FindingEvidence,
 				Severity:         &severity,
 				CWE:              cwe,
 				Summary:          issue.Summary,

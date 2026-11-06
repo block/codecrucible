@@ -52,6 +52,8 @@ type AuditedFinding struct {
 
 // NewFinding is an additional finding discovered during the audit phase.
 type NewFinding struct {
+	ProducerOrdinal  int                  `json:"-"`
+	ProducerID       string               `json:"-"`
 	Issue            string               `json:"issue"`
 	FilePath         string               `json:"file_path"`
 	StartLine        int                  `json:"start_line"`
@@ -87,6 +89,7 @@ func runAuditPhase(
 	counter *chunk.TokenCounter,
 	metadata *sarif.ScanMetadata,
 	source *sourceindex.Index,
+	options ...auditRunOptions,
 ) (*sarif.SARIFDocument, llm.TokenUsage, float64, error) {
 	if len(doc.Runs) == 0 || len(doc.Runs[0].Results) == 0 {
 		return &doc, llm.TokenUsage{}, 0, nil
@@ -95,10 +98,19 @@ func runAuditPhase(
 		source = sourceindex.New(fileMap)
 	}
 	retrieval := auditctx.NewRetriever(source)
+	journal := newAuditJournal(client, doc, "legacy")
+	if ap, err := promptLoader.LoadAuditPrompt(); err == nil && ap.Contract == "v3" {
+		opts := auditRunOptions{semanticDedup: "report"}
+		if len(options) > 0 {
+			opts = options[0]
+		}
+		runner := &auditV3Run{auditV2Run: auditV2Run{repoName: repoName, client: client, endpoint: endpoint, modelCfg: modelCfg, promptLoader: promptLoader, outputMode: outputMode, fileMap: fileMap, modelParams: modelParams, supContext: supContext, productionOnly: productionOnly, counter: counter, metadata: metadata, source: source, index: retrieval, journal: newAuditJournal(client, doc, "v3")}, options: opts}
+		return runner.runV3(ctx, doc, batchSize)
+	}
 	if ap, err := promptLoader.LoadAuditPrompt(); err == nil && ap.Contract == "v2" {
 		v2 := &auditV2Run{repoName: repoName, client: client, endpoint: endpoint, modelCfg: modelCfg, promptLoader: promptLoader,
 			outputMode: outputMode, fileMap: fileMap, modelParams: modelParams, supContext: supContext,
-			productionOnly: productionOnly, counter: counter, metadata: metadata, source: source, index: retrieval}
+			productionOnly: productionOnly, counter: counter, metadata: metadata, source: source, index: retrieval, journal: newAuditJournal(client, doc, "v2")}
 		return v2.run(ctx, doc, batchSize)
 	}
 	slog.Info("starting audit phase",
@@ -200,18 +212,19 @@ func runAuditPhase(
 		)
 
 		request := llm.ChatRequest{
-			Label:                  label,
-			Endpoint:               endpoint,
-			Model:                  modelCfg.Name,
-			Messages:               messages,
-			Temperature:            modelCfg.Temperature,
-			OmitTemperature:        modelCfg.OmitTemperature,
-			MaxTokens:              modelCfg.MaxOutputTokens,
-			UseMaxCompletionTokens: modelCfg.UseMaxCompletionTokens,
-			ResponseSchema:         auditSchema,
-			OutputMode:             outputMode,
-			NativeStructuredOutput: modelCfg.NativeStructuredOutput,
-			ModelParams:            modelParams,
+			Label:                   label,
+			SourceBundleFingerprint: fingerprint([]byte(codeCtx.String())),
+			Endpoint:                endpoint,
+			Model:                   modelCfg.Name,
+			Messages:                messages,
+			Temperature:             modelCfg.Temperature,
+			OmitTemperature:         modelCfg.OmitTemperature,
+			MaxTokens:               modelCfg.MaxOutputTokens,
+			UseMaxCompletionTokens:  modelCfg.UseMaxCompletionTokens,
+			ResponseSchema:          auditSchema,
+			OutputMode:              outputMode,
+			NativeStructuredOutput:  modelCfg.NativeStructuredOutput,
+			ModelParams:             modelParams,
 		}
 		return client.ChatCompletion(ctx, request)
 	}
@@ -237,7 +250,7 @@ func runAuditPhase(
 		if numBatches > 1 {
 			label = fmt.Sprintf("audit %d/%d", i/batchSize+1, numBatches)
 		}
-		r, u, c, err := runLegacyAuditBatch(ctx, findings[i:end], label, modelCfg, auditCall)
+		r, u, c, err := runLegacyAuditBatch(ctx, findings[i:end], label, modelCfg, auditCall, journal.attempt)
 		usage.PromptTokens += u.PromptTokens
 		usage.CompletionTokens += u.CompletionTokens
 		cost += c
@@ -272,6 +285,9 @@ func runAuditPhase(
 
 	// Apply audit verdicts to produce the final SARIF document.
 	auditedDoc := applyAuditVerdicts(doc, auditResult, fileMap, confidenceThreshold)
+	if err := journal.finish(&auditedDoc); err != nil {
+		return &auditedDoc, usage, cost, err
+	}
 	if err := ctx.Err(); err != nil {
 		return &auditedDoc, usage, cost, fmt.Errorf("audit cancelled: %w", err)
 	}
@@ -451,6 +467,8 @@ func applyAuditVerdicts(
 
 		if len(newDoc.Runs) > 0 && len(newDoc.Runs[0].Results) > 0 {
 			confidence := nf.Confidence
+			newDoc.Runs[0].Results[0].Properties.OriginProducerID = nf.ProducerID
+			newDoc.Runs[0].Results[0].Properties.OriginOrdinal = nf.ProducerOrdinal
 			newDoc.Runs[0].Results[0].Properties.AuditStatus = "new"
 			newDoc.Runs[0].Results[0].Properties.AuditConfidence = &confidence
 			// Keep discarded candidates reconstructable, just as we do for

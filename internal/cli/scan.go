@@ -91,6 +91,7 @@ pipeline and produces SARIF output suitable for GitHub Code Scanning integration
 	cmd.Flags().Bool("skip-audit", false, "skip the CWE-specific audit phase (faster but less accurate)")
 	cmd.Flags().Float64("audit-confidence-threshold", 0.3, "reject findings below this confidence score (0.0-1.0)")
 	cmd.Flags().String("audit-from", "", "audit the findings of a saved analysis SARIF (the analysis phase artifact) instead of running analysis")
+	cmd.Flags().String("semantic-dedup", "report", "v3 audit semantic duplicate relationships: off or report (retains all findings)")
 	cmd.Flags().Int("audit-batch-size", 25, "split audit into batches of N findings (0 = single call). Default keeps each call under typical server connection-age limits (~10-12min)")
 	cmd.Flags().Int("concurrency", 3, "max number of chunks to analyze in parallel")
 
@@ -153,7 +154,7 @@ func bindScanFlags(cmd *cobra.Command) {
 		"output", "phase-output-dir", "prompts-dir", "include", "exclude", "custom-headers",
 		"skip-feature-detection", "concurrency", "max-file-size",
 		"context-limit", "max-output-tokens", "request-timeout",
-		"skip-audit", "audit-confidence-threshold", "audit-batch-size",
+		"skip-audit", "audit-confidence-threshold", "audit-batch-size", "semantic-dedup",
 		"audit-from", "context-budget-pct",
 	}
 	for _, f := range flags {
@@ -444,6 +445,9 @@ func runScan(cmd *cobra.Command, args []string) error {
 	}
 
 	schema := llm.SecurityAnalysisSchema()
+	if ap, err := promptLoader.LoadAuditPrompt(); err == nil && ap.Contract == "v3" {
+		schema = llm.SecurityAnalysisSchemaV3()
+	}
 	outputMode := llm.OutputModeForConfig(modelCfg)
 	repoName := filepath.Base(repoRoot)
 
@@ -538,6 +542,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 			auditClient, auditEndpoint, audit.ModelCfg, promptLoader,
 			auditOutputMode, flatResult.FileMap, cfg.AuditConfidenceThreshold, audit.ModelParams, auditCtx.Rendered,
 			cfg.AuditBatchSize, !cfg.IncludeTests, counter, metadata, source,
+			auditRunOptions{semanticDedup: cfg.SemanticDedup, maxCost: cfg.MaxCost, priorCost: totalCost},
 		)
 		totalUsage.PromptTokens += auditUsage.PromptTokens
 		totalUsage.CompletionTokens += auditUsage.CompletionTokens

@@ -73,6 +73,7 @@ func answerStatus(s string) string { return strings.ToLower(strings.TrimSpace(s)
 
 // auditV2Run holds what every v2 audit call shares.
 type auditV2Run struct {
+	journal        *auditJournal
 	repoName       string
 	client         llm.Client
 	endpoint       string
@@ -147,6 +148,9 @@ func (r *auditV2Run) run(ctx context.Context, doc sarif.SARIFDocument, batchSize
 	}
 
 	auditedDoc := applyAuditAssessments(doc, assessments, batchOf, r.fileMap)
+	if err := r.journal.finish(&auditedDoc); err != nil {
+		return &auditedDoc, usage, cost, err
+	}
 	missing := len(claims) - len(assessments)
 	if r.metadata != nil {
 		r.metadata.Execution.AuditLeads = auditLeads(leads)
@@ -187,6 +191,9 @@ func (r *auditV2Run) batch(ctx context.Context, claims []auditClaim, label strin
 		}
 		resp, err := r.call(ctx, pending, label)
 		if err != nil {
+			if e := r.journal.attempt(pending, resp, nil, nil, err); e != nil {
+				return got, leads, usage, cost, e
+			}
 			return got, leads, usage, cost, err
 		}
 		usage.PromptTokens += resp.Usage.PromptTokens
@@ -196,10 +203,20 @@ func (r *auditV2Run) batch(ctx context.Context, claims []auditClaim, label strin
 		parsed, err := parseAuditResponseV2(resp.Content, resp.FinishReason)
 		if err != nil {
 			lastErr = err
+			if e := r.journal.attempt(pending, resp, nil, nil, err); e != nil {
+				return got, leads, usage, cost, e
+			}
 			continue
 		}
 		leads = append(leads, parsed.Leads...)
 		lastErr = acceptAssessments(got, pending, parsed.Assessments, label)
+		acceptedIDs := map[string]bool{}
+		for _, c := range pending {
+			_, acceptedIDs[c.FindingID] = got[c.FindingID]
+		}
+		if e := r.journal.attempt(pending, resp, rawAssessments(parsed.Assessments, func(a auditAssessmentV2) string { return a.FindingID }), acceptedIDs, lastErr); e != nil {
+			return got, leads, usage, cost, e
+		}
 		var rest []auditClaim
 		for _, c := range pending {
 			if _, ok := got[c.FindingID]; !ok {
@@ -280,21 +297,22 @@ func (r *auditV2Run) call(ctx context.Context, claims []auditClaim, label string
 		"estimated_tokens", estTokens, "estimated_input_cost", fmt.Sprintf("$%.4f", r.modelCfg.EstimateInputCost(estTokens)))
 
 	resp, err := r.client.ChatCompletion(ctx, llm.ChatRequest{
-		Label:                  label,
-		Endpoint:               r.endpoint,
-		Model:                  r.modelCfg.Name,
-		Messages:               messages,
-		Temperature:            r.modelCfg.Temperature,
-		OmitTemperature:        r.modelCfg.OmitTemperature,
-		MaxTokens:              r.modelCfg.MaxOutputTokens,
-		UseMaxCompletionTokens: r.modelCfg.UseMaxCompletionTokens,
-		ResponseSchema:         schema,
-		OutputMode:             r.outputMode,
-		NativeStructuredOutput: r.modelCfg.NativeStructuredOutput,
-		ModelParams:            r.modelParams,
+		Label:                   label,
+		SourceBundleFingerprint: fingerprint([]byte(codeCtx.String())),
+		Endpoint:                r.endpoint,
+		Model:                   r.modelCfg.Name,
+		Messages:                messages,
+		Temperature:             r.modelCfg.Temperature,
+		OmitTemperature:         r.modelCfg.OmitTemperature,
+		MaxTokens:               r.modelCfg.MaxOutputTokens,
+		UseMaxCompletionTokens:  r.modelCfg.UseMaxCompletionTokens,
+		ResponseSchema:          schema,
+		OutputMode:              r.outputMode,
+		NativeStructuredOutput:  r.modelCfg.NativeStructuredOutput,
+		ModelParams:             r.modelParams,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("LLM call: %w", err)
+		return resp, fmt.Errorf("LLM call: %w", err)
 	}
 	return resp, nil
 }
@@ -523,6 +541,10 @@ func applyAuditAssessments(doc sarif.SARIFDocument, assessments map[string]audit
 		default:
 			if o.status == "unverified" {
 				props.AuditCrux = strings.TrimSpace(a.Crux)
+				if props.AuditCrux == "" {
+					props.AuditReasons = append(props.AuditReasons, "missing_crux")
+					props.AuditCrux = "Resolve the undecided audit questions: " + strings.Join(o.reasons, ", ")
+				}
 			}
 			rule := rules[result.RuleID]
 			if sev := a.RefinedSeverity; sev > 0 && !math.IsNaN(sev) {
