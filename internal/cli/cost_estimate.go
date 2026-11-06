@@ -89,12 +89,12 @@ func (e scanCostEstimate) writeSummary(w io.Writer) {
 	fmt.Fprintf(w, "  Input + maximum output upper bound (scenario):    $%.4f\n", e.Planning)
 	fmt.Fprintf(w, "  Planning allowance (2–3x):    $%.2f–$%.2f (not a ceiling)\n", e.AllowanceLow, e.AllowanceHigh)
 	if e.plan != nil {
-		fmt.Fprintf(w, "  Planned analysis chunks: %d (source budget: %d tokens)\n", e.plan.Chunks, e.plan.SourceBudget)
-		fmt.Fprintf(w, "  Audit scenario: %d batches; one finding per source file, batch size %d; up to %d retrieval tokens per batch within model capacity.\n", e.plan.AuditBatches, e.plan.BatchSize, auditRetrievalBudget)
-		fmt.Fprintln(w, "  Assumptions: all analysis prompt sections; 20% context safety margin; configured maximum output per request. Each source file appears in one audit batch; each batch is capped with prompt and retrieval by model input capacity. Actual findings and batches are unknown; this is not a spending ceiling.")
-		fmt.Fprintln(w, "  Excludes feature detection, supplementary context and compression, adaptive tokenizer correction, finding payloads/CWE-specific audit sections, retries, and additional audit iterations. These may change the executed chunk plan and cost.")
+		_, _ = fmt.Fprintf(w, "  Planned analysis chunks: %d (source budget: %d tokens)\n", e.plan.Chunks, e.plan.SourceBudget)
+		_, _ = fmt.Fprintf(w, "  Audit scenario: %d batches; one finding per source file, batch size %d; up to %d retrieval tokens per batch within model capacity.\n", e.plan.AuditBatches, e.plan.BatchSize, auditRetrievalBudget)
+		_, _ = fmt.Fprintln(w, "  Assumptions: all analysis prompt sections; 20% context safety margin; configured maximum output per request. Each source file appears in one audit batch; each batch is capped with prompt and retrieval by model input capacity. Actual findings and batches are unknown; this is not a spending ceiling.")
+		_, _ = fmt.Fprintln(w, "  Excludes feature detection, supplementary context and compression, adaptive tokenizer correction, finding payloads/CWE-specific audit sections, retries, and additional audit iterations. These may change the executed chunk plan and cost.")
 		for _, model := range e.plan.Unpriced {
-			fmt.Fprintf(w, "  Warning: missing pricing for %s; estimate is incomplete, not free.\n", model)
+			_, _ = fmt.Fprintf(w, "  Warning: missing pricing for %s; estimate is incomplete, not free.\n", model)
 		}
 		return
 	}
