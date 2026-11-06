@@ -27,6 +27,7 @@ type Def struct {
 }
 
 // Excerpt is a line range retrieved for context, 1-based and inclusive.
+// An empty File carries an omission note in Reason instead of source.
 type Excerpt struct {
 	File       string
 	Start, End int
@@ -93,16 +94,17 @@ func NewIndex(files map[string]string) *Index {
 
 // Limits keep retrieval to evidence that plausibly decides a claim.
 const (
-	maxCallerFiles = 3
-	maxCallerHits  = 2
-	maxCallerSpan  = 8 // files referencing a name before it counts as too common
-	callerRadius   = 8
-	maxCallees     = 4
-	maxTypes       = 3
-	maxContaining  = 2 // calls the flagged value is passed into
-	maxForwarded   = 2 // definitions a receiving call passes the value to
-	maxDefLines    = 60
-	maxTemplate    = 400
+	maxCallerFiles       = 3
+	maxCallerHits        = 2
+	maxCallerSpan        = 8 // files referencing a name before it counts as too common
+	callerRadius         = 8
+	maxCallees           = 4
+	maxCallerDefinitions = 8
+	maxTypes             = 3
+	maxContaining        = 2 // calls the flagged value is passed into
+	maxForwarded         = 2 // definitions a receiving call passes the value to
+	maxDefLines          = 60
+	maxTemplate          = 400
 	// maxEnclosingSpan is how far below a definition a claim can sit and
 	// still count as inside it.
 	maxEnclosingSpan = 150
@@ -140,22 +142,30 @@ func (ix *Index) Retrieve(c Claim, skip map[string]bool) []Excerpt {
 	var out []Excerpt
 	coverage := map[string][][2]int{}
 	add := func(e Excerpt) {
+		if e.File == "" {
+			out = append(out, e)
+			return
+		}
 		if !skip[e.File] && !covered(coverage[e.File], e.Start, e.End) {
 			out = append(out, e)
 			coverage[e.File] = merge(append(coverage[e.File], [2]int{e.Start, e.End}))
 		}
 	}
+	seen := map[defID]bool{}
+	if haveEnclosing {
+		seen[enclosing.id()] = true
+	}
 	if haveEnclosing && !genericNames[enclosing.Name] && len(enclosing.Name) >= 4 {
-		for _, e := range ix.callerExcerpts(enclosing) {
+		callers := ix.callerExcerpts(enclosing)
+		for _, e := range callers {
+			add(e)
+		}
+		for _, e := range ix.callerDefinitions(enclosing, callers, seen) {
 			add(e)
 		}
 	}
 	for _, e := range ix.templateExcerpts(ix.templateLines(c.File, window), c.File) {
 		add(e)
-	}
-	seen := map[defID]bool{}
-	if haveEnclosing {
-		seen[enclosing.id()] = true
 	}
 	src := ix.sources[c.File]
 	n := 0
@@ -292,6 +302,9 @@ func (ix *Index) callerExcerpts(def Def) []Excerpt {
 	sort.SliceStable(order, func(i, j int) bool { return rank(order[i]) < rank(order[j]) })
 	var out []Excerpt
 	for _, f := range order[:min(len(order), maxCallerFiles)] {
+		sort.SliceStable(byFile[f], func(i, j int) bool {
+			return routeHint.MatchString(ix.lines[f][byFile[f][i].line-1]) && !routeHint.MatchString(ix.lines[f][byFile[f][j].line-1])
+		})
 		for _, h := range byFile[f][:min(len(byFile[f]), maxCallerHits)] {
 			out = append(out, Excerpt{File: f, Start: max(1, h.line-callerRadius), End: min(len(ix.lines[f]), h.line+callerRadius),
 				Reason: "reference to " + def.Name})
@@ -386,8 +399,14 @@ func Render(ix *Index, excerpts []Excerpt, budget int, count func(string) int) (
 	var files []*fileRanges
 	byPath := map[string]*fileRanges{}
 	used := 0
+	var notes []string
+	truncated := false
 	kept := 0
 	for _, e := range excerpts {
+		if e.File == "" {
+			notes = append(notes, e.Reason)
+			continue
+		}
 		lines := ix.lines[e.File]
 		start, end := max(1, e.Start), min(len(lines), e.End)
 		if start > end {
@@ -399,6 +418,7 @@ func Render(ix *Index, excerpts []Excerpt, budget int, count func(string) int) (
 		}
 		cost := count(strings.Join(lines[start-1:end], "\n")) + 10
 		if used+cost > budget {
+			truncated = true
 			continue
 		}
 		used += cost
@@ -428,6 +448,17 @@ func Render(ix *Index, excerpts []Excerpt, budget int, count func(string) int) (
 			}
 		}
 		b.WriteString("</file>\n\n")
+	}
+	if truncated {
+		notes = append(notes, "Audit context omitted: token budget exhausted")
+	}
+	seenNotes := map[string]bool{}
+	for _, note := range notes {
+		if seenNotes[note] {
+			continue
+		}
+		seenNotes[note] = true
+		fmt.Fprintf(&b, "%s\n", note)
 	}
 	return b.String(), kept
 }
@@ -460,4 +491,166 @@ var testFile = regexp.MustCompile(`(?i)(^|/)(tests?|__tests__|spec)/|(_test|\.te
 // testPath reports whether path looks like a test file.
 func testPath(path string) bool {
 	return testFile.MatchString(path)
+}
+
+// callerDefinitions retrieves local definitions named by callers. These are
+// context candidates, not proof that a guard executes or applies to a claim.
+func (ix *Index) callerDefinitions(subject Def, callers []Excerpt, seen map[defID]bool) []Excerpt {
+	type candidate struct {
+		file string
+		ref  reference
+	}
+	var candidates []candidate
+	for _, e := range callers {
+		src := ix.sources[e.File]
+		if src == nil {
+			continue
+		}
+		code := strings.Join(src.code, "\n")
+		if _, ok := src.adapter.(lexicalAdapter); ok {
+			code = maskSource(code, src.language == ".py")
+		}
+		for _, span := range callerStatementSpans(code, subject.Name) {
+			line := strings.Count(code[:span[0]], "\n") + 1
+			endLine := line + strings.Count(code[span[0]:span[1]], "\n")
+			if endLine < e.Start || line > e.End {
+				continue
+			}
+			for _, m := range callerNameUse.FindAllStringSubmatchIndex(code[span[0]:span[1]], -1) {
+				text := code[span[0]:span[1]]
+				ref := reference{name: text[m[4]:m[5]], offset: span[0] + m[0]}
+				if m[2] >= 0 {
+					ref.qualifier = text[m[2]:m[3]]
+				}
+				_, imported := callerImport(ix.files[e.File], ref.name)
+				if len(ix.defs[ref.name]) > 0 || imported || ref.qualifier != "" {
+					candidates = append(candidates, candidate{e.File, ref})
+				}
+			}
+		}
+	}
+	var out []Excerpt
+	noted := map[string]bool{}
+	definitions := 0
+	for _, c := range candidates {
+		if keywords[c.ref.name] || genericNames[c.ref.name] || c.ref.name == subject.Name {
+			continue
+		}
+		d, ok := ix.resolve(c.file, c.ref, false)
+		importName := c.ref.name
+		if c.ref.qualifier != "" {
+			importName = c.ref.qualifier
+		}
+		if module, imported := callerImport(ix.files[c.file], importName); imported && !strings.HasPrefix(module, ".") && (!ok || !callerModuleMatches(module, d.File)) {
+			ok = false
+		}
+		if !ok {
+			// Only direct wrappers of the subject need missing-context notes.
+			if ix.sources[c.file].language == ".go" && c.ref.qualifier != "" && !callerWrapsSubject(ix.sources[c.file], c.ref, subject.Name) {
+				continue
+			}
+			reason := "unresolved or external"
+			if len(ix.candidates(c.file, c.ref.name, false)) > 1 {
+				reason = "ambiguous"
+			}
+			note := fmt.Sprintf("Audit context omitted: %s caller reference %s in %s", reason, c.ref.name, c.file)
+			if !noted[note] {
+				out = append(out, Excerpt{Reason: note})
+				noted[note] = true
+			}
+			continue
+		}
+		if seen[d.id()] {
+			continue
+		}
+		seen[d.id()] = true
+		if definitions == maxCallerDefinitions {
+			out = append(out, Excerpt{Reason: "Audit context omitted: caller definition limit reached"})
+			break
+		}
+		definitions++
+		out = append(out, defExcerpt(d, "candidate definition near caller of "+subject.Name+": "+c.ref.name))
+	}
+	return out
+}
+
+var callerNameUse = regexp.MustCompile(`\b(?:([A-Za-z_$][\w$]*)\s*\.\s*)?([A-Za-z_$][\w$]*)\b`)
+
+// callerStatementSpans keeps adjacent registrations separate, including when
+// one statement spans several lines. Literal and comment bytes are masked.
+func callerStatementSpans(code, subject string) [][2]int {
+	var out [][2]int
+	start, depth := 0, 0
+	flush := func(end int) {
+		statement := code[start:end]
+		for _, match := range callerNameUse.FindAllStringSubmatch(statement, -1) {
+			if match[2] == subject && !strings.HasPrefix(strings.TrimSpace(statement), "import ") {
+				out = append(out, [2]int{start, end})
+				break
+			}
+		}
+		start = end
+	}
+	for i, ch := range code {
+		switch ch {
+		case '(', '[':
+			depth++
+		case ')', ']':
+			if depth > 0 {
+				depth--
+			}
+		}
+		if ch == ';' || (ch == '\n' && depth == 0) {
+			flush(i + 1)
+		}
+	}
+	if start < len(code) {
+		flush(len(code))
+	}
+	return out
+}
+
+var callerDefaultImport = regexp.MustCompile(`import\s+(?:\*\s+as\s+)?([A-Za-z_$][\w$]*)\s+from\s*['"]([^'"]+)['"]`)
+
+var callerNamedImport = regexp.MustCompile(`(?s)import\s*\{([^}]+)\}\s*from\s*['"]([^'"]+)['"]`)
+
+// callerModuleMatches recognizes local aliases only at complete path segments.
+func callerModuleMatches(module, file string) bool {
+	module = strings.TrimPrefix(strings.TrimPrefix(module, "@/"), "~/")
+	module = strings.TrimSuffix(module, path.Ext(module))
+	file = strings.TrimSuffix(file, path.Ext(file))
+	file = strings.TrimSuffix(file, "/index")
+	return file == module || strings.HasSuffix(file, "/"+module)
+}
+
+// callerImport handles ES imports only; Go and Python retain adapter resolution.
+func callerImport(code, name string) (string, bool) {
+	for _, match := range callerDefaultImport.FindAllStringSubmatch(code, -1) {
+		if match[1] == name {
+			return match[2], true
+		}
+	}
+	for _, match := range callerNamedImport.FindAllStringSubmatch(code, -1) {
+		for _, item := range strings.Split(match[1], ",") {
+			fields := strings.Fields(item)
+			if len(fields) > 0 && fields[len(fields)-1] == name {
+				return match[2], true
+			}
+		}
+	}
+	return "", false
+}
+
+func callerWrapsSubject(src *sourceInfo, ref reference, subject string) bool {
+	for _, call := range src.calls {
+		if call.name != ref.name || call.qualifier != ref.qualifier || call.offset != ref.offset {
+			continue
+		}
+		for _, arg := range call.args {
+			if arg.direct == subject {
+				return true
+			}
+		}
+	}
+	return false
 }

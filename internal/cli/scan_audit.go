@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/block/codecrucible/internal/auditctx"
 	"github.com/block/codecrucible/internal/chunk"
 	"github.com/block/codecrucible/internal/config"
 	"github.com/block/codecrucible/internal/ingest"
@@ -159,7 +160,15 @@ func runAuditPhase(
 	}
 	numBatches := (len(findings) + batchSize - 1) / batchSize
 
+	allowAdditions := true
+	if ap, err := promptLoader.LoadAuditPrompt(); err == nil {
+		allowAdditions = ap.AllowsNewFindings()
+	}
 	auditSchema := llm.AuditSchema()
+	if !allowAdditions {
+		auditSchema = llm.AuditSchemaExistingClaims()
+	}
+	contextIndex := auditctx.NewIndex(fileMap)
 
 	// auditBatch runs one self-contained audit call: just this batch's
 	// findings, just their CWE IDs, just the files they reference. Each call
@@ -208,23 +217,59 @@ func runAuditPhase(
 			}
 		}
 
-		messages, err := promptLoader.AssembleAuditMessages(llm.AuditParams{
-			RepoName:             repoName,
-			FindingsJSON:         string(findingsJSON),
-			CodeContext:          codeCtx.String(),
-			CWEIDs:               cweIDs,
-			Schema:               string(*auditSchema),
-			ProductionOnly:       productionOnly,
-			SupplementaryContext: supContext,
-		})
+		assemble := func(code string) ([]llm.Message, error) {
+			return promptLoader.AssembleAuditMessages(llm.AuditParams{
+				RepoName: repoName, FindingsJSON: string(findingsJSON), CodeContext: code,
+				CWEIDs: cweIDs, Schema: string(*auditSchema), ProductionOnly: productionOnly, SupplementaryContext: supContext,
+			})
+		}
+		messages, err := assemble(codeCtx.String())
 		if err != nil {
 			return AuditResult{}, llm.TokenUsage{}, 0, fmt.Errorf("assemble audit prompt: %w", err)
 		}
-
-		var estTokens int
-		for _, m := range messages {
-			estTokens += counter.Count(m.Content)
+		countMessages := func(messages []llm.Message) int {
+			n := 0
+			for _, m := range messages {
+				n += counter.Count(m.Content)
+			}
+			return n
 		}
+		baseTokens := countMessages(messages)
+		budget := auditRetrievalBudget
+		if modelCfg.ContextLimit > 0 {
+			budget = min(budget, max(0, modelCfg.ContextLimit-modelCfg.MaxOutputTokens-baseTokens-512))
+		}
+		perClaim := make([][]auditctx.Excerpt, len(batch))
+		for i, f := range batch {
+			perClaim[i] = contextIndex.Retrieve(auditctx.Claim{File: f.FilePath, Start: f.StartLine, End: f.EndLine}, filesNeeded)
+		}
+		var excerpts []auditctx.Excerpt
+		for depth := 0; ; depth++ {
+			added := false
+			for _, list := range perClaim {
+				if depth < len(list) {
+					excerpts = append(excerpts, list[depth])
+					added = true
+				}
+			}
+			if !added {
+				break
+			}
+		}
+		retrieved, _ := auditctx.Render(contextIndex, excerpts, budget, counter.Count)
+		messages, err = assemble(codeCtx.String() + retrieved)
+		if err != nil {
+			return AuditResult{}, llm.TokenUsage{}, 0, err
+		}
+		// Notes and file wrappers also consume context. Fall back to an explicit
+		// omission rather than risk making the claim's own source unreviewable.
+		if countMessages(messages)-baseTokens > budget+256 {
+			messages, err = assemble(codeCtx.String() + "Audit context omitted: retrieval budget exhausted\n")
+			if err != nil {
+				return AuditResult{}, llm.TokenUsage{}, 0, err
+			}
+		}
+		estTokens := countMessages(messages)
 		slog.Info("running audit batch",
 			"label", label,
 			"findings", len(batch),
@@ -324,6 +369,13 @@ func runAuditPhase(
 		usage.PromptTokens += u.PromptTokens
 		usage.CompletionTokens += u.CompletionTokens
 		cost += c
+		if !allowAdditions && len(r.NewFindings) > 0 {
+			slog.Debug("dropping disabled audit additions", "count", len(r.NewFindings))
+			if metadata != nil {
+				metadata.Execution.AuditAdditionsDropped += len(r.NewFindings)
+			}
+			r.NewFindings = nil
+		}
 		if err != nil {
 			failedBatches++
 			if firstBatchErr == nil {

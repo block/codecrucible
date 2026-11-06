@@ -84,6 +84,7 @@ type AuditPrompt struct {
 	// schema; "v2" answers evidentiary questions and code computes the
 	// verdict (see AuditSchemaV2), with family cards from audit_families.yaml.
 	Contract            string `yaml:"contract"`
+	AllowNewFindings    *bool  `yaml:"allow_new_findings"`
 	SystemMessage       string `yaml:"system_message"`
 	UserPromptTemplate  string `yaml:"user_prompt_template"`
 	JSONFormattingRules string `yaml:"json_formatting_rules"`
@@ -790,4 +791,9 @@ func (l *PromptLoader) readTemplate(name string) ([]byte, error) {
 		return nil, &fs.PathError{Op: "read", Path: name, Err: fs.ErrNotExist}
 	}
 	return data, nil
+}
+
+// AllowsNewFindings preserves historical behavior when the setting is absent.
+func (p AuditPrompt) AllowsNewFindings() bool {
+	return p.AllowNewFindings == nil || *p.AllowNewFindings
 }

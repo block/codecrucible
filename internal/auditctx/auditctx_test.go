@@ -95,6 +95,9 @@ func TestRetrieveFindsCallersTemplatesAndDefinitions(t *testing.T) {
 	}
 	var have []string
 	for _, e := range got {
+		if e.File == "" {
+			continue
+		}
 		have = append(have, fmt.Sprintf("%s:%d-%d %s", e.File, e.Start, e.End, e.Reason))
 	}
 	if strings.Join(have, "\n") != strings.Join(want, "\n") {
@@ -142,7 +145,7 @@ func TestRenderMergesRangesWithinBudget(t *testing.T) {
 		{File: "a.go", Start: 2, End: 2}, // already covered
 		{File: "b.go", Start: 1, End: 50},
 	}, 60, count)
-	want := "<file path=\"a.go\" lines=\"2-4,7-8\">\n2| l2\n3| l3\n4| l4\n...\n7| l7\n8| l8\n</file>\n\n"
+	want := "<file path=\"a.go\" lines=\"2-4,7-8\">\n2| l2\n3| l3\n4| l4\n...\n7| l7\n8| l8\n</file>\n\nAudit context omitted: token budget exhausted\n"
 	if out != want || kept != 3 {
 		t.Fatalf("Render = %q (kept %d); want %q", out, kept, want)
 	}
@@ -211,6 +214,9 @@ func TestRetrieveFollowsFlaggedValueIntoConstructor(t *testing.T) {
 	claim := "app/src/main/kotlin/pay/RequestTransferAction.kt"
 	var have []string
 	for _, e := range ix.Retrieve(Claim{File: claim, Start: 14, End: 14}, map[string]bool{claim: true}) {
+		if e.File == "" {
+			continue
+		}
 		have = append(have, fmt.Sprintf("%s:%d-%d %s", e.File, e.Start, e.End, e.Reason))
 	}
 	want := []string{

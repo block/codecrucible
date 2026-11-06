@@ -145,3 +145,19 @@ func TestStrictSchemaObjects(t *testing.T) {
 		check(decodeSchemaPayload(t, raw)["schema"])
 	}
 }
+
+func TestAuditExistingClaimsSchemaDiffersFromDiscovery(t *testing.T) {
+	existing, discovery := AuditSchemaExistingClaims(), AuditSchema()
+	if string(*existing) == string(*discovery) {
+		t.Fatal("existing-claims description was not applied")
+	}
+	payload := decodeSchemaPayload(t, existing)
+	schema := payload["schema"].(map[string]any)
+	additions := schema["properties"].(map[string]any)["new_findings"].(map[string]any)
+	if additions["description"] != "Must be empty. This audit validates existing claims only." {
+		t.Fatal(additions)
+	}
+	if _, ok := additions["maxItems"]; ok {
+		t.Fatal("provider compatibility: unexpected maxItems")
+	}
+}

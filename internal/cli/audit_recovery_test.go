@@ -197,3 +197,39 @@ func TestAuditIncludesCodePathFilesAndReplacesPath(t *testing.T) {
 		t.Fatal("unverified finding retains asserted code flow")
 	}
 }
+
+func TestAuditDisablesUnsolicitedAdditions(t *testing.T) {
+	for _, allowed := range []bool{false, true} {
+		t.Run(fmt.Sprint(allowed), func(t *testing.T) {
+			loader := llm.NewPromptLoader(os.DirFS("../../prompts/default"))
+			prompt, err := loader.LoadAuditPrompt()
+			if err != nil {
+				t.Fatal(err)
+			}
+			prompt.AllowNewFindings = &allowed
+			calls := 0
+			client := auditClientFunc(func(_ context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+				calls++
+				forbidden := strings.Contains(string(*req.ResponseSchema), `Must be empty. This audit validates existing claims only.`)
+				if forbidden == allowed {
+					t.Fatal("wrong additions schema")
+				}
+				// The endpoint deliberately ignores the schema's instruction to return an empty array.
+				data, _ := json.Marshal(AuditResult{AuditedFindings: []AuditedFinding{{OriginalIssue: "First", FilePath: "a.go", StartLine: 1, Verdict: "confirmed", Confidence: .9}, {OriginalIssue: "Second", FilePath: "b.go", StartLine: 1, Verdict: "confirmed", Confidence: .9}}, NewFindings: []NewFinding{{Issue: "Extra", FilePath: "a.go", StartLine: 1, Severity: 8, Confidence: .9}}})
+				return &llm.ChatResponse{Content: string(data)}, nil
+			})
+			metadata := &sarif.ScanMetadata{}
+			got, _, _, err := runAuditPhase(context.Background(), auditFixture(), "fixture", client, "", config.ModelConfig{Name: "test"}, loader, llm.OutputModeNone, ingest.FileMap{"a.go": "sink()", "b.go": "sink()"}, .3, nil, "", 20, true, chunk.NewTokenCounter("", nil), metadata)
+			if err != nil || got == nil {
+				t.Fatal(err)
+			}
+			want, dropped := 2, 1
+			if allowed {
+				want, dropped = 3, 0
+			}
+			if calls != 1 || len(got.Runs[0].Results) != want || metadata.Execution.AuditAdditionsDropped != dropped {
+				t.Fatalf("calls=%d results=%d dropped=%d", calls, len(got.Runs[0].Results), metadata.Execution.AuditAdditionsDropped)
+			}
+		})
+	}
+}
