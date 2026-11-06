@@ -19,9 +19,10 @@ import (
 
 // AuditResult represents the structured output from the audit phase LLM call.
 type AuditResult struct {
-	AuditedFindings []AuditedFinding `json:"audited_findings"`
-	NewFindings     []NewFinding     `json:"new_findings"`
-	AuditSummary    string           `json:"audit_summary"`
+	DiscardedAdditions []NewFinding     `json:"-"`
+	AuditedFindings    []AuditedFinding `json:"audited_findings"`
+	NewFindings        []NewFinding     `json:"new_findings"`
+	AuditSummary       string           `json:"audit_summary"`
 }
 
 // AuditedFinding is the audit verdict for a single initial finding.
@@ -52,6 +53,7 @@ type AuditedFinding struct {
 
 // NewFinding is an additional finding discovered during the audit phase.
 type NewFinding struct {
+	DiscardReason    string               `json:"-"`
 	ProducerOrdinal  int                  `json:"-"`
 	ProducerID       string               `json:"-"`
 	Issue            string               `json:"issue"`
@@ -256,6 +258,9 @@ func runAuditPhase(
 			label = fmt.Sprintf("audit %d/%d", i/batchSize+1, numBatches)
 		}
 		r, u, c, err := runLegacyAuditBatch(ctx, findings[i:end], label, modelCfg, auditCall, journal.attempt)
+		if discardErr := journal.discardAdditions(r.DiscardedAdditions); discardErr != nil {
+			return nil, usage, cost, discardErr
+		}
 		usage.PromptTokens += u.PromptTokens
 		usage.CompletionTokens += u.CompletionTokens
 		cost += c
@@ -295,8 +300,35 @@ func runAuditPhase(
 		)
 	}
 
+	// Consolidate across all batches, including partial successes, before
+	// assigning addition identities and checkpointing the final audit state.
+	var originals []*NewFinding
+	for _, claim := range findings {
+		original := &NewFinding{Issue: claim.Issue, FilePath: claim.FilePath, StartLine: claim.StartLine, CWEID: claim.CWEID}
+		for _, flow := range claim.CodeFlows {
+			for _, thread := range flow.ThreadFlows {
+				for _, step := range thread.Locations {
+					loc := step.Location.PhysicalLocation
+					if loc.Region != nil {
+						original.CodePath = append(original.CodePath, sarif.CodePathStep{FilePath: loc.ArtifactLocation.URI, StartLine: loc.Region.StartLine})
+					}
+				}
+			}
+		}
+		originals = append(originals, original)
+	}
+	var discarded []NewFinding
+	auditResult.NewFindings, discarded = deduplicateLegacyAdditions(auditResult.NewFindings, originals...)
+	if err := journal.discardAdditions(discarded); err != nil {
+		return nil, usage, cost, err
+	}
 	// Apply audit verdicts to produce the final SARIF document.
 	auditedDoc := applyAuditVerdicts(doc, auditResult, fileMap, confidenceThreshold)
+	for i, original := range originals {
+		if len(findings[i].CodeFlows) == 0 && len(original.CodePath) > 0 && len(auditedDoc.Runs[0].Results[i].CodeFlows) == 0 {
+			auditedDoc.Runs[0].Results[i].CodeFlows = sarif.BuildCodeFlows(original.CodePath, sarif.FileMap(fileMap))
+		}
+	}
 	if err := journal.finish(&auditedDoc); err != nil {
 		return &auditedDoc, usage, cost, err
 	}
