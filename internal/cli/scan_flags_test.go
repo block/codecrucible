@@ -60,7 +60,7 @@ func TestScanStructuredFlagEnvironmentKnownLimitation(t *testing.T) {
 		t.Fatal(err)
 	}
 	bindScanFlags(cmd)
-	// Known limitation (codecrucible-zba): config.Load's unmarshal splits
+	// Known limitation: config.Load's unmarshal splits
 	// environment strings on commas. This records the scan path's current
 	// behavior, not the intended contract for structured values.
 	cfg, err := config.Load(v)
