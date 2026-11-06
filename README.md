@@ -891,6 +891,8 @@ Per-finding state lives in `result.properties`:
 | `severity`, `cwe` | This finding's own severity (0–10) and CWE, including audit refinements |
 | `summary`, `remediation`, `technicalDetails` | Reviewer summary, fix, and full evidence |
 | `reportedPath` | The model's file path, when it named no scanned file and was repaired to the one scanned file it uniquely matches (for example a dropped `app/` prefix) |
+| `reportedLocations` | A location the model reported whose region was invalid for the scanned file, kept here as reported. A valid start line keeps its region in `locations`, with the end clamped to the start (reversed range) or to the file's last line; an invalid start line removes the region |
+| `locationWarnings` | One entry per `reportedLocations` entry: `clamped_source_region` when the region was clamped, `invalid_source_region` when it was removed |
 
 The finding ID hashes the CWE (or rule ID), file path, and whitespace-normalized
 flagged source. It excludes model wording and line numbers, so rescans of
