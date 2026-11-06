@@ -84,14 +84,29 @@ for stdout workflows.
 The versioned lineage file records model responses, immutable observations before
 merge/filtering, subsequent finding revisions and each observation's final
 disposition. SARIF results link to it through `properties.provenance`; existing
-finding IDs and partial fingerprints remain the correlation keys. A shared
-location and CWE no longer suffice to discard different evidence. Original
+finding IDs and partial fingerprints remain the correlation keys. Original
 observations remain available even when the final result is suppressed or its
 evidence is refined. A missing `run-complete` event indicates an interrupted run.
 Lineage contains source excerpts and model output, like the other phase artifacts;
 request headers and API credentials are not recorded. It is written incrementally
 with owner-only permissions. No lineage file is written for stdout-only scans
 without an artifact directory.
+
+Before audit, duplicate reports are consolidated in two passes. Results are
+first grouped by primary file, start line, and normalized CWE. Rule IDs and
+model wording (title, message, summary, details, remediation) are not part of
+the key, so the same defect reported in different words by overlapping chunks
+merges. Each group is then split by structural anchors: the first and last
+location of every code-flow thread (source and sink) plus any
+`reportedLocations`, compared as `file:line`. Intermediate flow steps are
+ignored. Results with the same anchors merge and keep the highest severity.
+Different sources or sinks at the same location stay separate findings. A
+result with no anchors joins the group's anchored results only when they share
+exactly one anchor set; otherwise it merges only with other anchorless
+results in that group. When the higher-severity result has no code flow, the
+merged result keeps the other result's flow. A merged result keeps every
+original observation ID in `properties.provenance`, and the lineage records the
+merge as a `merged_from` revision.
 
 The v2 ledger binds observations to model responses (including repair operations),
 records individual accepted, retried and unresolved audit decisions, and supports

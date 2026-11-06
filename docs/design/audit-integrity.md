@@ -34,8 +34,10 @@ readers extract source facts; security policy stays in shared code.
 - Legacy audit output can still rewrite an entire grouped claim. The supplied
   identity fields prevent some cross-wiring, but an echoed ID/title is not
   evidence that an explanation concerns the right claim.
-- Evidence-aware exact deduplication deliberately retains more records. Same
-  location, CWE, or similar wording alone must remain insufficient identity.
+- Deduplication groups results by location and normalized CWE, then splits
+  each group by source/sink anchors. Wording decides identity in neither
+  direction: reworded reports of one defect merge, and different sources or
+  sinks at the same location remain separate.
 
 ## Data model
 

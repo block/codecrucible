@@ -324,7 +324,7 @@ func TestAuditV2RequestCarriesRetrievedContextAndOtherClaims(t *testing.T) {
 	if err != nil || len(prompts) != 2 {
 		t.Fatalf("prompts=%d err=%v", len(prompts), err)
 	}
-	if !strings.Contains(prompts[0], "<file path=\"app/routes.go\" lines=\"1-6\">\n1| package app") ||
+	if !strings.Contains(prompts[0], "<file path=\"app/routes.go\" lines=\"1-5\">\n1| package app") ||
 		!strings.Contains(prompts[0], "4| \tr.Post(\"/admin/purge\", Purge)") {
 		t.Errorf("first batch lacks the route registration of Purge:\n%s", prompts[0])
 	}

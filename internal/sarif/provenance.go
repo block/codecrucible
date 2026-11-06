@@ -3,6 +3,7 @@ package sarif
 import (
 	"encoding/json"
 	"sort"
+	"strconv"
 )
 
 // combineProvenance preserves all contributing observations and revision
@@ -51,24 +52,34 @@ func uniqueStrings(values []string) []string {
 	return out
 }
 
-// evidenceKey prevents location/CWE collisions from discarding distinct claims.
-// Severity differences may be consolidated, but different explanations, paths,
-// remediation, or source evidence must survive independently.
+// evidenceKey identifies structural source anchors independently of model prose.
 func evidenceKey(r SARIFResult) string {
-	var summary, details, remediation string
-	var reported []SARIFLocation
-	if r.Properties != nil {
-		summary = r.Properties.Summary
-		details = r.Properties.TechnicalDetails
-		remediation = r.Properties.Remediation
-		reported = r.Properties.ReportedLocations
+	anchors := map[string]bool{}
+	add := func(loc SARIFLocation) {
+		line := 0
+		if loc.PhysicalLocation.Region != nil {
+			line = loc.PhysicalLocation.Region.StartLine
+		}
+		anchors[loc.PhysicalLocation.ArtifactLocation.URI+":"+strconv.Itoa(line)] = true
 	}
-	b, _ := json.Marshal(struct {
-		Message                       SARIFMessage
-		Locations                     []SARIFLocation
-		Reported                      []SARIFLocation
-		Flows                         []SARIFCodeFlow
-		Summary, Details, Remediation string
-	}{r.Message, r.Locations, reported, r.CodeFlows, summary, details, remediation})
+	for _, flow := range r.CodeFlows {
+		for _, thread := range flow.ThreadFlows {
+			if len(thread.Locations) > 0 {
+				add(thread.Locations[0].Location)
+				add(thread.Locations[len(thread.Locations)-1].Location)
+			}
+		}
+	}
+	if r.Properties != nil {
+		for _, loc := range r.Properties.ReportedLocations {
+			add(loc)
+		}
+	}
+	keys := make([]string, 0, len(anchors))
+	for key := range anchors {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	b, _ := json.Marshal(keys)
 	return string(b)
 }

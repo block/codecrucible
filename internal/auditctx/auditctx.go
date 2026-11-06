@@ -337,6 +337,7 @@ func closest(cands []string, name, from string) []string {
 // Render writes excerpts as numbered <file> blocks, merging overlapping
 // ranges per file, in order of each file's first excerpt. count measures a
 // block's tokens; excerpts are added in priority order until budget is spent.
+// The returned count includes excerpts already covered by an admitted range.
 func Render(ix *Index, excerpts []Excerpt, budget int, count func(string) int) (string, int) {
 	type fileRanges struct {
 		path   string
@@ -354,6 +355,7 @@ func Render(ix *Index, excerpts []Excerpt, budget int, count func(string) int) (
 		}
 		f := byPath[e.File]
 		if f != nil && covered(f.ranges, start, end) {
+			kept++
 			continue
 		}
 		cost := count(strings.Join(lines[start-1:end], "\n")) + 10
