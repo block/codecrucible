@@ -992,11 +992,30 @@ The label file contains `cases` and `pairs` arrays. A case identifies a
 `finding_id` and labels `weakness` as `valid`, `invalid`, or `unknown`; optional
 `impact` is `supported`, `unsupported`, or `unknown`. A child can instead be
 selected by `parent_id`, `file`, `line`, and `claim_contains`. A pair contains
-`left`, `right`, and a Boolean `duplicate`. The report includes missing cases,
-known-positive suppression, invalid/unsupported-impact confirmations, labeled
-duplicate precision with 95% intervals, and recorded audit-model usage. Keep
-tuning cases separate from held-out evaluation and record elapsed time alongside
-each replay.
+`left`, `right`, and a Boolean `duplicate`. The report counts labeled cases
+with no matching result (`missing`) and the matched results' audit statuses. It
+gives each rate with a 95% interval:
+
+- `recall`: valid cases whose result is present and unsuppressed, out of all
+  valid cases. A valid case with no result counts in `recallMisses`, not as a
+  suppression.
+- `knownPositiveSuppressed`: valid cases whose result is suppressed, out of all
+  valid cases.
+- `invalidConfirmed` and `unsupportedImpactConfirmed`: invalid cases, and
+  unsupported-impact cases, whose result is still active (unsuppressed) with
+  any audit status, including `unverified`, out of all cases with that label.
+  Despite the key names, these count active results, not only confirmed ones.
+- `duplicatePrecision`: of the labeled pairs the audit reported as duplicates
+  (through `duplicateOf` or `semanticDuplicates`, in either direction), those
+  labeled `duplicate: true`. Pairs whose `left` finding has no result are
+  skipped.
+
+Each rate reports `count`, `total`, `rate`, `lower95` and `upper95`. A rate with
+`total: 0` is undefined, not zero: its `rate` and bounds are reported as `0`,
+so check `total` before reading them.
+
+The report also includes recorded audit-model usage. Keep tuning cases separate
+from held-out evaluation and record elapsed time alongside each replay.
 
 All audit contracts carry more than the files the findings cite. Up to about 24K
 tokens of excerpts are retrieved per batch, with real line numbers, so the
