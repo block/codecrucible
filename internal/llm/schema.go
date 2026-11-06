@@ -170,6 +170,16 @@ func AuditSchema() *json.RawMessage {
 	return &schema
 }
 
+// AuditSchemaExistingClaims constrains a legacy audit to its supplied claims.
+// The runtime enforces this even when providers ignore schema descriptions.
+func AuditSchemaExistingClaims() *json.RawMessage {
+	schema := strings.Replace(auditSchemaJSON,
+		`"description": "Additional findings discovered during the deep CWE analysis",`,
+		`"description": "Must be empty. This audit validates existing claims only.",`, 1)
+	raw := json.RawMessage(schema)
+	return &raw
+}
+
 const auditSchemaJSON = `{
   "name": "security_audit",
   "strict": true,

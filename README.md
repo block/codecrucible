@@ -319,6 +319,8 @@ See [PROMPT_SETS.md](PROMPT_SETS.md) for a fuller walkthrough of when to reach f
 
 Each prompt set directory must contain: `security_analysis_base.yaml`, `analysis_sections.yaml`, `feature_detection.yaml`, `audit.yaml`, and optionally `context_compress.yaml`. A v1 audit (`audit.yaml` without `contract: v2`) also reads `cwe_deep_analysis.yaml`; a v2 audit requires `audit_families.yaml` instead.
 
+A v1 audit may also report findings the analysis missed, which appear with `auditStatus: "new"`. Setting `allow_new_findings: false` in `audit.yaml` limits the audit to the findings it was given: the audit schema asks for an empty `new_findings` array, and any additions a model returns anyway are discarded before verdicts are applied. Their total is recorded as `execution.auditAdditionsDropped` in the run metadata (omitted when zero). The `default` set uses `allow_new_findings: false`, so a default scan's audit only issues verdicts on analysis findings. When the key is absent, as in the other v1 sets, additions are kept. A v2 audit has no additions, so the key has no effect on `core`.
+
 ## Configuration
 
 Configuration follows a priority chain: **CLI flags > environment variables > config file > defaults**.
@@ -800,7 +802,7 @@ Per-finding state lives in `result.properties`:
 |----------|---------|
 | `findingId` | Stable ID (`CC-` + 16 hex). Also in `partialFingerprints["codecrucibleFinding/v1"]` |
 | `verified` | `true` only when the audit confirmed, refined, or escalated the finding and did not suppress it |
-| `auditStatus` | `confirmed`, `refined`, `escalated`, `unverified`, `rejected`, `duplicate` (v2), `new` (added by the audit), or `not_audited` |
+| `auditStatus` | `confirmed`, `refined`, `escalated`, `unverified`, `rejected`, `duplicate` (v2), `new` (added by a v1 audit that allows additions; see `allow_new_findings`), or `not_audited` |
 | `auditConfidence` | Audit confidence, 0–1 |
 | `auditJustification`, `auditBlockingCode` | The auditor's reasoning and, for rejections, the quoted blocking source |
 | `auditReasons` | Machine-readable qualifiers: `missing_verdict`, `audit_skipped`, `ungrounded_rejection`, `below_confidence_threshold`; v2 adds `refuted:<question>`, `unknown:<question>`, `ungrounded_refutation:<question>`, `unverified_evidence:<question>`, and `duplicate` |
@@ -836,15 +838,44 @@ evidence never rejects. A v2 audit has no confidence, so
 `--audit-confidence-threshold` does not apply. Findings are matched by
 `findingId`, and claims the response omits are retried once.
 
-Each v2 batch carries more than the files the findings cite. Up to about 24K
-tokens of excerpts are retrieved per batch, with real line numbers, so the
-auditor can check what decides a claim:
+Every audit batch, legacy or v2, carries more than the files the findings
+cite. Up to about 24K tokens of excerpts are retrieved per batch, with real
+line numbers, so the auditor can check what decides a claim:
 
-- references to the flagged function, such as route registration;
+- references to the flagged function, with route registrations first;
+- local definitions of other names in the same statement as such a reference,
+  such as middleware registered with the handler (up to eight per claim);
 - templates the flagged code renders;
 - functions or constructors receiving the flagged expression, and one further
   call using the corresponding parameter;
 - definitions of the functions and types it uses.
+
+Excerpts are taken round-robin across the batch's claims and never repeat a
+file the batch already includes. A legacy audit also shrinks the retrieval
+budget so the prompt fits the model's context limit after reserving output
+tokens. If the rendered context would still exceed it, the batch is sent with
+only an omission note in place of the excerpts. The claims' own files are
+always sent.
+
+When retrieval leaves out context that may decide a claim, the batch says so in
+plain text, so a guard that was not retrieved is not mistaken for a guard that
+does not exist:
+
+- `Audit context omitted: ambiguous caller reference <name> in <file>`: more
+  than one local definition matches.
+- `Audit context omitted: unresolved or external caller reference <name> in
+  <file>`: no scanned file defines the name, or it is imported from a module
+  that does not resolve to one, such as a package dependency. `@/` and `~/`
+  aliases and directory `index` files are matched to scanned files; other alias
+  prefixes are treated as external. A package-qualified Go reference is noted
+  only when the flagged function is passed to it directly, as in
+  `authz.RequireAdmin(handler)`.
+- `Audit context omitted: caller definition limit reached`: more definitions
+  were found than the per-claim limit.
+- `Audit context omitted: token budget exhausted`: excerpts did not fit the
+  retrieval budget.
+- `Audit context omitted: retrieval budget exhausted`: a legacy batch's
+  rendered context did not fit, and no excerpts were sent.
 
 Retrieval is deterministic. Language adapters supply syntax and name lookup;
 the shared engine controls traversal limits, ranking, excerpt coverage and the
@@ -885,7 +916,7 @@ Every SARIF run includes `properties.codecrucible` with `schemaVersion: 1`:
 | `recipe.phases` | Analysis, feature detection, audit, and context compression: provider/model, sanitized base URL/endpoint, transport, model parameters, context/output limits, temperature settings, output mode, timeout, tokenizer, and pricing assumptions |
 | `recipe.controls` | Scope filters, test/document inclusion, file-size limit, compression, concurrency, cost limit, severity gate, phase toggles, audit confidence/batch size, and context budget |
 | `recipeFingerprint` | SHA-256 of the canonical JSON recipe (sorted object keys, preserved array order); excludes output paths, credentials, timestamps, and execution outcomes |
-| `execution` | Artifact stage, phase statuses and actual phase configurations, fallbacks, per-phase model calls, the models used, detected features, token correction, chunk/recovery counts, source loading/compression outcomes, and packed-context fingerprints/truncation |
+| `execution` | Artifact stage, phase statuses and actual phase configurations, fallbacks, per-phase model calls, the models used, detected features, token correction, chunk/recovery counts, source loading/compression outcomes, packed-context fingerprints/truncation, and `auditAdditionsDropped` (audit additions discarded under `allow_new_findings: false`) |
 
 Phase configuration reflects inheritance and overrides after configuration
 resolution. Model parameters are recorded separately from model-registry
