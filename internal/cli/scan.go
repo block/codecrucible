@@ -68,10 +68,10 @@ pipeline and produces SARIF output suitable for GitHub Code Scanning integration
 	cmd.Flags().Float64("max-cost", 25, "maximum cost budget in dollars (0 = unlimited)")
 	cmd.Flags().Bool("dry-run", false, "show what would be analyzed without making LLM calls")
 	cmd.Flags().String("custom-requirements", "", "additional analysis requirements to include in the prompt")
-	cmd.Flags().StringSlice("context-source", nil, "supplementary context as key=value pairs: name=X,type=<path|repo|url|inline>,location=Y,priority=N,compress=true (repeatable)")
+	cmd.Flags().StringArray("context-source", nil, "supplementary context as key=value pairs: name=X,type=<path|repo|url|inline>,location=Y,priority=N,compress=true (one source per flag; repeatable)")
 	cmd.Flags().Int("context-budget-pct", 15, "percentage of context window reserved for supplementary context (max 40)")
 	cmd.Flags().String("prompts-dir", "", "prompt set directory containing YAML templates (default: prompts/default)")
-	cmd.Flags().StringSlice("custom-headers", nil, "additional HTTP headers for LLM requests, format 'Name: Value' (repeatable)")
+	cmd.Flags().StringArray("custom-headers", nil, "additional HTTP headers for LLM requests, format 'Name: Value' (repeatable)")
 
 	// Content options
 	cmd.Flags().Bool("include-tests", false, "include test files in the analysis")
