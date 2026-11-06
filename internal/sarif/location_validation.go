@@ -2,8 +2,8 @@ package sarif
 
 import "strings"
 
-// ValidateSourceLocations removes invalid primary regions without guessing a
-// different source anchor. The original location is retained as diagnostic data.
+// ValidateSourceLocations clamps invalid ends when the source supports the start.
+// Invalid starts are removed; original locations remain as diagnostic data.
 func ValidateSourceLocations(doc SARIFDocument, files FileMap) SARIFDocument {
 	doc.Runs = append([]SARIFRun{}, doc.Runs...)
 	for ri := range doc.Runs {
@@ -19,9 +19,23 @@ func ValidateSourceLocations(doc SARIFDocument, files FileMap) SARIFDocument {
 					continue
 				}
 				bad := reg.StartLine < 1 || (reg.EndLine != 0 && reg.EndLine < reg.StartLine)
+				var repaired *SARIFRegion
+				if reg.StartLine >= 1 && reg.EndLine != 0 && reg.EndLine < reg.StartLine {
+					clamped := *reg
+					clamped.EndLine = reg.StartLine
+					repaired = &clamped
+				}
 				if content, ok := files[loc.ArtifactLocation.URI]; ok {
 					n := len(strings.Split(strings.TrimSuffix(content, "\n"), "\n"))
 					bad = bad || reg.StartLine > n || reg.EndLine > n
+					if reg.StartLine > n {
+						repaired = nil
+					}
+					if bad && reg.StartLine >= 1 && reg.StartLine <= n {
+						clamped := *reg
+						clamped.EndLine = max(reg.StartLine, min(reg.EndLine, n))
+						repaired = &clamped
+					}
 				}
 				if !bad {
 					continue
@@ -31,9 +45,13 @@ func ValidateSourceLocations(doc SARIFDocument, files FileMap) SARIFDocument {
 					p = *r.Properties
 				}
 				p.ReportedLocations = append(append([]SARIFLocation{}, p.ReportedLocations...), r.Locations[j])
-				p.LocationWarnings = append(append([]string{}, p.LocationWarnings...), "invalid_source_region")
+				reason := "invalid_source_region"
+				if repaired != nil {
+					reason = "clamped_source_region"
+				}
+				p.LocationWarnings = append(append([]string{}, p.LocationWarnings...), reason)
 				r.Properties = &p
-				loc.Region = nil
+				loc.Region = repaired
 			}
 		}
 	}
