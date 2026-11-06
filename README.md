@@ -369,7 +369,7 @@ Available sets:
 |-----|-------------|
 | `default` | General-purpose security analysis (used when no `--prompts-dir` is specified) |
 | `reasoning` | Experimental language-agnostic discovery with always-included coverage sweeps and model-chosen audit verdicts |
-| `core` | Default analysis with the v2 audit contract: evidentiary questions, code-computed verdicts, and weakness-family cards (experimental) |
+| `core` | Default analysis with the v3 audit contract: revision-bound claims, quoted evidence checked against admitted source, code-computed verdicts, and weakness-family cards (experimental) |
 | `carlini` | Slim Carlini-style adversarial CTF-researcher prompts |
 | `carlini-curated` | Carlini v2 with targeted suppression rules and line-precision guidance |
 | `exploit-proof` | Language-agnostic set that requires a concrete exploit per finding |
@@ -922,12 +922,12 @@ Per-finding state lives in `result.properties`:
 |----------|---------|
 | `findingId` | Stable ID (`CC-` + 16 hex). Also in `partialFingerprints["codecrucibleFinding/v1"]` |
 | `verified` | `true` only when the audit confirmed, refined, or escalated the finding and did not suppress it |
-| `auditStatus` | `confirmed`, `refined`, `escalated`, `unverified`, `rejected`, `duplicate` (v2), `new` (added by the audit), or `not_audited` |
+| `auditStatus` | `confirmed`, `refined`, `escalated`, `unverified`, `rejected`, `duplicate` (v2), `superseded` (v3: suppressed because its independently audited children cover all of its material), `new` (added by the audit), or `not_audited` |
 | `auditConfidence` | Audit confidence, 0–1 |
 | `auditJustification`, `auditBlockingCode` | The auditor's reasoning and, for rejections, the quoted blocking source |
-| `auditReasons` | Machine-readable qualifiers: `missing_verdict`, `audit_skipped`, `ungrounded_rejection`, `below_confidence_threshold`; v2 adds `refuted:<question>`, `unknown:<question>`, `ungrounded_refutation:<question>`, `unverified_evidence:<question>`, and `duplicate` |
+| `auditReasons` | Machine-readable qualifiers: `missing_verdict`, `audit_skipped`, `ungrounded_rejection`, `below_confidence_threshold`; v2 adds `refuted:<question>`, `unknown:<question>`, `ungrounded_refutation:<question>`, `unverified_evidence:<question>`, and `duplicate`; v3 adds `invalid_claim_assessment`, `refuted:<question>`, `unknown:<question>`, `insufficient_evidence:<question>`, `incomplete_claim_coverage`, and `independent_subclaims` |
 | `auditAnswers` | v2: each audit question's `status` (`established`, `refuted`, `unknown`), reason, and the evidence quotes that matched the source |
-| `auditCrux` | v2: for an unverified finding, the code or fact that would decide it |
+| `auditCrux` | v2 and v3: for an unverified finding, the code or fact that would decide it |
 | `duplicateOf` | v2: the finding ID this one duplicates (same root cause and fix) |
 | `deploymentExposure` | v2: `default_on`, `config_enabled`, `config_dependent`, `not_deployed`, or `unknown`, with detail and evidence. Informational; never changes the verdict |
 | `severity`, `cwe` | This finding's own severity (0–10) and CWE, including audit refinements |
@@ -935,6 +935,13 @@ Per-finding state lives in `result.properties`:
 | `reportedPath` | The model's file path, when it named no scanned file and was repaired to the one scanned file it uniquely matches (for example a dropped `app/` prefix) |
 | `reportedLocations` | A location the model reported whose region was invalid for the scanned file, kept here as reported. A valid start line keeps its region in `locations`, with the end clamped to the start (reversed range) or to the file's last line; an invalid start line removes the region |
 | `locationWarnings` | One entry per `reportedLocations` entry: `clamped_source_region` when the region was clamped, `invalid_source_region` when it was removed |
+| `initialEvidence` | v3: the discovery model's `finding_evidence` references (kind plus file, line range and quote) for this claim |
+| `auditIntegrity` | v3: the policy outcome — `status`, `reasons`, per-question `assertions`, `crux`, and the `policy` version |
+| `parentFindingId` | v3: the finding this child claim was split from |
+| `childFindingIds` | v3: the independently audited child claims split from this finding |
+| `claimCoverage` | v3: for a child claim, the parent material it covers (`material_id` and `quote`) |
+| `semanticDuplicates` | v3 with `--semantic-dedup report`: IDs of findings judged `same_cause_same_fix` with verified cause and fix evidence. Neither finding is hidden |
+| `provenance` | Links to the lineage ledger: `runId`, the `observationIds` this result derives from, and its current `revisionId` |
 
 The finding ID hashes the CWE (or rule ID), file path, and whitespace-normalized
 flagged source. It excludes model wording and line numbers, so rescans of
@@ -948,7 +955,8 @@ toward `--fail-on-severity`. Consumers that ignore SARIF suppressions will
 display them; filter on `suppressions` or `properties.auditStatus`.
 
 A prompt set opts into the v2 audit contract with `contract: v2` in
-`audit.yaml`. For each finding, the auditor answers three questions with quoted
+`audit.yaml`. No bundled prompt set currently selects v2; `prompts/core`
+uses v3. For each finding, the auditor answers three questions with quoted
 source evidence. `attacker_control` asks whether attacker input reaches the
 flagged code. `privilege_boundary` asks whether the finding grants more than the
 attacker already holds. `unmitigated` asks whether the path lacks a guard. The
@@ -964,6 +972,13 @@ The opt-in `prompts/core` set uses `contract: v3`. V3 binds each assessment to
 an immutable claim revision and digest. It asks separately about attacker
 control, the source weakness, the security boundary, the missing control, and
 the claimed impact. Established and refuted answers require source evidence.
+Attacker-control and boundary evidence must quote the answer's subject, and
+refuting either also requires evidence at the claim's own location, code path,
+or initial evidence, so an unrelated quote elsewhere cannot reject a claim. An
+established upstream source in another file can still confirm one. An answer
+downgraded for missing evidence reports `insufficient_evidence:<question>` (why
+it was downgraded) and, when the claim stays unverified, also
+`unknown:<question>` (the question's resulting state).
 Consumer and guard expressions must occur in their respective quotes; renamed
 values require explicit, quoted flow steps. A missing guard is represented by
 `guard_state: not_found` with source evidence for the actual protection point. These checks establish source
@@ -976,8 +991,12 @@ V3 retries invalid claims individually and permits one bounded local-context
 expansion. Its context artifacts record included ranges and omissions. Grouped
 claims can produce separately audited children with stable IDs and `split_from`
 lineage. An unresolved remainder remains visible unless the child records retain
-all original material. `--semantic-dedup report` adds attributed duplicate
-relationships without hiding findings; `off` disables those extra requests.
+all original material. A validly rejected parent stays rejected even when it
+proposes children; each valid child is still audited on its own evidence. A
+rejected child that proposes a further valid subclaim stays visible as
+`unverified` (the further subclaim is not audited itself).
+`--semantic-dedup report` adds attributed duplicate relationships without
+hiding findings; `off` disables those extra requests.
 Suppression is deliberately unavailable until held-out duplicate-precision and
 claim-preservation checks pass. Legacy and v2 prompt sets retain their contracts.
 

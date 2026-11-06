@@ -141,7 +141,7 @@ func TestAuditV3SplitPreservesValidSiblingAndRemainder(t *testing.T) {
 		t.Fatal(err)
 	}
 	rs := got.Runs[0].Results
-	if len(rs) != 3 || len(rs[0].Suppressions) != 0 || rs[0].Properties.AuditStatus != "unverified" || rs[1].Properties.AuditStatus != "confirmed" || len(rs[1].Suppressions) != 0 || rs[2].Properties.AuditStatus != "rejected" {
+	if len(rs) != 3 || len(rs[0].Suppressions) == 0 || rs[0].Properties.AuditStatus != "rejected" || rs[1].Properties.AuditStatus != "confirmed" || len(rs[1].Suppressions) != 0 || rs[2].Properties.AuditStatus != "rejected" {
 		t.Fatalf("split lost a claim: %+v", rs)
 	}
 	if rs[1].Properties.ParentFindingID != rs[0].Properties.FindingID || rs[1].Properties.FindingID == rs[2].Properties.FindingID {
@@ -192,5 +192,74 @@ func TestAuditV3TransportFailureRetainsFindings(t *testing.T) {
 	}), "off")
 	if err == nil || len(got.Runs[0].Results) != 1 || len(got.Runs[0].Results[0].Suppressions) != 0 || got.Runs[0].Results[0].Properties.AuditStatus != "not_audited" {
 		t.Fatal(got, err)
+	}
+}
+
+func TestV3RefinementPreservesSeverityAndCanonicalCWE(t *testing.T) {
+	for _, cwe := range []string{"invalid", "cwe-79: XSS"} {
+		sev := 8.0
+		result := sarif.SARIFResult{Properties: &sarif.FindingProperties{Severity: &sev, CWE: "CWE-89"}}
+		applyOutcomeV3(&result, assessedV3{outcome: auditcore.Outcome{Status: "confirmed"}, raw: auditcore.Assessment{SeverityBasis: "basis", RefinedSeverity: 0, RefinedCWE: cwe}})
+		want := "CWE-89"
+		if cwe != "invalid" {
+			want = "CWE-79"
+		}
+		if *result.Properties.Severity != 8 || result.Properties.CWE != want {
+			t.Fatalf("invalid refinement applied: %+v", result.Properties)
+		}
+	}
+}
+
+func TestAuditV3InvalidChildCannotReviveRejectedParent(t *testing.T) {
+	doc, files, l, buf := v3Fixture(t, []sarif.SecurityIssue{{Issue: "parent", FilePath: "a.go", StartLine: 2, EndLine: 2, TechnicalDetails: "one", CWEID: "CWE-89", Severity: 8}})
+	client := auditClientFunc(func(_ context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+		c := requestClaimsV3(t, req)[0]
+		a := assessmentV3(c, "sink(value)", "sink", "rejected")
+		a.Children = []auditcore.Child{{Title: "unsupported child"}}
+		return replyV3(a), nil
+	})
+	got, err := runV3(t, doc, files, l, client, "off")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rs := got.Runs[0].Results
+	if len(rs) != 1 || rs[0].Properties.AuditStatus != "rejected" || len(rs[0].Suppressions) == 0 {
+		t.Fatalf("invalid child revived parent: %+v", rs)
+	}
+	finishV3(t, l, buf, got)
+}
+
+func TestRejectedChildKeepsSupportedGrandchildVisible(t *testing.T) {
+	for _, valid := range []bool{false, true} {
+		doc, files, l, buf := v3Fixture(t, []sarif.SecurityIssue{{Issue: "grouped", FilePath: "a.go", StartLine: 2, EndLine: 2, TechnicalDetails: "unsafe one", CWEID: "CWE-89", Severity: 8}})
+		client := auditClientFunc(func(_ context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			c := requestClaimsV3(t, req)[0]
+			a := assessmentV3(c, "sink(value)", "sink", "confirmed")
+			proposal := auditcore.Child{Title: "child", Detail: "unsafe one", File: "a.go", Start: 2, End: 2, Covers: []auditcore.Coverage{{MaterialID: "detail", Quote: "unsafe one"}}, Evidence: []auditcore.Evidence{{File: "a.go", Start: 2, End: 2, Quote: "sink(value)"}}}
+			if c.Title == "child" {
+				a = assessmentV3(c, "sink(value)", "sink", "rejected")
+				proposal.Title = "grandchild"
+				if !valid {
+					proposal.Detail = ""
+				}
+			}
+			a.Children = []auditcore.Child{proposal}
+			return replyV3(a), nil
+		})
+		got, err := runV3(t, doc, files, l, client, "off")
+		if err != nil {
+			t.Fatal(err)
+		}
+		rs := got.Runs[0].Results
+		if len(rs) != 2 {
+			t.Fatal(rs)
+		}
+		if valid && (rs[1].Properties.AuditStatus != "unverified" || len(rs[1].Suppressions) != 0) {
+			t.Fatal("supported residual hidden", rs[1])
+		}
+		if !valid && (rs[1].Properties.AuditStatus != "rejected" || len(rs[1].Suppressions) == 0) {
+			t.Fatal("invalid residual revived child", rs[1])
+		}
+		finishV3(t, l, buf, got)
 	}
 }
