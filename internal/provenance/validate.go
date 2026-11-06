@@ -1,6 +1,8 @@
 package provenance
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,6 +19,7 @@ type Validation struct {
 	Decisions    int      `json:"decisions"`
 	Complete     bool     `json:"complete"`
 	Unresolved   []string `json:"unresolved,omitempty"`
+	Reasons      []string `json:"reasons,omitempty"`
 }
 
 // Validate accepts v1 and v2 ledgers. Backward references enforce acyclic
@@ -28,12 +31,46 @@ func Validate(r io.Reader, final *sarif.SARIFDocument) (Validation, error) {
 	terminal := map[string]bool{}
 	dispositions := map[string][]string{}
 	relationships := map[string]map[string][]string{}
-	dec := json.NewDecoder(r)
+	reader := bufio.NewReader(r)
 	for {
+		line, readErr := reader.ReadBytes('\n')
+		if readErr != nil && !errors.Is(readErr, io.EOF) {
+			return report, readErr
+		}
+		if len(bytes.TrimSpace(line)) == 0 {
+			if errors.Is(readErr, io.EOF) {
+				break
+			}
+			continue
+		}
 		var e Event
+		dec := json.NewDecoder(bytes.NewReader(line))
 		err := dec.Decode(&e)
-		if errors.Is(err, io.EOF) {
+		var syntaxErr *json.SyntaxError
+		if errors.Is(err, io.ErrUnexpectedEOF) || errors.As(err, &syntaxErr) {
+			// Only the final JSONL record may be torn. Any later content is
+			// corruption, even if the valid prefix would otherwise reconcile.
+			for {
+				tail, tailErr := reader.ReadBytes('\n')
+				if len(bytes.TrimSpace(tail)) > 0 {
+					return report, fmt.Errorf("decode lineage event %d: truncated record before later content", report.Events+1)
+				}
+				if errors.Is(tailErr, io.EOF) {
+					break
+				}
+				if tailErr != nil {
+					return report, tailErr
+				}
+			}
+			report.Complete = false
+			report.Reasons = append(report.Reasons, "truncated final record")
 			break
+		}
+		if err == nil {
+			var extra json.RawMessage
+			if trailing := dec.Decode(&extra); !errors.Is(trailing, io.EOF) {
+				return report, fmt.Errorf("decode lineage event %d: extra content in record", report.Events+1)
+			}
 		}
 		if err != nil {
 			return report, fmt.Errorf("decode lineage event %d: %w", report.Events+1, err)
@@ -97,7 +134,9 @@ func Validate(r io.Reader, final *sarif.SARIFDocument) (Validation, error) {
 			dispositions[e.Inputs[0]] = append([]string{}, e.Inputs[1:]...)
 		}
 		if e.Operation == "run-complete" {
-			report.Complete = true
+			// A completion marker can survive a dropped disposition on a healthy
+			// writer. Preserve structural validation, but report partial lineage.
+			report.Complete = e.Metadata == nil || !e.Metadata.Execution.LineageIncomplete
 		}
 		nodes[e.ID] = e
 		report.Events++
