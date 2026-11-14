@@ -73,7 +73,8 @@ type PhaseConfig struct {
 
 	// ModelCfg is the resolved registry entry with overrides applied.
 	// Populated by ResolvePhases; never set directly.
-	ModelCfg ModelConfig `mapstructure:"-"`
+	ModelCfg    ModelConfig    `mapstructure:"-"`
+	ProviderCfg ProviderConfig `mapstructure:"-"`
 }
 
 // Phases groups the pipeline phase configs. Lives on Config under
@@ -116,6 +117,18 @@ type Phases struct {
 //     setting phases.audit.provider beats --provider for the audit phase
 //     but --provider still applies to phases that don't set their own.
 func ResolvePhases(cfg *Config) error {
+	if cfg.Registry == nil {
+		r, err := LoadRegistry(cfg.ProviderFiles, cfg.Models)
+		if err != nil {
+			return err
+		}
+		cfg.Registry = r
+	}
+	cfg.Provider = strings.ToLower(strings.TrimSpace(cfg.Provider))
+	for _, pc := range allPhases(cfg) {
+		pc.Provider = strings.ToLower(strings.TrimSpace(pc.Provider))
+	}
+
 	// ── 1. Analysis: legacy globals as the base layer ──────────────────
 	base := PhaseConfig{
 		Provider:        cfg.Provider,
@@ -138,7 +151,11 @@ func ResolvePhases(cfg *Config) error {
 	analysisProvider := base.Provider
 	if analysisProvider == "" {
 		probe := base
-		probe.ModelCfg = lookupOrDefault(base.Model, "analysis")
+		var err error
+		probe.ModelCfg, err = cfg.Registry.ResolveModel(probe.Provider, base.Model)
+		if err != nil {
+			return fmt.Errorf("analysis: %w", err)
+		}
 		analysisProvider = detectProvider(&probe, cfg)
 	}
 
@@ -169,7 +186,11 @@ func ResolvePhases(cfg *Config) error {
 		// Resolve the destination before inheriting provider-specific settings.
 		probe := pc
 		overlay(&probe, s.dst)
-		probe.ModelCfg = lookupOrDefault(probe.Model, s.name)
+		var err error
+		probe.ModelCfg, err = cfg.Registry.ResolveModel(probe.Provider, probe.Model)
+		if err != nil {
+			return fmt.Errorf("%s: %w", s.name, err)
+		}
 		targetProvider := probe.Provider
 		if targetProvider == "" {
 			targetProvider = detectProvider(&probe, cfg)
@@ -189,7 +210,28 @@ func ResolvePhases(cfg *Config) error {
 
 	// ── 3. Resolve registry + apply overrides, per phase ───────────────
 	for name, pc := range allPhases(cfg) {
-		pc.ModelCfg = lookupOrDefault(pc.Model, name)
+		var err error
+		pc.ModelCfg, err = cfg.Registry.ResolveModel(pc.Provider, pc.Model)
+		if err != nil {
+			return fmt.Errorf("%s: %w", name, err)
+		}
+		if pc.Provider == "" {
+			pc.Provider = detectProvider(pc, cfg)
+			pc.ModelCfg, err = cfg.Registry.ResolveModel(pc.Provider, pc.Model)
+			if err != nil {
+				return fmt.Errorf("%s: %w", name, err)
+			}
+		}
+		p, ok := cfg.Registry.Provider(pc.Provider)
+		if !ok {
+			return fmt.Errorf("%s: unsupported provider %q", name, pc.Provider)
+		}
+		pc.ProviderCfg = p
+		if pc.Model != "" {
+			if _, known := cfg.Registry.LookupModel(pc.Provider, pc.Model); !known {
+				slog.Warn("model not in registry, using defaults", "phase", name, "model", pc.Model)
+			}
+		}
 		if pc.ContextLimit > 0 {
 			slog.Info("overriding model context limit",
 				"phase", name, "registry", pc.ModelCfg.ContextLimit, "override", pc.ContextLimit)
@@ -207,11 +249,11 @@ func ResolvePhases(cfg *Config) error {
 		if pc.Provider == "" {
 			pc.Provider = detectProvider(pc, cfg)
 		}
-		if pc.Provider == "cerebras" && strings.TrimSpace(pc.Model) == "" {
-			return fmt.Errorf("%s: provider=cerebras requires an explicit model (use --model or phases.%s.model)", name, name)
+		if pc.ProviderCfg.RequireModel && pc.ProviderCfg.DefaultModel == "" && strings.TrimSpace(pc.Model) == "" {
+			return fmt.Errorf("%s: provider=%s requires an explicit model (use --model or phases.%s.model)", name, pc.Provider, name)
 		}
-		if pc.Provider == "cerebras" && pc.ModelCfg.InputPricePerM == 0 && pc.ModelCfg.OutputPricePerM == 0 {
-			pc.ModelCfg.ExecutionWarning = strings.TrimSpace(pc.ModelCfg.ExecutionWarning + " Cerebras pricing is not configured; reported costs exclude this model and --max-cost cannot enforce its spend. Configure models: pricing before relying on the budget.")
+		if pc.ProviderCfg.WarnUnpriced && pc.ModelCfg.InputPricePerM == 0 && pc.ModelCfg.OutputPricePerM == 0 {
+			pc.ModelCfg.ExecutionWarning = strings.TrimSpace(pc.ModelCfg.ExecutionWarning + " " + strings.ToUpper(pc.Provider[:1]) + pc.Provider[1:] + " pricing is not configured; reported costs exclude this model and --max-cost cannot enforce its spend. Configure models: pricing before relying on the budget.")
 		}
 		if pc.APIKey == "" {
 			pc.APIKey = ambientKey(pc.Provider, cfg)
@@ -306,17 +348,8 @@ func detectProvider(pc *PhaseConfig, cfg *Config) string {
 	if cfg.DatabricksHost != "" && cfg.DatabricksToken != "" {
 		return "databricks"
 	}
-	if cfg.AnthropicAPIKey != "" {
-		return "anthropic"
-	}
-	if cfg.OpenAIAPIKey != "" {
-		return "openai"
-	}
-	if cfg.GoogleAPIKey != "" {
-		return "google"
-	}
-	if cfg.CerebrasAPIKey != "" {
-		return "cerebras"
+	if provider := cfg.ConfigRegistry().AutoDetect(cfg); provider != "" {
+		return provider
 	}
 	// No credentials detected — fall back to anthropic (Claude CLI can
 	// authenticate without an API key) rather than databricks which
@@ -325,38 +358,22 @@ func detectProvider(pc *PhaseConfig, cfg *Config) string {
 }
 
 // ambientKey returns the global provider-specific key from cfg when the
-// phase didn't set its own. Databricks auth is host+token, not a single
-// key, so it's handled in the client builder instead.
+// phase didn't set its own. Databricks still resolves its workspace host in the
+// client builder.
 func ambientKey(provider string, cfg *Config) string {
-	switch provider {
-	case "anthropic":
-		return cfg.AnthropicAPIKey
-	case "openai":
-		return cfg.OpenAIAPIKey
-	case "google":
-		return cfg.GoogleAPIKey
-	case "cerebras":
-		return cfg.CerebrasAPIKey
+	if p, ok := cfg.ConfigRegistry().Provider(provider); ok {
+		return cfg.ProviderKey(p)
 	}
 	return ""
 }
 
 func lookupOrDefault(name, phase string) ModelConfig {
-	if name == "" {
-		return DefaultModel()
+	m, err := bundledRegistry().ResolveModel("", name)
+	if err != nil {
+		slog.Warn("model lookup failed", "phase", phase, "error", err)
+		return UnknownModelDefaults(name)
 	}
-	if m, ok := LookupModel(name); ok {
-		// Preserve the user-supplied name: the registry may have matched by
-		// substring (databricks-claude-opus → claude-opus-4), and the API
-		// wants the name the user typed. Known Kimi shorthand is the exception:
-		// send its canonical deployment ID, not the user-facing alias.
-		if !isKimiAlias(name) || !strings.EqualFold(m.Name, "kimi-k2.6") {
-			m.Name = name
-		}
-		return m
-	}
-	slog.Warn("model not in registry, using defaults", "phase", phase, "model", name)
-	return UnknownModelDefaults(name)
+	return m
 }
 
 func cloneParams(m map[string]any) map[string]any {

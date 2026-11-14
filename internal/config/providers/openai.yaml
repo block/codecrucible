@@ -1,0 +1,155 @@
+schema_version: 1
+name: openai
+protocol: openai-chat
+base_url: https://api.openai.com
+auto_detect_priority: 20
+auth:
+  type: bearer
+  api_key_env: OPENAI_API_KEY
+request:
+  path: /v1/chat/completions
+discovery:
+  format: openai-models
+  path: /v1/models
+
+models:
+  # GPT-5.6 is the documented alias for gpt-5.6-sol. Keep both names in
+  # the registry so users can select the stable alias or the exact tier.
+  # OpenAI documents real-time cyber/biology safeguards for this family;
+  # in a security scan those can interrupt generation and invalidate the
+  # resulting findings. Omit an explicit temperature for this family and
+  # let the API apply its default.
+  - name: "gpt-5.6"
+    endpoint: "gpt-5.6/invocations"
+    execution_warning: "gpt-5.6 models may trigger real-time cyber safeguards during security analysis, which can block or pause generation and invalidate scan results"
+    input_price_per_million: 5.00
+    output_price_per_million: 30.0
+    long_context_threshold: 272000
+    long_context_input_price_per_million: 10.0
+    long_context_output_price_per_million: 45.0
+    context_limit: 1050000
+    max_output_tokens: 128000
+    temperature: 0.0
+    omit_temperature: true
+    use_max_completion_tokens: true
+    tokenizer_encoding: "o200k_base"
+    supports_structured_output: true
+  - name: "gpt-5.6-sol"
+    endpoint: "gpt-5.6-sol/invocations"
+    execution_warning: "gpt-5.6 models may trigger real-time cyber safeguards during security analysis, which can block or pause generation and invalidate scan results"
+    input_price_per_million: 5.00
+    output_price_per_million: 30.0
+    long_context_threshold: 272000
+    long_context_input_price_per_million: 10.0
+    long_context_output_price_per_million: 45.0
+    context_limit: 1050000
+    max_output_tokens: 128000
+    temperature: 0.0
+    omit_temperature: true
+    use_max_completion_tokens: true
+    tokenizer_encoding: "o200k_base"
+    supports_structured_output: true
+  - name: "gpt-5.6-terra"
+    endpoint: "gpt-5.6-terra/invocations"
+    execution_warning: "gpt-5.6 models may trigger real-time cyber safeguards during security analysis, which can block or pause generation and invalidate scan results"
+    input_price_per_million: 2.50
+    output_price_per_million: 15.0
+    long_context_threshold: 272000
+    long_context_input_price_per_million: 5.0
+    long_context_output_price_per_million: 22.5
+    context_limit: 1050000
+    max_output_tokens: 128000
+    temperature: 0.0
+    omit_temperature: true
+    use_max_completion_tokens: true
+    tokenizer_encoding: "o200k_base"
+    supports_structured_output: true
+  - name: "gpt-5.6-luna"
+    endpoint: "gpt-5.6-luna/invocations"
+    execution_warning: "gpt-5.6 models may trigger real-time cyber safeguards during security analysis, which can block or pause generation and invalidate scan results"
+    input_price_per_million: 1.00
+    output_price_per_million: 6.0
+    long_context_threshold: 272000
+    long_context_input_price_per_million: 2.0
+    long_context_output_price_per_million: 9.0
+    context_limit: 1050000
+    max_output_tokens: 128000
+    temperature: 0.0
+    omit_temperature: true
+    use_max_completion_tokens: true
+    tokenizer_encoding: "o200k_base"
+    supports_structured_output: true
+  - name: "gpt-5.5"
+    endpoint: "gpt-5.5/invocations"
+    input_price_per_million: 5.00
+    output_price_per_million: 30.0
+    long_context_threshold: 272000
+    long_context_input_price_per_million: 10.0
+    long_context_output_price_per_million: 45.0
+    context_limit: 1050000
+    max_output_tokens: 128000
+    temperature: 1.0
+    use_max_completion_tokens: true
+    tokenizer_encoding: "o200k_base"
+    supports_structured_output: true
+  # Private/preview cyber alias. Public provider docs do not publish
+  # limits or pricing for this slug yet, so keep GPT-5.5 request
+  # semantics and base prices while flagging the registry data as
+  # provisional. Its observed 272K window cannot reach GPT-5.5's
+  # long-context tier under the default registry limit.
+  - name: "gpt-5.5-cyber-preview"
+    endpoint: "gpt-5.5-cyber-preview/invocations"
+    execution_warning: "gpt-5.5-cyber-preview registry parameters and pricing are provisional; cost estimates currently use gpt-5.5 rates"
+    input_price_per_million: 5.00
+    output_price_per_million: 30.0
+    context_limit: 272000
+    max_output_tokens: 128000
+    temperature: 1.0
+    use_max_completion_tokens: true
+    tokenizer_encoding: "o200k_base"
+    supports_structured_output: true
+  # Private cyber alias with the same provisional treatment as preview.
+  - name: "gpt-5.5-cyber"
+    endpoint: "gpt-5.5-cyber/invocations"
+    execution_warning: "gpt-5.5-cyber registry parameters and pricing are provisional; cost estimates currently use gpt-5.5 rates"
+    input_price_per_million: 5.00
+    output_price_per_million: 30.0
+    context_limit: 272000
+    max_output_tokens: 128000
+    temperature: 1.0
+    use_max_completion_tokens: true
+    tokenizer_encoding: "o200k_base"
+    supports_structured_output: true
+  - name: "gpt-5.4"
+    endpoint: "gpt-5.4/invocations"
+    input_price_per_million: 2.50
+    output_price_per_million: 15.0
+    long_context_threshold: 272000
+    long_context_input_price_per_million: 5.0
+    long_context_output_price_per_million: 22.5
+    context_limit: 1050000
+    max_output_tokens: 128000
+    temperature: 0.0
+    use_max_completion_tokens: true
+    tokenizer_encoding: "o200k_base"
+    supports_structured_output: true
+  - name: "gpt-5.4-mini"
+    endpoint: "gpt-5.4-mini/invocations"
+    input_price_per_million: 0.75
+    output_price_per_million: 4.50
+    context_limit: 400000
+    max_output_tokens: 128000
+    temperature: 0.0
+    use_max_completion_tokens: true
+    tokenizer_encoding: "o200k_base"
+    supports_structured_output: true
+  - name: "gpt-5.4-nano"
+    endpoint: "gpt-5.4-nano/invocations"
+    input_price_per_million: 0.20
+    output_price_per_million: 1.25
+    context_limit: 400000
+    max_output_tokens: 128000
+    temperature: 0.0
+    use_max_completion_tokens: true
+    tokenizer_encoding: "o200k_base"
+    supports_structured_output: true

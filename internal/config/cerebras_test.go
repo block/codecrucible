@@ -126,28 +126,27 @@ func TestKimiAliasesResolveWireModelAcrossPhases(t *testing.T) {
 }
 
 func TestKimiAliasPreservesExactUserModel(t *testing.T) {
-	saved := DefaultModelRegistry()
-	t.Cleanup(func() { modelsMu.Lock(); defaultModels = saved; modelsMu.Unlock() })
-	RegisterModel(ModelConfig{Name: "kimi", Provider: "openai-compat", ContextLimit: 64000})
-	got := lookupOrDefault("kimi", "analysis")
-	if got.Name != "kimi" || got.Provider != "openai-compat" || got.ContextLimit != 64000 {
-		t.Fatalf("lost user override: %+v", got)
+	r, err := LoadRegistry(nil, []ModelConfig{{Name: "kimi", Provider: "openai-compat", ContextLimit: 64000}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := r.ResolveModel("", "kimi")
+	if err != nil || got.Name != "kimi" || got.Provider != "openai-compat" || got.ContextLimit != 64000 {
+		t.Fatalf("lost user override: %+v, %v", got, err)
 	}
 }
 
 func TestExactModelDisablesKimiAliases(t *testing.T) {
-	saved := DefaultModelRegistry()
-	t.Cleanup(func() { modelsMu.Lock(); defaultModels = saved; modelsMu.Unlock() })
-	m, ok := LookupModel("kimi-k2.6")
-	if !ok {
-		t.Fatal("missing Kimi profile")
-	}
+	m, _ := LookupModel("kimi-k2.6")
 	m.ExactMatch = true
-	RegisterModel(m)
-	if _, ok := LookupModel("kimi"); ok {
-		t.Fatal("exact-only profile matched a Kimi alias")
+	r, err := LoadRegistry(nil, []ModelConfig{m})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, ok := LookupModel("KIMI-K2.6"); !ok {
-		t.Fatal("exact-only profile lost case-insensitive exact lookup")
+	if _, ok := r.LookupModel("", "kimi"); ok {
+		t.Fatal("exact-only profile matched alias")
+	}
+	if _, ok := r.LookupModel("", "KIMI-K2.6"); !ok {
+		t.Fatal("lost case-insensitive exact lookup")
 	}
 }

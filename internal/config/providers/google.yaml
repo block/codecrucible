@@ -1,0 +1,46 @@
+schema_version: 1
+name: google
+protocol: openai-chat
+base_url: https://generativelanguage.googleapis.com/v1beta/openai
+auto_detect_priority: 30
+auth:
+  type: bearer
+  api_key_env: GOOGLE_API_KEY
+request:
+  path: /chat/completions
+discovery:
+  format: openai-models
+  path: /models
+
+models:
+  # Google's OpenAI-compat endpoint accepts response_format json_schema.
+  - name: "gemini-3.1-pro-preview"
+    endpoint: "gemini-3.1-pro-preview/invocations"
+    input_price_per_million: 2.0
+    output_price_per_million: 12.0
+    long_context_threshold: 200000
+    long_context_input_price_per_million: 4.0
+    long_context_output_price_per_million: 18.0
+    context_limit: 1048576
+    max_output_tokens: 65536
+    temperature: 0.0
+    tokenizer_encoding: "cl100k_base"
+    supports_structured_output: true
+  - name: "gemini-3.5-flash"
+    endpoint: "gemini-3.5-flash/invocations"
+    input_price_per_million: 1.50
+    output_price_per_million: 9.00
+    context_limit: 1048576
+    max_output_tokens: 65536
+    temperature: 0.0
+    tokenizer_encoding: "cl100k_base"
+    supports_structured_output: true
+  - name: "gemini-3.1-flash-lite"
+    endpoint: "gemini-3.1-flash-lite/invocations"
+    input_price_per_million: 0.25
+    output_price_per_million: 1.50
+    context_limit: 1048576
+    max_output_tokens: 65536
+    temperature: 0.0
+    tokenizer_encoding: "cl100k_base"
+    supports_structured_output: true

@@ -19,57 +19,6 @@ import (
 	"github.com/block/codecrucible/internal/supctx"
 )
 
-// providerPreset describes how to build a client for a given provider.
-// The preset controls defaults; any value set explicitly on PhaseConfig wins.
-type providerPreset struct {
-	baseURL      string // default base URL (empty = must be provided)
-	keyEnv       string // env var name for the error message (empty = auth not required)
-	authRequired bool   // whether an API key is mandatory
-	// wireProvider is the provider string passed to the LLM HTTP client,
-	// which controls URL path and request body format. Providers that use
-	// OpenAI-compatible APIs set this to "openai".
-	wireProvider string
-}
-
-// providerPresets maps --provider values to their defaults. Databricks is
-// handled separately because it uses host+token env vars rather than a
-// single API key.
-var providerPresets = map[string]providerPreset{
-	"cerebras": {
-		baseURL:      "https://api.cerebras.ai",
-		keyEnv:       "CEREBRAS_API_KEY",
-		authRequired: true,
-		wireProvider: "cerebras",
-	},
-	"anthropic": {
-		baseURL:      "https://api.anthropic.com",
-		keyEnv:       "ANTHROPIC_API_KEY",
-		authRequired: true,
-		wireProvider: "anthropic",
-	},
-	"openai": {
-		baseURL:      "https://api.openai.com",
-		keyEnv:       "OPENAI_API_KEY",
-		authRequired: true,
-		wireProvider: "openai",
-	},
-	"google": {
-		baseURL:      "https://generativelanguage.googleapis.com/v1beta/openai",
-		keyEnv:       "GOOGLE_API_KEY",
-		authRequired: true,
-		wireProvider: "google",
-	},
-	"ollama": {
-		baseURL:      "http://localhost:11434",
-		authRequired: false,
-		wireProvider: "openai",
-	},
-	"openai-compat": {
-		authRequired: false,
-		wireProvider: "openai",
-	},
-}
-
 // buildPhaseClient constructs an LLM client from a resolved PhaseConfig.
 // Everything that varies per-phase (provider, key, timeout, headers,
 // base URL, model params) comes from pc. Only Databricks host/token stay
@@ -81,91 +30,63 @@ var providerPresets = map[string]providerPreset{
 // where the model name goes in the request body; for Databricks it is the
 // serving-endpoint path segment.
 func buildPhaseClient(pc config.PhaseConfig, cfg *config.Config) (llm.Client, string, error) {
-	headers, err := parseCustomHeaders(pc.Headers)
+	p, ok := cfg.ConfigRegistry().Provider(pc.Provider)
+	if pc.ProviderCfg.Name != "" {
+		p = pc.ProviderCfg
+		ok = true
+	}
+	if !ok {
+		return nil, "", fmt.Errorf("unsupported provider %q", pc.Provider)
+	}
+	headers := p.AuthHeaders("")
+	custom, err := parseCustomHeaders(pc.Headers)
 	if err != nil {
 		return nil, "", err
 	}
-
-	// 0 → 0s → llm.NewClient falls through to its own default (600s).
+	for k, values := range custom {
+		headers[k] = values
+	}
 	timeout := time.Duration(pc.RequestTimeout) * time.Second
-
-	// Anthropic has a no-key fallback: the locally-installed claude CLI
-	// can proxy requests using the user's desktop session. Only Anthropic
-	// offers this, so it stays a special case rather than table-driven.
-	if pc.Provider == "anthropic" && pc.APIKey == "" {
+	key := pc.APIKey
+	if key == "" {
+		key = cfg.ProviderKey(p)
+	}
+	if p.Fallback == "claude-cli" && key == "" {
 		if len(pc.ModelParams) > 0 {
 			slog.Warn("model params are ignored with Claude CLI auth; set an API key to send model params to the Anthropic API")
 		}
-		client, err := llm.NewClaudeCLIClient(llm.ClientConfig{
-			Provider: "anthropic",
-			Headers:  headers,
-			Timeout:  timeout,
-			Logger:   slog.Default(),
-		})
+		client, err := llm.NewClaudeCLIClient(llm.ClientConfig{Provider: "anthropic", Headers: custom, Timeout: timeout, Logger: slog.Default()})
 		if err != nil {
-			return nil, "", fmt.Errorf("no API key and Claude CLI auth unavailable (provider=anthropic): %w", err)
+			return nil, "", fmt.Errorf("no API key and Claude CLI auth unavailable (provider=%s): %w", p.Name, err)
 		}
 		slog.Info("using Claude CLI authentication for Anthropic requests")
 		return client, "", nil
 	}
-
-	// Known providers — use preset defaults, allow overrides.
-	if preset, ok := providerPresets[pc.Provider]; ok {
-		if preset.authRequired && pc.APIKey == "" {
-			return nil, "", fmt.Errorf("no API key for provider=%s (set %s, or phases.<phase>.api-key)", pc.Provider, preset.keyEnv)
+	baseURL := firstNonEmpty(pc.BaseURL, p.BaseURL)
+	endpoint := ""
+	if p.Protocol == "databricks" {
+		if cfg.DatabricksHost == "" && baseURL == "" {
+			return nil, "", fmt.Errorf("DATABRICKS_HOST is not set (provider=%s)", p.Name)
 		}
-		baseURL := pc.BaseURL
+		if key == "" {
+			return nil, "", fmt.Errorf("DATABRICKS_TOKEN is not set (provider=%s)", p.Name)
+		}
 		if baseURL == "" {
-			if preset.baseURL == "" {
-				return nil, "", fmt.Errorf("provider=%s requires --base-url (no default URL)", pc.Provider)
-			}
-			baseURL = preset.baseURL
+			baseURL = strings.TrimRight(cfg.DatabricksHost, "/") + "/serving-endpoints"
 		}
-		client := llm.NewClient(llm.ClientConfig{
-			BaseURL:    baseURL,
-			Token:      pc.APIKey, // empty string is fine for no-auth providers
-			Provider:   preset.wireProvider,
-			Headers:    headers,
-			MaxRetries: 3,
-			Timeout:    timeout,
-			Logger:     slog.Default(),
-		})
-		return client, "", nil
+		endpoint = strings.TrimSuffix(firstNonEmpty(pc.Endpoint, pc.ModelCfg.Endpoint), "/invocations")
+	} else {
+		if p.RequiresKey() && key == "" {
+			return nil, "", fmt.Errorf("no API key for provider=%s (set %s, or phases.<phase>.api-key)", p.Name, p.Auth.APIKeyEnv)
+		}
+		if baseURL == "" {
+			return nil, "", fmt.Errorf("provider=%s requires --base-url (no default URL)", p.Name)
+		}
 	}
-
-	// Reject typos rather than silently routing them to Databricks.
-	if pc.Provider != "databricks" {
-		return nil, "", fmt.Errorf("unsupported provider %q", pc.Provider)
-	}
-
-	// Databricks.
-	if cfg.DatabricksHost == "" {
-		return nil, "", fmt.Errorf("DATABRICKS_HOST is not set (provider=%s)", pc.Provider)
-	}
-	if cfg.DatabricksToken == "" {
-		return nil, "", fmt.Errorf("DATABRICKS_TOKEN is not set (provider=%s)", pc.Provider)
-	}
-	baseURL := pc.BaseURL
-	if baseURL == "" {
-		baseURL = cfg.DatabricksHost + "/serving-endpoints"
-	}
-	client := llm.NewClient(llm.ClientConfig{
-		BaseURL:    baseURL,
-		Token:      cfg.DatabricksToken,
-		Provider:   "databricks",
-		Headers:    headers,
-		MaxRetries: 3,
-		Timeout:    timeout,
-		Logger:     slog.Default(),
-	})
-	endpoint := pc.Endpoint
-	if endpoint == "" {
-		endpoint = pc.ModelCfg.Endpoint
-	}
-	// The LLM client's buildURL appends "/invocations", so strip it if
-	// present to avoid double-appending (the registry stores
-	// "model/invocations").
-	return client, strings.TrimSuffix(endpoint, "/invocations"), nil
+	return llm.NewClient(llm.ClientConfig{
+		BaseURL: baseURL, Token: key, Provider: p.Protocol, ChatPath: p.Request.Path, AuthType: p.Auth.Type, MaxTokensField: p.Request.MaxTokensField,
+		Headers: headers, MaxRetries: 3, Timeout: timeout, Logger: slog.Default(),
+	}), endpoint, nil
 }
 
 // parseCustomHeaders parses header entries in "Name: Value" format.

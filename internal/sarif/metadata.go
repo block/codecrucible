@@ -38,6 +38,10 @@ type AuditReplaySource struct {
 }
 
 type PhaseRecipe struct {
+	Protocol            string `json:"protocol,omitempty"`
+	RequestPath         string `json:"requestPath,omitempty"`
+	ProviderFingerprint string `json:"providerFingerprint,omitempty"`
+
 	Provider               string         `json:"provider"`
 	Model                  string         `json:"model"`
 	BaseURL                string         `json:"baseUrl,omitempty"`

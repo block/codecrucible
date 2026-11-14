@@ -40,12 +40,10 @@ func TestDefaultModelRegistry_ContainsExpectedModels(t *testing.T) {
 		t.Fatalf("registry length: got %d, want %d", len(registry), len(expected))
 	}
 
-	for i, exp := range expected {
-		if registry[i].Name != exp.name {
-			t.Errorf("registry[%d].Name: got %q, want %q", i, registry[i].Name, exp.name)
-		}
-		if registry[i].ContextLimit != exp.contextLimit {
-			t.Errorf("registry[%d].ContextLimit: got %d, want %d", i, registry[i].ContextLimit, exp.contextLimit)
+	for _, exp := range expected {
+		got, ok := LookupModel(exp.name)
+		if !ok || got.ContextLimit != exp.contextLimit {
+			t.Errorf("model %q: context=%d, found=%v; want %d", exp.name, got.ContextLimit, ok, exp.contextLimit)
 		}
 	}
 }
@@ -384,141 +382,40 @@ func TestUnknownModelDefaults(t *testing.T) {
 	}
 }
 
-func TestRegisterModel_AddsNew(t *testing.T) {
-	// Save and restore the registry to avoid polluting other tests.
-	saved := make([]ModelConfig, len(defaultModels))
-	copy(saved, defaultModels)
-	defer func() { defaultModels = saved }()
-
-	RegisterModel(ModelConfig{
-		Name:            "my-custom-model",
-		ContextLimit:    256000,
-		MaxOutputTokens: 16384,
-	})
-
-	m, found := LookupModel("my-custom-model")
-	if !found {
-		t.Fatal("registered model not found")
-	}
-	if m.ContextLimit != 256000 {
-		t.Errorf("ContextLimit: got %d, want %d", m.ContextLimit, 256000)
-	}
-}
-
-func TestRegisterModel_ReplacesExisting(t *testing.T) {
-	saved := make([]ModelConfig, len(defaultModels))
-	copy(saved, defaultModels)
-	defer func() { defaultModels = saved }()
-
-	original, _ := LookupModel("claude-sonnet-5")
-	if original.MaxOutputTokens != 128000 {
-		t.Fatalf("precondition: expected 128000, got %d", original.MaxOutputTokens)
-	}
-
-	RegisterModel(ModelConfig{
-		Name:            "claude-sonnet-5",
-		ContextLimit:    200000,
-		MaxOutputTokens: 32768,
-	})
-
-	updated, found := LookupModel("claude-sonnet-5")
-	if !found {
-		t.Fatal("replaced model not found")
-	}
-	if updated.MaxOutputTokens != 32768 {
-		t.Errorf("MaxOutputTokens: got %d, want %d", updated.MaxOutputTokens, 32768)
-	}
-
-	// Registry size should not have grown.
-	if len(defaultModels) != len(saved) {
-		t.Errorf("registry grew from %d to %d after replace", len(saved), len(defaultModels))
-	}
-}
-
-func TestRegisterUserModels_AddsAndOverrides(t *testing.T) {
-	saved := make([]ModelConfig, len(defaultModels))
-	copy(saved, defaultModels)
-	defer func() { defaultModels = saved }()
-
-	err := RegisterUserModels([]ModelConfig{
-		// New entry — extends the registry.
-		{
-			Name:            "acme-llama-70b",
-			Provider:        "openai-compat",
-			InputPricePerM:  0.5,
-			OutputPricePerM: 1.5,
-			ContextLimit:    131072,
-			MaxOutputTokens: 8192,
-			Encoding:        "cl100k_base",
-		},
-		// Override of a built-in — same Name, different pricing.
-		{
-			Name:            "claude-sonnet-5",
-			Provider:        "anthropic",
-			InputPricePerM:  1.5,
-			OutputPricePerM: 7.5,
-			ContextLimit:    200000,
-			MaxOutputTokens: 16384,
-			Encoding:        "claude",
-		},
+func TestLoadRegistryLegacyModels(t *testing.T) {
+	before := DefaultModelRegistry()
+	r, err := LoadRegistry(nil, []ModelConfig{
+		{Name: "acme-llama-70b", Provider: "openai-compat", ContextLimit: 131072, MaxOutputTokens: 8192, InputPricePerM: 0.5},
+		{Name: "claude-sonnet-5", Provider: "anthropic", InputPricePerM: 1.5},
+		{Name: "azure-gpt-5", Provider: "openai-compat", Endpoint: "deployments/my-azure-deploy/chat/completions"},
 	})
 	if err != nil {
-		t.Fatalf("RegisterUserModels: %v", err)
+		t.Fatal(err)
 	}
-
-	added, ok := LookupModel("acme-llama-70b")
-	if !ok {
-		t.Fatal("user-defined model not registered")
+	added, ok := r.LookupModel("openai-compat", "acme-llama-70b")
+	if !ok || added.Endpoint != "acme-llama-70b/invocations" || added.ContextLimit != 131072 {
+		t.Fatalf("lost custom model: %+v", added)
 	}
-	if added.Endpoint != "acme-llama-70b/invocations" {
-		t.Errorf("empty Endpoint should default to <name>/invocations, got %q", added.Endpoint)
+	sonnet, _ := r.LookupModel("anthropic", "claude-sonnet-5")
+	if sonnet.InputPricePerM != 1.5 || sonnet.ContextLimit != 0 {
+		t.Fatalf("legacy entries must replace wholesale: %+v", sonnet)
 	}
-	if added.Provider != "openai-compat" {
-		t.Errorf("Provider: got %q, want %q", added.Provider, "openai-compat")
+	azure, _ := r.LookupModel("openai-compat", "azure-gpt-5")
+	if azure.Endpoint != "deployments/my-azure-deploy/chat/completions" {
+		t.Fatalf("lost endpoint: %+v", azure)
 	}
-
-	overridden, _ := LookupModel("claude-sonnet-5")
-	if overridden.InputPricePerM != 1.5 {
-		t.Errorf("user override did not take effect: InputPricePerM got %v, want 1.5", overridden.InputPricePerM)
+	if len(r.Models()) != len(before)+2 {
+		t.Fatal("unexpected registry size")
 	}
-
-	// Size grew by exactly one (the new one). The override replaced in place.
-	if len(defaultModels) != len(saved)+1 {
-		t.Errorf("registry grew by %d, want 1", len(defaultModels)-len(saved))
+	builtin, _ := LookupModel("claude-sonnet-5")
+	if builtin.InputPricePerM == 1.5 {
+		t.Fatal("local overrides leaked into bundled registry")
 	}
 }
 
-func TestRegisterUserModels_PreservesExplicitEndpoint(t *testing.T) {
-	saved := make([]ModelConfig, len(defaultModels))
-	copy(saved, defaultModels)
-	defer func() { defaultModels = saved }()
-
-	err := RegisterUserModels([]ModelConfig{{
-		Name:     "azure-gpt-5",
-		Provider: "openai-compat",
-		Endpoint: "deployments/my-azure-deploy/chat/completions",
-	}})
-	if err != nil {
-		t.Fatalf("RegisterUserModels: %v", err)
-	}
-
-	m, _ := LookupModel("azure-gpt-5")
-	if m.Endpoint != "deployments/my-azure-deploy/chat/completions" {
-		t.Errorf("Endpoint: got %q, want the explicit value", m.Endpoint)
-	}
-}
-
-func TestRegisterUserModels_RejectsEmptyName(t *testing.T) {
-	saved := make([]ModelConfig, len(defaultModels))
-	copy(saved, defaultModels)
-	defer func() { defaultModels = saved }()
-
-	err := RegisterUserModels([]ModelConfig{
-		{Name: "ok-model", ContextLimit: 100000},
-		{Name: " ", ContextLimit: 100000}, // whitespace-only name
-	})
-	if err == nil {
-		t.Fatal("expected error for empty name, got nil")
+func TestLoadRegistryRejectsEmptyLegacyName(t *testing.T) {
+	if _, err := LoadRegistry(nil, []ModelConfig{{Name: "ok-model"}, {Name: " "}}); err == nil {
+		t.Fatal("expected invalid model name")
 	}
 }
 

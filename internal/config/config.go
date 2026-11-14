@@ -81,11 +81,10 @@ type Config struct {
 	// or env (PHASES_AUDIT_PROVIDER=...).
 	Phases Phases `mapstructure:"phases"`
 
-	// Models extends (or overrides) the built-in model registry. Each entry
-	// is passed to RegisterModel at Load time, keyed by Name — so user
-	// entries sharing a built-in name replace the built-in wholesale. Lets
-	// operators add a new provider endpoint or retune pricing / context
-	// limits without recompiling. See RegisterUserModels.
+	// ProviderFiles extends the embedded catalogs; paths are relative to this config.
+	ProviderFiles []string  `mapstructure:"provider-files"`
+	Registry      *Registry `mapstructure:"-"`
+	// Models retains the legacy whole-entry replacement semantics.
 	Models []ModelConfig `mapstructure:"models"`
 }
 
@@ -122,13 +121,11 @@ func Load(v *viper.Viper) (*Config, error) {
 		cfg.ContextSources = append(cfg.ContextSources, cs)
 	}
 
-	// Merge user-declared models into the global registry. Entries sharing a
-	// name with a built-in replace it; new names extend. Running this on
-	// every Load is a no-op when cfg.Models is empty, and idempotent (same
-	// entry twice) when it isn't.
-	if err := RegisterUserModels(cfg.Models); err != nil {
-		return nil, fmt.Errorf("registering models from config: %w", err)
+	registry, err := LoadRegistry(providerPaths(cfg.ProviderFiles, v.ConfigFileUsed()), cfg.Models)
+	if err != nil {
+		return nil, fmt.Errorf("loading provider registry: %w", err)
 	}
+	cfg.Registry = registry
 
 	return &cfg, nil
 }
@@ -154,6 +151,7 @@ func SetDefaults(v *viper.Viper) {
 	v.SetDefault("model-params", map[string]any{})
 	v.SetDefault("model-params-json", "")
 	v.SetDefault("provider", "")
+	v.SetDefault("provider-files", []string{})
 	v.SetDefault("base-url", "")
 	v.SetDefault("max-file-size", 102400) // 100KB
 	v.SetDefault("context-limit", 0)      // 0 = use model registry default

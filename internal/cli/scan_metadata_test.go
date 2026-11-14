@@ -399,8 +399,8 @@ func TestScanArtifactsIncludeFinalEvidenceAndMetadata(t *testing.T) {
 			if mode == "audit-timeout" {
 				v.Set("request-timeout", 1)
 			}
-			// Invalid audit client triggers the existing analysis-client fallback.
-			v.Set("phases.audit.provider", "unknown-provider")
+			// A known provider without its required URL triggers analysis-client fallback.
+			v.Set("phases.audit.provider", "openai-compat")
 			cmd := &cobra.Command{}
 			cmd.SetContext(context.Background())
 			err := runScan(cmd, []string{dir})

@@ -92,25 +92,33 @@ func phaseRecipe(pc config.PhaseConfig, cfg *config.Config) sarif.PhaseRecipe {
 	if timeout <= 0 {
 		timeout = 600
 	}
-	baseURL := pc.BaseURL
+	p, _ := cfg.ConfigRegistry().Provider(pc.Provider)
+	if pc.ProviderCfg.Name != "" {
+		p = pc.ProviderCfg
+	}
+	baseURL := firstNonEmpty(pc.BaseURL, p.BaseURL)
 	endpoint := ""
-	if pc.Provider == "databricks" {
+	if p.Protocol == "databricks" {
 		if baseURL == "" {
-			baseURL = cfg.DatabricksHost + "/serving-endpoints"
+			baseURL = strings.TrimRight(cfg.DatabricksHost, "/") + "/serving-endpoints"
 		}
-		endpoint = pc.Endpoint
-		if endpoint == "" {
-			endpoint = model.Endpoint
-		}
-		endpoint = strings.TrimSuffix(endpoint, "/invocations")
-	} else if baseURL == "" {
-		baseURL = providerPresets[pc.Provider].baseURL
+		endpoint = strings.TrimSuffix(firstNonEmpty(pc.Endpoint, model.Endpoint), "/invocations")
 	}
 	transport := "http"
-	if pc.Provider == "anthropic" && pc.APIKey == "" {
+	requestPath := p.Request.Path
+	if p.Fallback == "claude-cli" && pc.APIKey == "" && cfg.ProviderKey(p) == "" {
 		transport = "claude-cli"
 		baseURL = ""
+		requestPath = ""
 	}
+	// Hash static provider behavior, excluding credentials, catalog paths, and
+	// unrelated models. Header values are never copied into the scan artifact.
+	providerBehavior, _ := json.Marshal(struct {
+		Protocol string
+		AuthType string
+		Request  config.ProviderRequest
+		Headers  map[string]string
+	}{p.Protocol, p.Auth.Type, p.Request, p.Headers})
 	mode := "none"
 	switch llm.OutputModeForConfig(model) {
 	case llm.OutputModeJSONSchema:
@@ -119,9 +127,10 @@ func phaseRecipe(pc config.PhaseConfig, cfg *config.Config) sarif.PhaseRecipe {
 		mode = "tool_use"
 	}
 	return sarif.PhaseRecipe{
+		Protocol: p.Protocol, RequestPath: requestPath, ProviderFingerprint: fingerprint(providerBehavior),
 		Provider: pc.Provider, Model: model.Name, BaseURL: safeURL(baseURL), Endpoint: safeURL(endpoint), Transport: transport,
 		ModelParams: safeParameters(pc.ModelParams), ContextLimit: model.ContextLimit, MaxOutputTokens: model.MaxOutputTokens,
-		Temperature: model.Temperature, OmitTemperature: model.OmitTemperature, UseMaxCompletionTokens: model.UseMaxCompletionTokens,
+		Temperature: model.Temperature, OmitTemperature: model.OmitTemperature, UseMaxCompletionTokens: model.UseMaxCompletionTokens || p.Request.MaxTokensField == "max_completion_tokens",
 		OutputMode: mode, RequestTimeoutSeconds: timeout, Tokenizer: model.Encoding,
 		Pricing: sarif.ModelPricing{
 			InputPerMillion: model.InputPricePerM, OutputPerMillion: model.OutputPricePerM,

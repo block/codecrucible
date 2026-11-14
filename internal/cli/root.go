@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 
 	"github.com/block/codecrucible/internal/config"
 	"github.com/block/codecrucible/internal/logging"
@@ -47,6 +48,18 @@ for security vulnerabilities using LLM-based analysis and produces SARIF output.
 			}
 			// Bind the persistent flags to viper so flag values override config/env.
 			_ = v.BindPFlag("verbose", cmd.Root().PersistentFlags().Lookup("verbose"))
+			_ = v.BindPFlag("provider-files", cmd.Root().PersistentFlags().Lookup("provider-file"))
+			if cmd.Root().PersistentFlags().Changed("provider-file") {
+				paths, _ := cmd.Root().PersistentFlags().GetStringSlice("provider-file")
+				for i, p := range paths {
+					absolute, err := filepath.Abs(p)
+					if err != nil {
+						return err
+					}
+					paths[i] = absolute
+				}
+				v.Set("provider-files", paths)
+			}
 
 			logger = logging.NewLogger(v.GetBool("verbose"))
 			slog.SetDefault(logger)
@@ -55,6 +68,7 @@ for security vulnerabilities using LLM-based analysis and produces SARIF output.
 	}
 
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default: .codecrucible.yaml)")
+	rootCmd.PersistentFlags().StringSlice("provider-file", nil, "load provider YAML (repeatable; paths relative to current directory)")
 	rootCmd.PersistentFlags().BoolVar(&verbose, "verbose", false, "enable verbose/debug logging")
 
 	// Cobra auto-attaches `completion` (shell tab-completion generator).
@@ -65,6 +79,8 @@ for security vulnerabilities using LLM-based analysis and produces SARIF output.
 	rootCmd.AddCommand(newScanCommand())
 	rootCmd.AddCommand(newListEndpointsCommand())
 	rootCmd.AddCommand(newInitCommand())
+	rootCmd.AddCommand(newListProvidersCommand())
+	rootCmd.AddCommand(newValidateProvidersCommand())
 
 	return rootCmd
 }

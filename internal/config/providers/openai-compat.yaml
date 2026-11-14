@@ -1,0 +1,10 @@
+schema_version: 1
+name: openai-compat
+protocol: openai-chat
+auth:
+  type: optional-bearer
+request:
+  path: /v1/chat/completions
+discovery:
+  format: openai-models
+  path: /v1/models

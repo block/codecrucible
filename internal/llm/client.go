@@ -189,6 +189,10 @@ type Client interface {
 
 // ClientConfig holds configuration for the HTTP LLM client.
 type ClientConfig struct {
+	ChatPath       string // Explicit catalog path; empty preserves legacy URL construction.
+	AuthType       string // bearer, optional-bearer, api-key, or none; empty preserves legacy auth.
+	MaxTokensField string // Provider-level output token parameter policy.
+
 	BaseURL    string        // Base URL for the API (e.g., "https://host.databricks.com/serving-endpoints").
 	Token      string        // Bearer token for authentication.
 	Provider   string        // "databricks", "anthropic", "openai" — controls URL construction and request format.
@@ -200,6 +204,10 @@ type ClientConfig struct {
 
 // httpClient implements Client using HTTP against an OpenAI-compatible API.
 type httpClient struct {
+	chatPath                 string
+	authType                 string
+	forceMaxCompletionTokens bool
+
 	baseURL      string
 	token        string
 	provider     string
@@ -219,6 +227,13 @@ type httpClient struct {
 
 // NewClient creates a new LLM HTTP client.
 func NewClient(cfg ClientConfig) Client {
+	switch cfg.Provider {
+	case "openai-chat":
+		cfg.Provider = "openai"
+	case "anthropic-messages":
+		cfg.Provider = "anthropic"
+	}
+
 	if cfg.MaxRetries <= 0 {
 		cfg.MaxRetries = 3
 	}
@@ -243,6 +258,8 @@ func NewClient(cfg ClientConfig) Client {
 	}
 
 	return &httpClient{
+		chatPath: cfg.ChatPath, authType: cfg.AuthType, forceMaxCompletionTokens: cfg.MaxTokensField == "max_completion_tokens",
+
 		baseURL:      strings.TrimRight(cfg.BaseURL, "/"),
 		token:        cfg.Token,
 		provider:     cfg.Provider,
@@ -264,7 +281,7 @@ func (c *httpClient) ChatCompletion(ctx context.Context, req ChatRequest) (*Chat
 	// including Opus requests that opt into adaptive thinking via model params.
 	dropTemperature := c.dropTemperature.Load() || req.OmitTemperature ||
 		(c.provider == "anthropic" && hasModelParam(req.ModelParams, "thinking"))
-	useMaxCompletionTokens := c.provider == "cerebras" || c.useMaxCompletionTokens.Load() || req.UseMaxCompletionTokens
+	useMaxCompletionTokens := c.forceMaxCompletionTokens || c.provider == "cerebras" || c.useMaxCompletionTokens.Load() || req.UseMaxCompletionTokens
 
 	for attempt := 0; attempt <= c.maxRetries; attempt++ {
 		if err := ctx.Err(); err != nil {
@@ -385,6 +402,10 @@ func (c *httpClient) ChatCompletion(ctx context.Context, req ChatRequest) (*Chat
 }
 
 func (c *httpClient) buildURL(endpoint string) string {
+	if c.chatPath != "" {
+		return c.baseURL + strings.ReplaceAll(c.chatPath, "{endpoint}", strings.Trim(endpoint, "/"))
+	}
+
 	switch c.provider {
 	case "anthropic":
 		return c.baseURL + "/v1/messages"
@@ -492,7 +513,7 @@ func (c *httpClient) buildRequestBody(req ChatRequest, forceToolChoice, dropTemp
 	}
 
 	params := requestParamsWithout(req.ModelParams, dropTemperature, "temperature")
-	if c.provider == "cerebras" && hasModelParam(params, "max_tokens") {
+	if (c.forceMaxCompletionTokens || c.provider == "cerebras") && hasModelParam(params, "max_tokens") {
 		// Preserve legacy model-params overrides without sending both aliases.
 		normalized := make(map[string]any, len(params))
 		for k, v := range params {
@@ -545,13 +566,24 @@ func (c *httpClient) doRequest(ctx context.Context, url, label string, body []by
 	}
 
 	httpReq.Header.Set("Content-Type", "application/json")
-	switch c.provider {
-	case "anthropic":
-		httpReq.Header.Set("x-api-key", c.token)
-		httpReq.Header.Set("anthropic-version", "2023-06-01")
-	default:
+	if c.authType != "" {
 		if c.token != "" {
-			httpReq.Header.Set("Authorization", "Bearer "+c.token)
+			switch c.authType {
+			case "api-key":
+				httpReq.Header.Set("x-api-key", c.token)
+			case "bearer", "optional-bearer":
+				httpReq.Header.Set("Authorization", "Bearer "+c.token)
+			}
+		}
+	} else {
+		switch c.provider {
+		case "anthropic":
+			httpReq.Header.Set("x-api-key", c.token)
+			httpReq.Header.Set("anthropic-version", "2023-06-01")
+		default:
+			if c.token != "" {
+				httpReq.Header.Set("Authorization", "Bearer "+c.token)
+			}
 		}
 	}
 

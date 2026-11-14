@@ -71,6 +71,8 @@ max-output-tokens: 128000
 request-timeout: 900      # seconds; bump for large-context + thinking models
 
 # --- Provider (flat form — inherited by all phases) ----------------------
+# See list-providers for the effective provider catalog.
+# provider-files: [providers/my-service.yaml]  # paths relative to this file
 # Providers: anthropic, openai, google, cerebras, ollama, openai-compat, databricks
 # API keys come from env: ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY,
 # CEREBRAS_API_KEY, DATABRICKS_HOST + DATABRICKS_TOKEN. Provider auto-detects from whichever
