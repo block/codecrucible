@@ -15,68 +15,102 @@ import (
 )
 
 func newListEndpointsCommand() *cobra.Command {
-	cmd := &cobra.Command{Use: "list-models", Aliases: []string{"list-endpoints"}, Short: "List provider-reported models or the configured catalog", RunE: runListEndpoints}
-	cmd.Flags().String("provider", "", "provider to query (see list-providers)")
-	cmd.Flags().String("base-url", "", "override provider base URL")
-	cmd.Flags().Bool("registered", false, "list configured model capabilities without querying a provider")
+	cmd := &cobra.Command{
+		Use:     "list-models",
+		Aliases: []string{"list-endpoints"},
+		Short:   "List available models/endpoints for a provider",
+		Long: fmt.Sprintf(`Queries a model provider for its available models and prints a table.
+
+Provider is chosen by --provider if set. Otherwise, Databricks is used when
+DATABRICKS_HOST + DATABRICKS_TOKEN are set; failing that, the first of
+ANTHROPIC_API_KEY / OPENAI_API_KEY / GOOGLE_API_KEY / CEREBRAS_API_KEY present is used.
+
+Supported providers: %s.`, strings.Join(config.ProviderNames(), ", ")),
+		RunE: runListEndpoints,
+	}
+	cmd.Flags().String("provider", "", "provider to query (from the embedded YAML catalog)")
+	cmd.Flags().String("base-url", "", "override provider base URL (useful for OpenAI-compat endpoints)")
 	return cmd
 }
 
-type modelEntry struct{ Name, State, Model, Usage string }
+// modelEntry is the unified row format rendered by listEndpointsTable.
+type modelEntry struct {
+	Name  string // identifier a user would pass to --model / DATABRICKS_ENDPOINT
+	State string // READY / ACTIVE / "-" (not all providers expose a state)
+	Model string // underlying model name; often equal to Name for direct providers
+	Usage string // hint for how to target this entry on subsequent scans
+}
+
+// ===== Command dispatcher ============================================
 
 func runListEndpoints(cmd *cobra.Command, args []string) error {
 	cfg, err := config.Load(v)
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
 	}
-	registered, _ := cmd.Flags().GetBool("registered")
-	var entries []modelEntry
-	if registered {
-		return listRegisteredModels(cmd, cfg)
-	}
 	name, err := resolveListProvider(cmd, cfg)
 	if err != nil {
 		return err
 	}
-	p, ok := cfg.Registry.Provider(name)
+	p, ok := config.LookupProvider(name)
 	if !ok {
-		return fmt.Errorf("unsupported provider %q (see list-providers)", name)
+		return fmt.Errorf("unsupported provider %q (see list-models --help)", name)
 	}
-	entries, err = listProvider(cmd.Context(), cfg, p, cmdStringFlag(cmd, "base-url"))
+	entries, err := listProvider(cmd.Context(), cfg, p, cmdStringFlag(cmd, "base-url"))
 	if err != nil {
 		return err
 	}
 
 	if len(entries) == 0 {
-		fmt.Fprintln(cmd.OutOrStdout(), "No models returned.")
+		fmt.Fprintf(cmd.OutOrStdout(), "No models returned for provider %q.\n", name)
 		return nil
 	}
 	w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 4, 2, ' ', 0)
 	fmt.Fprintln(w, "ENDPOINT\tSTATE\tMODEL\tUSAGE")
 	for _, e := range entries {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", e.Name, emptyDash(e.State), emptyDash(e.Model), e.Usage)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", e.Name, emptyDash(e.State), emptyDash(e.Model), emptyDash(e.Usage))
 	}
 	return w.Flush()
 }
 
-// Discovery and scanning share provider definitions and credential resolution.
+// resolveListProvider picks a provider: explicit flag > databricks (if creds
+// present, preserving existing behavior) > first provider with an API key.
 func resolveListProvider(cmd *cobra.Command, cfg *config.Config) (string, error) {
-	if p := firstNonEmpty(cmdStringFlag(cmd, "provider"), cfg.Provider); p != "" {
-		return strings.ToLower(strings.TrimSpace(p)), nil
+	if p := strings.TrimSpace(cmdStringFlag(cmd, "provider")); p != "" {
+		return strings.ToLower(p), nil
 	}
+	if p := strings.TrimSpace(cfg.Provider); p != "" {
+		return strings.ToLower(p), nil
+	}
+	// If either Databricks env var is set, route to the Databricks lister so
+	// its specific "DATABRICKS_HOST/TOKEN is not set" error surfaces rather
+	// than the generic no-provider message.
 	if cfg.DatabricksHost != "" || cfg.DatabricksToken != "" {
 		return "databricks", nil
 	}
-	if p := cfg.ConfigRegistry().AutoDetect(cfg); p != "" {
-		return p, nil
+	if cfg.AnthropicAPIKey != "" {
+		return "anthropic", nil
 	}
-	return "", fmt.Errorf("no provider specified and no credentials detected; pass --provider (see list-providers)")
+	if cfg.OpenAIAPIKey != "" {
+		return "openai", nil
+	}
+	if cfg.GoogleAPIKey != "" {
+		return "google", nil
+	}
+	if cfg.CerebrasAPIKey != "" {
+		return "cerebras", nil
+	}
+	return "", fmt.Errorf("no provider specified and no credentials detected; pass --provider or set one of ANTHROPIC_API_KEY / OPENAI_API_KEY / GOOGLE_API_KEY / CEREBRAS_API_KEY / (DATABRICKS_HOST + DATABRICKS_TOKEN)")
 }
 
 func cmdStringFlag(cmd *cobra.Command, name string) string {
-	value, _ := cmd.Flags().GetString(name)
-	return value
+	if cmd == nil || cmd.Flags() == nil {
+		return ""
+	}
+	s, _ := cmd.Flags().GetString(name)
+	return s
 }
+
 func emptyDash(s string) string {
 	if s == "" {
 		return "-"
@@ -86,7 +120,7 @@ func emptyDash(s string) string {
 
 func listProvider(ctx context.Context, cfg *config.Config, p config.ProviderConfig, baseURL string) ([]modelEntry, error) {
 	if p.Discovery.Format == "none" {
-		return nil, fmt.Errorf("provider=%s does not support discovery; use list-models --registered", p.Name)
+		return nil, fmt.Errorf("provider=%s does not support model discovery", p.Name)
 	}
 	base := firstNonEmpty(baseURL, cfg.BaseURL, p.BaseURL)
 	if p.Protocol == "databricks" && base == "" {
@@ -95,14 +129,26 @@ func listProvider(ctx context.Context, cfg *config.Config, p config.ProviderConf
 			return nil, fmt.Errorf("DATABRICKS_HOST is not set")
 		}
 	}
-	key := cfg.ProviderKey(p)
-	if p.RequiresKey() && key == "" {
+	key := cfg.ProviderKey(p.Name)
+	if (p.Auth.Type == "bearer" || p.Auth.Type == "api-key") && key == "" {
 		return nil, fmt.Errorf("%s is not set (provider=%s)", p.Auth.APIKeyEnv, p.Name)
 	}
 	if base == "" {
 		return nil, fmt.Errorf("provider=%s requires --base-url (no default URL)", p.Name)
 	}
-	body, err := httpGetJSON(ctx, strings.TrimRight(base, "/")+p.Discovery.Path, p.AuthHeaders(key))
+	headers := http.Header{}
+	for name, value := range p.Headers {
+		headers.Set(name, value)
+	}
+	if key != "" {
+		switch p.Auth.Type {
+		case "bearer", "optional-bearer":
+			headers.Set("Authorization", "Bearer "+key)
+		case "api-key":
+			headers.Set("x-api-key", key)
+		}
+	}
+	body, err := httpGetJSON(ctx, strings.TrimRight(base, "/")+p.Discovery.Path, headers)
 	if err != nil {
 		return nil, fmt.Errorf("querying %s: %w", p.Name, err)
 	}
@@ -145,11 +191,7 @@ func listProvider(ctx context.Context, cfg *config.Config, p config.ProviderConf
 		}
 		for _, ep := range list.Endpoints {
 			add(ep.Name, ep.State.Ready, describeModel(ep))
-			if _, ok := cfg.ConfigRegistry().LookupModel(p.Name, ep.Name); ok {
-				entries[len(entries)-1].Usage = "auto-detected"
-			} else {
-				entries[len(entries)-1].Usage = "DATABRICKS_ENDPOINT=" + ep.Name
-			}
+			entries[len(entries)-1].Usage = usageHint(ep.Name)
 		}
 	}
 	return entries, nil

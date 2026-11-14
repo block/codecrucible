@@ -1,10 +1,6 @@
-schema_version: 1
 name: cerebras
 protocol: openai-chat
 base_url: https://api.cerebras.ai
-auto_detect_priority: 40
-require_model: true
-warn_unpriced: true
 auth:
   type: bearer
   api_key_env: CEREBRAS_API_KEY
@@ -28,7 +24,6 @@ models:
     tokenizer_encoding: "cl100k_base"
     execution_warning: "kimi-k2.6 uses provisional planning rates of $2/M input and $8/M output, not verified Cerebras contract prices; 128K context and 8192 output are fallback limits. Override models: with verified deployment settings. Cost limits use these assumed rates and cannot guarantee actual billed spend"
     supports_structured_output: true
-    aliases: [kimi, kimi-k2, "kimi k2.6"]
   # Opt-in public profile. Keep deployment IDs in local model-params.
   # JSON Schema was verified on one deployment; other deployments must
   # explicitly select this profile or configure their own capabilities.

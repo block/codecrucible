@@ -1,10 +1,6 @@
-schema_version: 1
 name: anthropic
 protocol: anthropic-messages
 base_url: https://api.anthropic.com
-default_model: claude-sonnet-5
-auto_detect_priority: 10
-fallback: claude-cli
 auth:
   type: api-key
   api_key_env: ANTHROPIC_API_KEY

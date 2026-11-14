@@ -603,26 +603,6 @@ All providers are also reachable via Databricks model serving when
 Unknown models get conservative defaults (128K context, 8192 max output,
 unstructured). Override with `--context-limit` / `--max-output-tokens`.
 
-### Providers and model catalogs in YAML
-
-Built-in provider definitions and model catalogs live in
-[`internal/config/providers/`](internal/config/providers/) and are embedded in the
-binary. Add or patch a provider locally with a `provider-files:` list in your
-config, or repeat `--provider-file path/to/provider.yaml` on the command line.
-Services using a supported API protocol can be added entirely through YAML.
-
-```bash
-codecrucible validate-providers
-codecrucible list-providers
-codecrucible list-models --registered --provider cerebras
-```
-
-These commands work offline without credentials. `list-models` without
-`--registered` continues to query the provider's API. Provider files support
-partial model overrides, explicit aliases, deployment IDs, and provider-specific
-pricing and capabilities. See [Provider catalogs](PROVIDERS.md) for the schema,
-examples, precedence, and compatibility details.
-
 ### Adding models via config
 
 The table above is the *built-in* registry compiled into the binary. You can
@@ -750,7 +730,7 @@ a feature.
 cmd/codecrucible/       CLI entry point
 internal/
   cli/                  Cobra commands (scan, list-models, init), pipeline orchestration
-  config/               Viper config, embedded YAML provider/model catalogs, per-phase resolution
+  config/               Viper config, model registry, per-phase resolution (phase.go)
   ingest/               File walker, filter, XML flattener, import graph
   chunk/                Token counting (tiktoken), budget-aware chunking
   supctx/               Supplementary-context loaders, priority packing, LLM compression

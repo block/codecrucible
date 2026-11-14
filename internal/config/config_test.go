@@ -329,6 +329,11 @@ func TestParseContextSourceKV(t *testing.T) {
 }
 
 func TestLoad_RegistersModelsFromConfigFile(t *testing.T) {
+	// Isolate the global registry from other tests.
+	saved := make([]ModelConfig, len(defaultModels))
+	copy(saved, defaultModels)
+	defer func() { defaultModels = saved }()
+
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.yaml")
 	cfgBody := `
@@ -376,7 +381,7 @@ models:
 
 	// Extension round-trip: the new model is in the registry, and empty
 	// Endpoint was defaulted from Name.
-	llama, ok := cfg.Registry.LookupModel("", "llama-4-405b")
+	llama, ok := LookupModel("llama-4-405b")
 	if !ok {
 		t.Fatal("llama-4-405b not found in registry after Load")
 	}
@@ -390,7 +395,7 @@ models:
 		t.Error("exact_match was not loaded from configuration")
 	}
 	for _, name := range []string{"llama-4", "custom-llama-4-405b"} {
-		if _, ok := cfg.Registry.LookupModel("", name); ok {
+		if _, ok := LookupModel(name); ok {
 			t.Errorf("exact-only model matched %q", name)
 		}
 	}
@@ -399,7 +404,7 @@ models:
 	}
 
 	// Override round-trip: built-in pricing was replaced.
-	sonnet, _ := cfg.Registry.LookupModel("", "claude-sonnet-5")
+	sonnet, _ := LookupModel("claude-sonnet-5")
 	if sonnet.InputPricePerM != 1.5 {
 		t.Errorf("claude-sonnet-5 override InputPricePerM: got %v, want 1.5", sonnet.InputPricePerM)
 	}
@@ -409,6 +414,10 @@ models:
 }
 
 func TestLoad_EmptyModelNameErrors(t *testing.T) {
+	saved := make([]ModelConfig, len(defaultModels))
+	copy(saved, defaultModels)
+	defer func() { defaultModels = saved }()
+
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.yaml")
 	cfgBody := `

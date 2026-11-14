@@ -1,8 +1,6 @@
-schema_version: 1
 name: google
 protocol: openai-chat
 base_url: https://generativelanguage.googleapis.com/v1beta/openai
-auto_detect_priority: 30
 auth:
   type: bearer
   api_key_env: GOOGLE_API_KEY

@@ -1,4 +1,3 @@
-schema_version: 1
 name: databricks
 protocol: databricks
 auth:

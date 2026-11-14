@@ -8,29 +8,34 @@ import (
 
 // ModelConfig describes a model's capabilities, pricing, and endpoint.
 //
-// YAML catalogs and legacy Viper models: entries share this schema.
+// Both tags support embedded provider YAML and legacy Viper models: entries.
 type ModelConfig struct {
-	Aliases                    []string `yaml:"aliases,omitempty" mapstructure:"aliases"`
-	RequestModel               string   `yaml:"request_model,omitempty" mapstructure:"request_model"`
-	Name                       string   `yaml:"name"                                  mapstructure:"name"`
-	ExactMatch                 bool     `yaml:"exact_match"                           mapstructure:"exact_match"` // Exclude this profile from aliases and partial-name matching.
-	Provider                   string   `yaml:"provider"                              mapstructure:"provider"`    // "databricks", "anthropic", "openai", "google"
-	Endpoint                   string   `yaml:"endpoint"                              mapstructure:"endpoint"`
-	ExecutionWarning           string   `yaml:"execution_warning"                     mapstructure:"execution_warning"`
-	InputPricePerM             float64  `yaml:"input_price_per_million"               mapstructure:"input_price_per_million"`
-	OutputPricePerM            float64  `yaml:"output_price_per_million"              mapstructure:"output_price_per_million"`
-	LongContextThreshold       int      `yaml:"long_context_threshold"                mapstructure:"long_context_threshold"`
-	LongContextInputPricePerM  float64  `yaml:"long_context_input_price_per_million"  mapstructure:"long_context_input_price_per_million"`
-	LongContextOutputPricePerM float64  `yaml:"long_context_output_price_per_million" mapstructure:"long_context_output_price_per_million"`
-	ContextLimit               int      `yaml:"context_limit"                         mapstructure:"context_limit"`
-	MaxOutputTokens            int      `yaml:"max_output_tokens"                     mapstructure:"max_output_tokens"`
-	Temperature                float64  `yaml:"temperature"                           mapstructure:"temperature"`
-	OmitTemperature            bool     `yaml:"omit_temperature"                      mapstructure:"omit_temperature"`
-	UseMaxCompletionTokens     bool     `yaml:"use_max_completion_tokens"             mapstructure:"use_max_completion_tokens"`
-	Encoding                   string   `yaml:"tokenizer_encoding"                    mapstructure:"tokenizer_encoding"`
-	SupportsStructuredOutput   bool     `yaml:"supports_structured_output"            mapstructure:"supports_structured_output"`
-	NativeStructuredOutput     bool     `yaml:"native_structured_output"              mapstructure:"native_structured_output"`
+	Name                       string  `yaml:"name"                                  mapstructure:"name"`
+	ExactMatch                 bool    `yaml:"exact_match"                           mapstructure:"exact_match"` // Exclude this profile from aliases and partial-name matching.
+	Provider                   string  `yaml:"provider"                              mapstructure:"provider"`    // "databricks", "anthropic", "openai", "google"
+	Endpoint                   string  `yaml:"endpoint"                              mapstructure:"endpoint"`
+	ExecutionWarning           string  `yaml:"execution_warning"                     mapstructure:"execution_warning"`
+	InputPricePerM             float64 `yaml:"input_price_per_million"               mapstructure:"input_price_per_million"`
+	OutputPricePerM            float64 `yaml:"output_price_per_million"              mapstructure:"output_price_per_million"`
+	LongContextThreshold       int     `yaml:"long_context_threshold"                mapstructure:"long_context_threshold"`
+	LongContextInputPricePerM  float64 `yaml:"long_context_input_price_per_million"  mapstructure:"long_context_input_price_per_million"`
+	LongContextOutputPricePerM float64 `yaml:"long_context_output_price_per_million" mapstructure:"long_context_output_price_per_million"`
+	ContextLimit               int     `yaml:"context_limit"                         mapstructure:"context_limit"`
+	MaxOutputTokens            int     `yaml:"max_output_tokens"                     mapstructure:"max_output_tokens"`
+	Temperature                float64 `yaml:"temperature"                           mapstructure:"temperature"`
+	OmitTemperature            bool    `yaml:"omit_temperature"                      mapstructure:"omit_temperature"`
+	UseMaxCompletionTokens     bool    `yaml:"use_max_completion_tokens"             mapstructure:"use_max_completion_tokens"`
+	Encoding                   string  `yaml:"tokenizer_encoding"                    mapstructure:"tokenizer_encoding"`
+	SupportsStructuredOutput   bool    `yaml:"supports_structured_output"            mapstructure:"supports_structured_output"`
+	NativeStructuredOutput     bool    `yaml:"native_structured_output"              mapstructure:"native_structured_output"`
 }
+
+// modelsMu protects defaultModels for concurrent access.
+var modelsMu sync.RWMutex
+
+// defaultModels preserves the existing model registry behavior; the bundled
+// entries are loaded from the embedded provider YAML catalog.
+var defaultModels = builtinModels()
 
 // EstimateInputCost returns the input-token charge for one request. Providers
 // with long-context tiers apply the higher rate to the whole request once the
@@ -62,168 +67,112 @@ func (m ModelConfig) pricesForInputTokens(inputTokens int) (float64, float64) {
 	return m.InputPricePerM, m.OutputPricePerM
 }
 
-// The bundled snapshot is immutable. User configuration never mutates it.
-var bundledRegistry = sync.OnceValue(func() *Registry { return BuiltinRegistry() })
+// RegisterModel adds or replaces a model in the registry. If a model with the
+// same name already exists (case-insensitive), it is replaced. This allows
+// callers to extend the built-in registry at startup without forking the code.
+func RegisterModel(m ModelConfig) {
+	modelsMu.Lock()
+	defer modelsMu.Unlock()
+	lower := strings.ToLower(m.Name)
+	for i, existing := range defaultModels {
+		if strings.ToLower(existing.Name) == lower {
+			defaultModels[i] = m
+			return
+		}
+	}
+	defaultModels = append(defaultModels, m)
+}
 
-// DefaultModelRegistry returns a copy of the bundled model catalog.
-func DefaultModelRegistry() []ModelConfig         { return bundledRegistry().Models() }
-func LookupModel(name string) (ModelConfig, bool) { return bundledRegistry().LookupModel("", name) }
+// RegisterUserModels registers user-defined model configs into the registry.
+// Each entry must have a non-empty Name. Entries with a name that matches a
+// built-in are replaced (case-insensitive), so this is also how users override
+// built-in pricing / context limits without forking. Empty Endpoint defaults
+// to "<name>/invocations" to match the built-in convention (Databricks serving
+// path; other providers ignore it).
+func RegisterUserModels(models []ModelConfig) error {
+	for i, m := range models {
+		if strings.TrimSpace(m.Name) == "" {
+			return fmt.Errorf("models[%d]: name is required", i)
+		}
+		if m.Endpoint == "" {
+			m.Endpoint = m.Name + "/invocations"
+		}
+		RegisterModel(m)
+	}
+	return nil
+}
+
+// DefaultModelRegistry returns a copy of the built-in model configs.
+func DefaultModelRegistry() []ModelConfig {
+	modelsMu.RLock()
+	defer modelsMu.RUnlock()
+	out := make([]ModelConfig, len(defaultModels))
+	copy(out, defaultModels)
+	return out
+}
+
+// LookupModel finds a model by name using case-insensitive partial matching.
+// Unless a profile requires an exact match, it matches if either the query
+// contains a known model name, or a known model name contains the query.
+// This handles Databricks-prefixed names like
+// "databricks-claude-opus-4-5" matching "claude-opus-4".
+func LookupModel(name string) (ModelConfig, bool) {
+	modelsMu.RLock()
+	defer modelsMu.RUnlock()
+	lower := strings.ToLower(name)
+	// Exact match first.
+	for _, m := range defaultModels {
+		if strings.ToLower(m.Name) == lower {
+			return m, true
+		}
+	}
+	// Known Kimi shorthand is routed to the deployed API model. Keep exact
+	// user registry entries above authoritative, including a custom "kimi".
+	if isKimiAlias(name) {
+		for _, m := range defaultModels {
+			if strings.EqualFold(m.Name, "kimi-k2.6") && !m.ExactMatch {
+				return m, true
+			}
+		}
+	}
+	// Partial match: query contains model name, or model name contains query.
+	// Try longest match first to avoid "claude-opus-4" matching before a more specific entry.
+	var best ModelConfig
+	bestLen := 0
+	found := false
+	for _, m := range defaultModels {
+		if m.ExactMatch {
+			continue
+		}
+		mLower := strings.ToLower(m.Name)
+		if strings.Contains(lower, mLower) || strings.Contains(mLower, lower) {
+			if len(m.Name) > bestLen {
+				best = m
+				bestLen = len(m.Name)
+				found = true
+			}
+		}
+	}
+	return best, found
+}
+
+// LookupModelByEndpoint finds a model by its exact endpoint.
 func LookupModelByEndpoint(endpoint string) (ModelConfig, bool) {
-	for _, m := range bundledRegistry().models {
+	modelsMu.RLock()
+	defer modelsMu.RUnlock()
+	for _, m := range defaultModels {
 		if m.Endpoint == endpoint {
-			return cloneModel(m), true
+			return m, true
 		}
 	}
 	return ModelConfig{}, false
 }
-func DefaultModel() ModelConfig { return bundledRegistry().DefaultModel("") }
 
-func (r *Registry) DefaultModel(provider string) ModelConfig {
-	if p, ok := r.Provider(provider); ok && p.DefaultModel != "" {
-		if m, ok := r.LookupModel(p.Name, p.DefaultModel); ok {
-			return m
-		}
-	}
-	for _, p := range r.providers {
-		if p.DefaultModel != "" {
-			if m, ok := r.LookupModel(p.Name, p.DefaultModel); ok {
-				return m
-			}
-			// Legacy whole-entry overrides can move the historic default to
-			// another provider while retaining its default model name.
-			if m, ok := r.LookupModel("", p.DefaultModel); ok {
-				return m
-			}
-		}
-	}
-	return UnknownModelDefaults("")
-}
-
-// LookupModel scopes capabilities and pricing to a provider. Databricks can
-// proxy models from any catalog, retaining the historic deployment-name lookup.
-func (r *Registry) LookupModel(provider, name string) (ModelConfig, bool) {
-	matches := r.matchModels(provider, name)
-	if len(matches) != 1 {
-		return ModelConfig{}, false
-	}
-	return cloneModel(matches[0]), true
-}
-
-func normalizeAlias(name string) string {
-	return strings.NewReplacer("-", "", "_", "", ".", "", " ", "").Replace(strings.ToLower(strings.TrimSpace(name)))
-}
-func matchesAlias(m ModelConfig, name string) bool {
-	if m.ExactMatch {
-		return false
-	}
-	for _, alias := range m.Aliases {
-		if normalizeAlias(alias) == normalizeAlias(name) {
-			return true
-		}
-	}
-	return false
-}
-
-func (r *Registry) matchModels(provider, name string) []ModelConfig {
-	provider = strings.ToLower(strings.TrimSpace(provider))
-	lower := strings.ToLower(strings.TrimSpace(name))
-	if lower == "" {
-		return nil
-	}
-	var exact, aliases, partial []ModelConfig
-	best := 0
-	for _, m := range r.models {
-		if provider != "" && m.Provider != "" && m.Provider != provider {
-			continue
-		}
-		if strings.EqualFold(m.Name, lower) {
-			exact = append(exact, m)
-			continue
-		}
-		if matchesAlias(m, name) {
-			aliases = append(aliases, m)
-			continue
-		}
-		ml := strings.ToLower(m.Name)
-		if !m.ExactMatch && (strings.Contains(lower, ml) || strings.Contains(ml, lower)) {
-			if len(ml) > best {
-				best = len(ml)
-				partial = nil
-			}
-			if len(ml) == best {
-				partial = append(partial, m)
-			}
-		}
-	}
-	if len(exact) > 0 {
-		return exact
-	}
-	if len(aliases) > 0 {
-		return aliases
-	}
-	if len(partial) > 0 {
-		return partial
-	}
-	if provider == "databricks" {
-		return r.matchModels("", name)
-	}
-	return nil
-}
-
-// ResolveModel preserves user-supplied deployment IDs for legacy partial
-// matches. Declared aliases and request_model explicitly select a wire model ID.
-func (r *Registry) ResolveModel(provider, name string) (ModelConfig, error) {
-	if strings.TrimSpace(name) == "" {
-		m := r.DefaultModel(provider)
-		if m.RequestModel != "" {
-			m.Name = m.RequestModel
-		}
-		return m, nil
-	}
-	matches := r.matchModels(provider, name)
-	if len(matches) > 1 {
-		return ModelConfig{}, fmt.Errorf("model %q is ambiguous; select a provider explicitly", name)
-	}
-	if len(matches) == 0 {
-		return UnknownModelDefaults(name), nil
-	}
-	m := cloneModel(matches[0])
-	if m.RequestModel != "" {
-		m.Name = m.RequestModel
-	} else if !matchesAlias(m, name) {
-		m.Name = name
-	}
-	return m, nil
-}
-
-func (r *Registry) validateAliases() error {
-	canonical := map[string][]string{}
-	aliases := map[string]string{}
-	for _, m := range r.models {
-		key := m.Provider + "/" + normalizeAlias(m.Name)
-		canonical[key] = append(canonical[key], m.Name)
-	}
-	for _, m := range r.models {
-		if m.ExactMatch {
-			continue
-		}
-		for _, alias := range m.Aliases {
-			if normalizeAlias(alias) == "" {
-				return fmt.Errorf("model %q: alias cannot be empty", m.Name)
-			}
-			key := m.Provider + "/" + normalizeAlias(alias)
-			for _, name := range canonical[key] {
-				if name != m.Name {
-					return fmt.Errorf("provider %q: alias %q conflicts with model %q", m.Provider, alias, name)
-				}
-			}
-			if old, ok := aliases[key]; ok && old != m.Name {
-				return fmt.Errorf("provider %q: alias %q conflicts with model %q", m.Provider, alias, old)
-			}
-			aliases[key] = m.Name
-		}
-	}
-	return nil
+// DefaultModel returns the default model.
+func DefaultModel() ModelConfig {
+	modelsMu.RLock()
+	defer modelsMu.RUnlock()
+	return defaultModels[0]
 }
 
 // UnknownModelDefaults returns conservative defaults for a model not in the
@@ -239,5 +188,18 @@ func UnknownModelDefaults(name string) ModelConfig {
 		Temperature:              0.0,
 		Encoding:                 "cl100k_base",
 		SupportsStructuredOutput: false,
+	}
+}
+
+// isKimiAlias tolerates case and common separators but deliberately does not
+// map unknown versions or arbitrary names containing "kimi" to this deployment.
+func isKimiAlias(name string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(name))
+	normalized = strings.NewReplacer("-", "", "_", "", ".", "", " ", "").Replace(normalized)
+	switch normalized {
+	case "kimi", "kimik2", "kimik26":
+		return true
+	default:
+		return false
 	}
 }

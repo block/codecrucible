@@ -84,7 +84,7 @@ func TestCerebrasListModels(t *testing.T) {
 		fmt.Fprint(w, `{"data":[{"id":"custom-glm","owned_by":"Cerebras"}]}`)
 	}))
 	defer server.Close()
-	p, _ := config.BuiltinRegistry().Provider("cerebras")
+	p, _ := config.LookupProvider("cerebras")
 	rows, err := listProvider(context.Background(), &config.Config{CerebrasAPIKey: "test-key"}, p, server.URL)
 	if err != nil {
 		t.Fatal(err)

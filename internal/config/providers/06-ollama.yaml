@@ -1,4 +1,3 @@
-schema_version: 1
 name: ollama
 protocol: openai-chat
 base_url: http://localhost:11434

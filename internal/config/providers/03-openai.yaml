@@ -1,8 +1,6 @@
-schema_version: 1
 name: openai
 protocol: openai-chat
 base_url: https://api.openai.com
-auto_detect_priority: 20
 auth:
   type: bearer
   api_key_env: OPENAI_API_KEY
