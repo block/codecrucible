@@ -42,6 +42,7 @@ type Config struct {
 	RequestTimeout        int            `mapstructure:"request-timeout"` // seconds; 0 = client default
 
 	// Audit phase
+	SemanticDedup            string  `mapstructure:"semantic-dedup"`
 	SkipAudit                bool    `mapstructure:"skip-audit"`
 	AuditModel               string  `mapstructure:"audit-model"`
 	AuditConfidenceThreshold float64 `mapstructure:"audit-confidence-threshold"`
@@ -130,6 +131,9 @@ func Load(v *viper.Viper) (*Config, error) {
 		return nil, fmt.Errorf("registering models from config: %w", err)
 	}
 
+	if cfg.SemanticDedup != "" && cfg.SemanticDedup != "off" && cfg.SemanticDedup != "report" {
+		return nil, fmt.Errorf("semantic-dedup must be off or report")
+	}
 	return &cfg, nil
 }
 
@@ -163,6 +167,7 @@ func SetDefaults(v *viper.Viper) {
 	v.SetDefault("audit-model", "")
 	v.SetDefault("audit-confidence-threshold", 0.3)
 	v.SetDefault("audit-batch-size", 25)
+	v.SetDefault("semantic-dedup", "report")
 	v.SetDefault("context-budget-pct", 15)
 	v.SetDefault("context-sources-raw", []string{})
 }

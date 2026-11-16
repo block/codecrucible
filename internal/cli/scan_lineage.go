@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sync"
 
+	"github.com/block/codecrucible/internal/auditcore"
 	"github.com/block/codecrucible/internal/llm"
 	"github.com/block/codecrucible/internal/provenance"
 	"github.com/block/codecrucible/internal/sarif"
@@ -64,6 +64,10 @@ func checkpointAudit(l *provenance.Ledger, doc *sarif.SARIFDocument) error {
 			single := *doc
 			single.Runs = append([]sarif.SARIFRun{}, doc.Runs...)
 			single.Runs[0].Results = []sarif.SARIFResult{*r}
+			if r.Properties != nil {
+				single.ProducerID = r.Properties.OriginProducerID
+				single.ObservationOffset = r.Properties.OriginOrdinal
+			}
 			if err := l.Observe(fmt.Sprintf("audit-new/%d", i), &single); err != nil {
 				return err
 			}
@@ -76,34 +80,57 @@ func checkpointAudit(l *provenance.Ledger, doc *sarif.SARIFDocument) error {
 // lineageClient records each phase-level response before parsing/retrying it.
 // Transport retries with no model output remain the provider client's concern.
 type lineageClient struct {
-	base     llm.Client
-	ledger   *provenance.Ledger
-	phase    string
-	mu       sync.Mutex
-	attempts map[string]int
+	base   llm.Client
+	ledger *provenance.Ledger
+	phase  string
 }
 
 func traceClient(base llm.Client, ledger *provenance.Ledger, phase string) llm.Client {
-	return &lineageClient{base: base, ledger: ledger, phase: phase, attempts: map[string]int{}}
+	return &lineageClient{base: base, ledger: ledger, phase: phase}
+}
+func clientLedger(client llm.Client) *provenance.Ledger {
+	for {
+		switch c := client.(type) {
+		case *lineageClient:
+			return c.ledger
+		case *recordingClient:
+			client = c.next
+		default:
+			return nil
+		}
+	}
 }
 func (c *lineageClient) ChatCompletion(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
-	c.mu.Lock()
-	c.attempts[req.Label]++
-	attempt := c.attempts[req.Label]
-	c.mu.Unlock()
-	response, err := c.base.ChatCompletion(ctx, req)
 	prompt, _ := json.Marshal(req.Messages)
 	schema, _ := json.Marshal(req.ResponseSchema)
-	e := provenance.Exchange{Label: req.Label, Model: llm.RequestModel(req), PromptFingerprint: fingerprint(prompt), SchemaFingerprint: fingerprint(schema), Failed: err != nil}
+	p, err := c.ledger.BeginRequest(c.phase, req.Label, auditcore.Producer{RequestedModel: llm.RequestModel(req), PromptFingerprint: fingerprint(prompt), SchemaFingerprint: fingerprint(schema), SourceBundleFingerprint: req.SourceBundleFingerprint, Repairs: req.Repairs})
+	if err != nil {
+		return nil, err
+	}
+	response, err := c.base.ChatCompletion(ctx, req)
+	e := provenance.Exchange{Label: req.Label, Model: p.RequestedModel, PromptFingerprint: p.PromptFingerprint, SchemaFingerprint: p.SchemaFingerprint, Failed: err != nil}
 	if response != nil {
 		e.Content = response.Content
 		e.FinishReason = response.FinishReason
 		if response.Model != "" {
 			e.Model = response.Model
 		}
+	} else {
+		response = &llm.ChatResponse{}
 	}
-	if writeErr := c.ledger.ModelResponse(fmt.Sprintf("request/%s/%s/%d", c.phase, req.Label, attempt), e); writeErr != nil {
-		return nil, writeErr
+	response.ProducerID = p.ResponseID
+	if writeErr := c.ledger.CompleteRequest(p, e); writeErr != nil {
+		return response, writeErr
 	}
 	return response, err
+}
+func parsedProducer(client llm.Client, response *llm.ChatResponse, content string) (string, error) {
+	if response == nil {
+		return "", nil
+	}
+	id := response.ProducerID
+	if l := clientLedger(client); l != nil && id != "" && content != response.Content {
+		return l.Transform(id, "local-json-repair", content)
+	}
+	return id, nil
 }

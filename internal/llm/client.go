@@ -28,6 +28,8 @@ type Message struct {
 
 // ChatRequest holds the parameters for a chat completion call.
 type ChatRequest struct {
+	SourceBundleFingerprint string `json:"-"`
+	Repairs                 string `json:"-"`
 	// Label is a caller-supplied tag for log correlation (e.g. "chunk 3/9",
 	// "feature-detection"). Carried into every log line inside the retry
 	// loop so concurrent requests can be distinguished.
@@ -47,6 +49,7 @@ type ChatRequest struct {
 
 // ChatResponse holds the result of a chat completion call.
 type ChatResponse struct {
+	ProducerID   string     `json:"-"`
 	Content      string     `json:"content"`       // Raw response content.
 	Usage        TokenUsage `json:"usage"`         // Input/output token counts.
 	FinishReason string     `json:"finish_reason"` // "stop", "length", "content_filter", etc.

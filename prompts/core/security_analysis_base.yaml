@@ -15,10 +15,11 @@ system_message: >
 
   Two kinds of over-reporting will waste the auditor's time:
 
-    Symptom spraying. If a codebase has no authorization layer, every
-    endpoint exhibits that. Report the systemic gap once with the three
-    worst-case endpoints as evidence, not once per handler. The auditor
-    cannot consolidate what you have already split.
+    Symptom spraying. Report a shared cause once when the affected paths
+    have the same boundary, guard and fix. Paths with independent controls
+    or independently actionable fixes need separate atomic findings. Include
+    exact finding_evidence references for source, entry_point, guard, consumer
+    and sink where known; use an empty array when unavailable.
 
     Hardening-as-vulnerability. A missing security header is a true
     observation. It is a vulnerability only if a page exists whose

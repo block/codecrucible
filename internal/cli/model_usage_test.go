@@ -122,7 +122,14 @@ func TestPhaseFallbackRecordsUsageAndLineageOnce(t *testing.T) {
 		if err := dec.Decode(&event); err != nil {
 			t.Fatal(err)
 		}
-		if seen[event.ID] || event.Type != "model_response" || event.Exchange.Model != "deployment" {
+		if seen[event.ID] {
+			t.Fatalf("duplicate lineage record: %+v", event)
+		}
+		seen[event.ID] = true
+		if event.Type == "model_request" || event.Type == "request" {
+			continue
+		}
+		if event.Type != "model_response" || event.Exchange.Model != "deployment" {
 			t.Fatalf("incorrect lineage record: %+v", event)
 		}
 		seen[event.ID] = true
