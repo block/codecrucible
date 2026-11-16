@@ -990,7 +990,22 @@ behavior. Explicit supplementary context can support an assumption, but cannot
 become a source location.
 
 V3 retries invalid claims individually and permits one bounded local-context
-expansion. Its context artifacts record included ranges and omissions. Grouped
+expansion. Its context artifacts record included ranges and omissions. A claim
+left unverified may name the context that would decide it in `context_requests`:
+at most eight entries, each an exact admitted file with either an unqualified
+declaration name or an inclusive line range of at most 120 lines. Requests
+resolve against the shared source index and are answered in that one retry
+round only; requests in the retry are ignored. A declaration that is missing,
+defined more than once in its file, or outside the scanned files, and an
+out-of-bounds range, are not guessed: each is recorded as an omission
+(`symbol_not_found`, `ambiguous_symbol`, `outside_scope`, `invalid_range` or
+`invalid_request`, plus `request_limit` past eight) and reported to the model.
+Requested source competes for the same token budget as other context, and one
+that does not fit is recorded as `budget_exhausted`. The bundle artifact lists each
+request with its status (`included` or the reason it was not). A declaration
+longer than 120 lines is cut there and labelled as truncated. Requests only add
+context to cite; they never read outside the scanned files or change a
+verdict by themselves. Other contracts do not accept them. Grouped
 claims can produce separately audited children with stable IDs and `split_from`
 lineage. An unresolved remainder remains visible unless the child records retain
 all original material. A validly rejected parent stays rejected even when it
@@ -1081,6 +1096,12 @@ A v3 audit lists the caller notes among the `Context omissions` of its context
 bundle, so they are recorded in the bundle artifact and its fingerprint. It
 records budget shortfalls as `budget_exhausted` omissions instead of the two
 budget notes.
+
+When a legacy audit retries claims whose verdicts were missing or invalid, the
+retry prompt ends with the reason (for example, which of `original_issue`,
+`file_path` or `start_line` differed from the claim) and restates the pending
+claims' identity fields. That text is passed as JSON data, capped in length, and
+counted against the context budget.
 
 Retrieval is deterministic. Language adapters supply syntax and name lookup;
 the shared engine controls traversal limits, ranking, excerpt coverage and the

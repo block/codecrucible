@@ -148,7 +148,12 @@ included evidence and omissions (`unresolved_import`, `ambiguous_symbol`,
 must not strand other valid evidence. An omitted import is not proof of an
 absent guard. Before accepting “not supplied” as a reason to narrow or reject,
 run the single targeted retrieval round and preserve the unresolved crux if it
-still cannot be satisfied.
+still cannot be satisfied. The model may name that context with
+`context_requests` (`internal/auditctx/requests.go`): exact admitted file plus an
+unqualified declaration or a range of at most 120 lines, at most eight per round.
+Unresolvable requests (`symbol_not_found`, `ambiguous_symbol`, `outside_scope`,
+`invalid_range`, `invalid_request`, `request_limit`) are recorded as omissions,
+and requests that lose the token budget as `budget_exhausted`.
 
 Framework behavior is a separate assumption record: library/runtime identity,
 version or version range, asserted behavior, source of that behavior, and

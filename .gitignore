@@ -31,6 +31,13 @@ __pycache__/
 # Build artifacts
 dist/
 
+# Scan artifacts written to the repository root (output sidecars)
+/*.sarif
+/*.feature-detection.json
+/feature-detection.json
+/*.lineage.jsonl
+/lineage.jsonl
+
 # GEPA / experiment artifacts
 scripts/
 output/
