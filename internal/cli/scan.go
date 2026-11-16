@@ -448,10 +448,11 @@ func runScan(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("loading prompts: %w", err)
 	}
-	schema := llm.SecurityAnalysisSchema()
-	if ap, err := promptLoader.LoadAuditPrompt(); err == nil && ap.Contract == "v3" {
-		schema = llm.SecurityAnalysisSchemaV3()
+	contract := ""
+	if ap, err := promptLoader.LoadAuditPrompt(); err == nil {
+		contract = ap.Contract
 	}
+	schema, _ := contractSchemas(contract)
 	outputMode := llm.OutputModeForConfig(modelCfg)
 	repoName := filepath.Base(repoRoot)
 

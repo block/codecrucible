@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -102,6 +103,20 @@ func (e scanCostEstimate) writeSummary(w io.Writer) {
 	fmt.Fprintln(w, "  Excludes separate feature detection, context compression, retries and repeated audit batches.")
 }
 
+// contractSchemas returns the analysis and audit output schemas a scan sends
+// for an audit prompt contract. runScan and runAuditPhase select the same
+// schemas, so cost planning measures what the scan will actually send.
+func contractSchemas(contract string) (analysis, audit *json.RawMessage) {
+	switch contract {
+	case "v3":
+		return llm.SecurityAnalysisSchemaV3(), llm.AuditSchemaV3()
+	case "v2":
+		return llm.SecurityAnalysisSchema(), llm.AuditSchemaV2()
+	default:
+		return llm.SecurityAnalysisSchema(), llm.AuditSchema()
+	}
+}
+
 // scanCostPlan records a provider-free scenario, not a prediction of findings.
 type scanCostPlan struct {
 	Chunks, SourceBudget, AuditBatches, BatchSize int
@@ -111,7 +126,11 @@ type scanCostPlan struct {
 func planScanCost(flat ingest.FlattenResult, cfg *config.Config, loader *llm.PromptLoader, repoName string, counter *chunk.TokenCounter, opts *chunk.ChunkOptions) (scanCostEstimate, error) {
 	analysis, audit := cfg.Phases.Analysis.ModelCfg, cfg.Phases.Audit.ModelCfg
 	e := scanCostEstimate{auditEnabled: !cfg.SkipAudit, auditModel: audit.Name, plan: &scanCostPlan{BatchSize: cfg.AuditBatchSize}}
-	schema := llm.SecurityAnalysisSchema()
+	contract := ""
+	if ap, err := loader.LoadAuditPrompt(); err == nil {
+		contract = ap.Contract
+	}
+	schema, auditSchema := contractSchemas(contract)
 	msgs, err := loader.AssembleMessages(llm.PromptParams{RepoName: repoName, Schema: string(*schema), ChunkTotal: 1, CustomRequirements: cfg.CustomRequirements})
 	if err != nil {
 		return e, fmt.Errorf("planning analysis prompt: %w", err)
@@ -161,14 +180,8 @@ func planScanCost(flat ingest.FlattenResult, cfg *config.Config, loader *llm.Pro
 			batches = (len(flat.FileMap) + cfg.AuditBatchSize - 1) / cfg.AuditBatchSize
 		}
 		e.plan.AuditBatches = batches
-		auditSchema := llm.AuditSchema()
-		ap, loadErr := loader.LoadAuditPrompt()
-		if loadErr != nil {
+		if _, loadErr := loader.LoadAuditPrompt(); loadErr != nil {
 			return e, fmt.Errorf("planning audit prompt: %w", loadErr)
-		}
-		// Match runAuditPhase: only the v2 contract selects the v2 schema.
-		if ap.Contract == "v2" {
-			auditSchema = llm.AuditSchemaV2()
 		}
 		auditMsgs, auditErr := loader.AssembleAuditMessages(llm.AuditParams{RepoName: repoName, FindingsJSON: "[]", Schema: string(*auditSchema), ProductionOnly: !cfg.IncludeTests})
 		if auditErr != nil {
