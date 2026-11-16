@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/block/codecrucible/internal/config"
 	"github.com/block/codecrucible/internal/llm"
+	"github.com/block/codecrucible/internal/provenance"
 	"github.com/block/codecrucible/internal/sarif"
 )
 
@@ -84,6 +86,57 @@ func TestModelUsageTalliesByPhaseAndModel(t *testing.T) {
 		t.Fatal("nil usage must not wrap")
 	}
 	nilUsage.apply(m)
+}
+
+func TestPhaseFallbackRecordsUsageAndLineageOnce(t *testing.T) {
+	var events bytes.Buffer
+	usage := newModelUsage()
+	usage.lineage = provenance.New("run", &events)
+	model := config.ModelConfig{InputPricePerM: 2}
+	calls := 0
+	base := auditClientFunc(func(context.Context, llm.ChatRequest) (*llm.ChatResponse, error) {
+		calls++
+		return &llm.ChatResponse{Content: "{}", Usage: llm.TokenUsage{PromptTokens: 10}}, nil
+	})
+	analysis := usage.wrap("analysis", base, model)
+	req := llm.ChatRequest{Label: "same label", Model: "alias", ModelParams: map[string]any{"model": "deployment"}}
+	for _, phase := range []string{"analysis", "feature-detection", "audit", "context-compress"} {
+		client := usage.wrap(phase, analysis, model)
+		n := 1
+		if phase == "audit" {
+			n = 2
+		}
+		for range n {
+			if _, err := client.ChatCompletion(context.Background(), req); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	m := newScanMetadata(&config.Config{})
+	usage.apply(m)
+	seen := map[string]bool{}
+	count := 0
+	dec := json.NewDecoder(&events)
+	for dec.More() {
+		var event provenance.Event
+		if err := dec.Decode(&event); err != nil {
+			t.Fatal(err)
+		}
+		if seen[event.ID] || event.Type != "model_response" || event.Exchange.Model != "deployment" {
+			t.Fatalf("incorrect lineage record: %+v", event)
+		}
+		seen[event.ID] = true
+		count++
+	}
+	if calls != 5 || count != calls {
+		t.Fatalf("transport calls=%d lineage records=%d", calls, count)
+	}
+	for phase, want := range map[string]int{"analysis": 1, "feature-detection": 1, "audit": 2, "context-compress": 1} {
+		got := m.Execution.Phases[phase].Models
+		if len(got) != 1 || got[0].Calls != want || got[0].PromptTokens != 10*want {
+			t.Fatalf("%s usage: %+v", phase, got)
+		}
+	}
 }
 
 func TestScanMetadataRecordsModelsSent(t *testing.T) {

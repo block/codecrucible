@@ -17,25 +17,13 @@ import (
 	"github.com/block/codecrucible/internal/ingest"
 	"github.com/block/codecrucible/internal/llm"
 	"github.com/block/codecrucible/internal/sarif"
+	"github.com/block/codecrucible/internal/sourceindex"
 )
 
 // The v2 audit asks the model evidentiary questions about each claim and
 // computes the verdict in code (auditVerdictV2). Claims are matched by
 // finding_id, quotes are checked against the scanned source, and a batch that
 // covers only some claims keeps those assessments.
-
-// auditClaimV2 is an analysis finding presented to the v2 audit as a claim.
-type auditClaimV2 struct {
-	FindingID               string                `json:"finding_id"`
-	Issue                   string                `json:"issue"`
-	FilePath                string                `json:"file_path"`
-	StartLine               int                   `json:"start_line"`
-	EndLine                 int                   `json:"end_line"`
-	UnverifiedExploitSketch string                `json:"unverified_exploit_sketch"`
-	Severity                float64               `json:"severity"`
-	CWEID                   string                `json:"cwe_id"`
-	CodeFlows               []sarif.SARIFCodeFlow `json:"code_flows,omitempty"`
-}
 
 // auditResponseV2 is the structured output of one v2 audit call.
 type auditResponseV2 struct {
@@ -98,8 +86,9 @@ type auditV2Run struct {
 	counter        *chunk.TokenCounter
 	metadata       *sarif.ScanMetadata
 	// claims are all of the scan's claims, so each batch can list the rest.
-	claims []auditClaimV2
+	claims []auditClaim
 	index  *auditctx.Index
+	source *sourceindex.Index
 }
 
 // auditRetrievalBudget caps the tokens of retrieved context per batch, on
@@ -107,9 +96,14 @@ type auditV2Run struct {
 const auditRetrievalBudget = 24000
 
 func (r *auditV2Run) run(ctx context.Context, doc sarif.SARIFDocument, batchSize int) (*sarif.SARIFDocument, llm.TokenUsage, float64, error) {
-	claims := auditClaimsV2(doc)
+	claims := auditClaims(doc)
 	r.claims = claims
-	r.index = auditctx.NewIndex(r.fileMap)
+	if r.source == nil {
+		r.source = sourceindex.New(r.fileMap)
+	}
+	if r.index == nil {
+		r.index = auditctx.NewRetriever(r.source)
+	}
 	if batchSize <= 0 || batchSize >= len(claims) {
 		batchSize = len(claims)
 	}
@@ -177,7 +171,7 @@ func (r *auditV2Run) run(ctx context.Context, doc sarif.SARIFDocument, batchSize
 // re-sent once on their own; assessments already received are kept, so one
 // bad entry no longer costs the whole batch. The error is set only when no
 // claim could be assessed.
-func (r *auditV2Run) batch(ctx context.Context, claims []auditClaimV2, label string) (map[string]auditAssessmentV2, []string, llm.TokenUsage, float64, error) {
+func (r *auditV2Run) batch(ctx context.Context, claims []auditClaim, label string) (map[string]auditAssessmentV2, []string, llm.TokenUsage, float64, error) {
 	got := make(map[string]auditAssessmentV2, len(claims))
 	var leads []string
 	var usage llm.TokenUsage
@@ -206,7 +200,7 @@ func (r *auditV2Run) batch(ctx context.Context, claims []auditClaimV2, label str
 		}
 		leads = append(leads, parsed.Leads...)
 		lastErr = acceptAssessments(got, pending, parsed.Assessments, label)
-		var rest []auditClaimV2
+		var rest []auditClaim
 		for _, c := range pending {
 			if _, ok := got[c.FindingID]; !ok {
 				rest = append(rest, c)
@@ -225,7 +219,7 @@ func (r *auditV2Run) batch(ctx context.Context, claims []auditClaimV2, label str
 	return got, leads, usage, cost, nil
 }
 
-func (r *auditV2Run) call(ctx context.Context, claims []auditClaimV2, label string) (*llm.ChatResponse, error) {
+func (r *auditV2Run) call(ctx context.Context, claims []auditClaim, label string) (*llm.ChatResponse, error) {
 	var cweIDs []string
 	files := make(map[string]bool)
 	for _, c := range claims {
@@ -254,12 +248,15 @@ func (r *auditV2Run) call(ctx context.Context, claims []auditClaimV2, label stri
 	sort.Strings(paths)
 	var codeCtx strings.Builder
 	for _, p := range paths {
-		if content, ok := r.fileMap[p]; ok {
+		if content, ok := r.source.Content(p); ok {
 			fmt.Fprintf(&codeCtx, "<file path=\"%s\">\n%s</file>\n\n", p, numberedSource(content))
 		}
 	}
-	retrieved, excerpts := r.retrieve(claims, files)
+	cited, _ := citedAuditContext(r.index, r.source, claims, files, r.counter)
+	codeCtx.WriteString(cited)
+	retrieved, excerpts := r.retrieve(claims, files, auditRetrievalBudget-r.counter.Count(cited))
 	codeCtx.WriteString(retrieved)
+	recordSourceBundle(r.metadata, "audit", label, codeCtx.String())
 
 	schema := llm.AuditSchemaV2()
 	messages, err := r.promptLoader.AssembleAuditMessages(llm.AuditParams{
@@ -305,13 +302,22 @@ func (r *auditV2Run) call(ctx context.Context, claims []auditClaimV2, label stri
 // retrieve renders context the claims' own files lack. Excerpts are taken
 // round-robin across claims, so each claim gets its most useful context
 // before any claim gets its next.
-func (r *auditV2Run) retrieve(claims []auditClaimV2, sent map[string]bool) (string, int) {
-	if r.index == nil {
+func (r *auditV2Run) retrieve(claims []auditClaim, sent map[string]bool, budgets ...int) (string, int) {
+	locations := make([]auditctx.Claim, len(claims))
+	for i, c := range claims {
+		locations[i] = auditctx.Claim{File: c.FilePath, Start: c.StartLine, End: c.EndLine}
+	}
+	return retrieveAuditContext(r.index, locations, sent, r.counter, budgets...)
+}
+
+// retrieveAuditContext shares the same extraction and ordering for both audit contracts.
+func retrieveAuditContext(index *auditctx.Index, claims []auditctx.Claim, sent map[string]bool, counter *chunk.TokenCounter, budgets ...int) (string, int) {
+	if index == nil {
 		return "", 0
 	}
 	perClaim := make([][]auditctx.Excerpt, len(claims))
 	for i, c := range claims {
-		perClaim[i] = r.index.Retrieve(auditctx.Claim{File: c.FilePath, Start: c.StartLine, End: c.EndLine}, sent)
+		perClaim[i] = index.Retrieve(c, sent)
 	}
 	var ordered []auditctx.Excerpt
 	for depth := 0; ; depth++ {
@@ -326,11 +332,15 @@ func (r *auditV2Run) retrieve(claims []auditClaimV2, sent map[string]bool) (stri
 			break
 		}
 	}
-	return auditctx.Render(r.index, ordered, auditRetrievalBudget, r.counter.Count)
+	budget := auditRetrievalBudget
+	if len(budgets) > 0 {
+		budget = max(0, budgets[0])
+	}
+	return auditctx.Render(index, ordered, budget, counter.Count)
 }
 
 // otherClaims lists the claims outside batch, one line each.
-func otherClaims(all, batch []auditClaimV2) string {
+func otherClaims(all, batch []auditClaim) string {
 	in := make(map[string]bool, len(batch))
 	for _, c := range batch {
 		in[c.FindingID] = true
@@ -345,75 +355,6 @@ func otherClaims(all, batch []auditClaimV2) string {
 		return "(none)"
 	}
 	return strings.TrimRight(b.String(), "\n")
-}
-
-// auditClaimsV2 presents each result as a claim keyed by its finding ID.
-func auditClaimsV2(doc sarif.SARIFDocument) []auditClaimV2 {
-	run := doc.Runs[0]
-	rules := make(map[string]sarif.SARIFRule, len(run.Tool.Driver.Rules))
-	for _, rule := range run.Tool.Driver.Rules {
-		rules[rule.ID] = rule
-	}
-	ids := auditFindingIDs(run.Results)
-	claims := make([]auditClaimV2, len(run.Results))
-	for i, result := range run.Results {
-		rule := rules[result.RuleID]
-		c := auditClaimV2{
-			FindingID:               ids[i],
-			Issue:                   rule.ShortDescription.Text,
-			UnverifiedExploitSketch: result.Message.Text,
-			Severity:                sarif.ResultSeverity(result, rule),
-			CWEID:                   sarif.ResultCWE(result, rule),
-			CodeFlows:               result.CodeFlows,
-		}
-		if len(result.Locations) > 0 {
-			loc := result.Locations[0].PhysicalLocation
-			c.FilePath = loc.ArtifactLocation.URI
-			if loc.Region != nil {
-				c.StartLine, c.EndLine = loc.Region.StartLine, loc.Region.EndLine
-			}
-		}
-		if result.Properties != nil && result.Properties.TechnicalDetails != "" {
-			c.UnverifiedExploitSketch = result.Properties.TechnicalDetails
-		}
-		claims[i] = c
-	}
-	return claims
-}
-
-// auditFindingIDs returns a unique ID per result: its finding ID, or a
-// positional one when IDs were not assigned.
-func auditFindingIDs(results []sarif.SARIFResult) []string {
-	ids := make([]string, len(results))
-	seen := make(map[string]bool, len(results))
-	for i, r := range results {
-		id := ""
-		if r.Properties != nil {
-			id = r.Properties.FindingID
-		}
-		if id == "" || seen[id] {
-			id = fmt.Sprintf("result-%d", i+1)
-		}
-		seen[id] = true
-		ids[i] = id
-	}
-	return ids
-}
-
-// numberedSource prefixes each line with its 1-based number, the form audit
-// evidence cites.
-func numberedSource(content string) string {
-	var out strings.Builder
-	for i, line := range strings.SplitAfter(content, "\n") {
-		if line == "" {
-			break
-		}
-		fmt.Fprintf(&out, "%d| %s", i+1, line)
-		if !strings.HasSuffix(line, "\n") {
-			out.WriteByte('\n')
-		}
-	}
-	return out.String()
 }
 
 func parseAuditResponseV2(content, finishReason string) (auditResponseV2, error) {
@@ -437,7 +378,7 @@ func parseAuditResponseV2(content, finishReason string) (auditResponseV2, error)
 
 // acceptAssessments adds the valid assessments of pending claims to got and
 // describes the first problem with the rest.
-func acceptAssessments(got map[string]auditAssessmentV2, pending []auditClaimV2, assessments []auditAssessmentV2, label string) error {
+func acceptAssessments(got map[string]auditAssessmentV2, pending []auditClaim, assessments []auditAssessmentV2, label string) error {
 	want := make(map[string]bool, len(pending))
 	for _, c := range pending {
 		want[c.FindingID] = true

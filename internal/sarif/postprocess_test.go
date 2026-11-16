@@ -67,6 +67,8 @@ func makeResult(ruleID, fileURI string, startLine int, level string) SARIFResult
 func TestDedup_SameFileSameLineSameCWE_KeepsHighestSeverity(t *testing.T) {
 	ruleA := makeRule("rule-low", "3.0", "cwe-89")
 	ruleB := makeRule("rule-high", "9.0", "cwe-89")
+	ruleA.ShortDescription.Text = "Same claim"
+	ruleB.ShortDescription.Text = "Same claim"
 
 	results := []SARIFResult{
 		makeResult("rule-low", "src/app.go", 10, "note"),
@@ -266,5 +268,19 @@ func TestCweForRule(t *testing.T) {
 				t.Errorf("CWEForRule() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestDedupPreservesDifferentClaimsAtSameAnchor(t *testing.T) {
+	rule := makeRule("query", "8", "cwe-89")
+	a := makeResult("query", "a.go", 1, "error")
+	b := a
+	b.Message.Text = "Different attacker and data flow"
+	doc := testDoc([]SARIFRule{rule}, []SARIFResult{a, b}, nil)
+	if got := PostProcess(doc); len(got.Runs[0].Results) != 2 {
+		t.Fatal("different claims discarded")
+	}
+	if got := Merge([]SARIFDocument{testDoc([]SARIFRule{rule}, []SARIFResult{a}, nil), testDoc([]SARIFRule{rule}, []SARIFResult{b}, nil)}); len(got.Runs[0].Results) != 2 {
+		t.Fatal("merge discarded different evidence")
 	}
 }

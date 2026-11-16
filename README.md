@@ -76,9 +76,26 @@ export GOOGLE_API_KEY=your-google-key
 
 When `--output results.sarif` writes to a file, CodeCrucible also writes
 phase artifacts beside it: `results.feature-detection.json`,
-`results.analysis.sarif`, and `results.audit.sarif` (when audit runs). Use
+`results.analysis.sarif`, `results.audit.sarif` (when audit runs), and
+`results.lineage.jsonl`. Use
 `--phase-output-dir DIR` to choose an explicit artifact directory, including
 for stdout workflows.
+
+The versioned lineage file records model responses, immutable observations before
+merge/filtering, subsequent finding revisions and each observation's final
+disposition. SARIF results link to it through `properties.provenance`; existing
+finding IDs and partial fingerprints remain the correlation keys. A shared
+location and CWE no longer suffice to discard different evidence. Original
+observations remain available even when the final result is suppressed or its
+evidence is refined. A missing `run-complete` event indicates an interrupted run.
+Lineage contains source excerpts and model output, like the other phase artifacts;
+request headers and API credentials are not recorded. It is written incrementally
+with owner-only permissions. No lineage file is written for stdout-only scans
+without an artifact directory.
+
+The current ledger records derivation and merge relationships. Explicit child
+claim splitting and semantic duplicate relationships remain separate audit-policy
+work; a recorded model verdict is not proof of exploitability.
 
 To compare audit prompts or models without analysis variance, replay the audit
 on saved findings: `codecrucible scan REPO --audit-from results.analysis.sarif`.
@@ -724,6 +741,52 @@ constraints (`noForcedToolChoice`, `dropTemperature`) reset at phase
 boundaries; at most one extra 400→retry per phase when the model rejects
 a feature.
 
+### Source ingestion and context
+
+After walking and filtering the repository, CodeCrucible builds one immutable
+index of the admitted source. Feature sampling, dependency-aware chunking,
+cross-chunk declaration summaries, and both audit contracts reuse that index.
+The scanner needs source files, not a successful build: it does not install
+dependencies, invoke a compiler, or fetch missing imports. Unknown languages
+retain their original source and lexical context. A failed Go parse falls back
+to lexical extraction without inventing argument bindings.
+
+Dependency grouping follows imports only when they resolve to admitted local
+files. The current resolvers cover JavaScript/TypeScript relative imports,
+Python repository and relative modules, Go packages (including local `go.mod`
+roots), explicit Kotlin imports, and quoted C/C++ includes. External and
+vendored imports are skipped; missing and ambiguous candidates remain
+unresolved. Unsupported import forms use the existing directory grouping.
+Language-specific readers produce source facts, not security rules or verdicts.
+Relative JavaScript/TypeScript imports prefer an exact admitted file, then
+try source extensions and index files, including dotted basenames such as
+`./config.types`. Multiple inferred matches remain ambiguous.
+
+Small repositories keep the single-chunk path. Larger scans keep whole files
+together where the token budget permits, assign dependencies alongside their
+importers, and use short declaration summaries for dependencies in other
+chunks. Graph grouping is compared with directory grouping at the same budget.
+It is selected only when it improves chunk count, unique dependency-edge
+co-location, or duplicated bytes without worsening another measure; ties and
+tradeoffs keep directory grouping. Both candidates retain cross-chunk summaries
+and are checked against the rendered XML budget. These are packing measures,
+not evidence of better vulnerability detection.
+A few small, high-priority files can be shared. Files larger than a
+chunk budget remain in the coverage report and cause an incomplete-analysis
+warning; a manifest entry alone does not count as analyzed source.
+
+Audit can request additional numbered excerpts from the same indexed bytes,
+independent of the original analysis chunk. `--audit-from` builds a fresh index
+of the supplied checkout and keeps its existing drift checks and finding IDs.
+Supplementary context retains its separate loading, packing, and compression
+policy.
+
+The extractor interface allows richer parsers later. A new parser must first
+demonstrate useful local-import/declaration accuracy on incomplete source,
+lower context duplication or better evidence retrieval, and acceptable runtime
+and memory use. It must also preserve `CGO_ENABLED=0` builds and the documented
+single-binary/container constraints. No additional parser runtime is required.
+
 ### Project Structure
 
 ```
@@ -731,7 +794,9 @@ cmd/codecrucible/       CLI entry point
 internal/
   cli/                  Cobra commands (scan, list-models, init), pipeline orchestration
   config/               Viper config, model registry, per-phase resolution (phase.go)
-  ingest/               File walker, filter, XML flattener, import graph
+  ingest/               File walker, filter, XML flattener
+  sourceindex/          Shared source facts, local imports, declarations, fingerprints
+  auditctx/             Bounded audit context selection and rendering
   chunk/                Token counting (tiktoken), budget-aware chunking
   supctx/               Supplementary-context loaders, priority packing, LLM compression
   llm/                  HTTP client, prompt templates, JSON schema
@@ -780,6 +845,11 @@ with jitter and respect `Retry-After`. HTML 403 responses from intermediaries
 use the same policy; JSON/plain-text permission errors and HTTP 401 fail
 immediately. Cancellation stops retries. Audit additionally retries malformed,
 truncated, or incomplete verdict output once after attempting local JSON repair.
+Valid verdicts are retained, and only unassessed claims are retried. Both audit
+contracts match by `finding_id`, so a refined title or location cannot invalidate
+another finding's verdict. Older responses without IDs can match only an exact,
+unique original title/file/line key. Primary source and retrieved excerpts use
+the same original line numbering.
 Both generations count toward reported token usage and cost. Transport retry
 exhaustion does not start a second audit-level HTTP retry cycle.
 
@@ -836,7 +906,7 @@ evidence never rejects. A v2 audit has no confidence, so
 `--audit-confidence-threshold` does not apply. Findings are matched by
 `findingId`, and claims the response omits are retried once.
 
-Each v2 batch carries more than the files the findings cite. Up to about 24K
+Both audit contracts carry more than the files the findings cite. Up to about 24K
 tokens of excerpts are retrieved per batch, with real line numbers, so the
 auditor can check what decides a claim:
 
@@ -860,7 +930,7 @@ implicit receivers are not inferred. Comments and string contents cannot
 establish a parameter binding. Supplying an excerpt does not mark the rest of
 its file as supplied, so a helper elsewhere in that file can still be retrieved.
 
-Each batch also lists the scan's other findings, so the auditor
+Each v2 batch also lists the scan's other findings, so the auditor
 doesn't repeat them as leads. Notes the auditor
 makes about possible issues outside the findings are recorded as
 `execution.auditLeads` in the run metadata, not as findings.
@@ -886,6 +956,9 @@ Every SARIF run includes `properties.codecrucible` with `schemaVersion: 1`:
 | `recipe.controls` | Scope filters, test/document inclusion, file-size limit, compression, concurrency, cost limit, severity gate, phase toggles, audit confidence/batch size, and context budget |
 | `recipeFingerprint` | SHA-256 of the canonical JSON recipe (sorted object keys, preserved array order); excludes output paths, credentials, timestamps, and execution outcomes |
 | `execution` | Artifact stage, phase statuses and actual phase configurations, fallbacks, per-phase model calls, the models used, detected features, token correction, chunk/recovery counts, source loading/compression outcomes, and packed-context fingerprints/truncation |
+| `execution.sourceIndex` | Extractor version, fingerprints of admitted source bytes and the index, file/line counts, extraction modes, and import-resolution counts |
+| `execution.sourceBundles` | Fingerprints of the source context assembled for feature detection, analysis chunks/recovery, and audit batches |
+| `execution.sourceCoverage` | Admitted, planned, and successfully analyzed file counts; repeated files (including retries), and repo-relative lists of unplanned or unanalyzed files |
 
 Phase configuration reflects inheritance and overrides after configuration
 resolution. Model parameters are recorded separately from model-registry
@@ -907,7 +980,7 @@ defaults are not recorded.
 
 Analysis, audit, and final files have independent execution snapshots and the
 same recipe fingerprint. `pending` means a phase had not run at that snapshot;
-`skipped`, `completed`, and `failed` describe its outcome. Empty scans include
+`skipped`, `completed`, `incomplete`, and `failed` describe its outcome. Empty scans include
 metadata too, but do not fetch supplementary sources; prompt fingerprints are
 included when local templates are available. Failed or empty context sources
 have no content fingerprint, and a skipped audit has no audit artifact.
@@ -940,7 +1013,11 @@ diff -u before.recipe.json after.recipe.json
 
 Matching recipe fingerprints identify matching recorded settings and reference
 inputs, not identical source revisions or guaranteed identical model responses.
-Compare execution outcomes too, particularly partial failures and fallbacks.
+Compare `execution.sourceIndex.sourceFingerprint` for matching admitted source,
+the index version/fingerprint for matching extraction, and source-bundle
+fingerprints for matching assembled context. These hashes do not archive the
+source or guarantee identical model responses. Compare execution outcomes too,
+particularly coverage gaps, partial failures, and fallbacks.
 
 ## CI Integration
 

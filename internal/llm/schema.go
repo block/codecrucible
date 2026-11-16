@@ -183,9 +183,13 @@ const auditSchemaJSON = `{
         "description": "Audit verdicts for each initial finding",
         "items": {
           "type": "object",
-          "required": ["original_issue", "file_path", "start_line", "end_line", "verdict", "confidence", "refined_severity", "refined_technical_details", "refined_cwe_id", "justification", "blocking_code", "summary", "remediation", "code_path"],
+          "required": ["finding_id", "original_issue", "file_path", "start_line", "end_line", "verdict", "confidence", "refined_severity", "refined_technical_details", "refined_cwe_id", "justification", "blocking_code", "summary", "remediation", "code_path"],
           "additionalProperties": false,
           "properties": {
+            "finding_id": {
+              "type": "string",
+              "description": "The claim's finding_id, copied exactly. Copy the original title and location fields as well; revised locations belong in code_path."
+            },
             "original_issue": {
               "type": "string",
               "description": "The original issue title from the initial finding"

@@ -23,7 +23,7 @@ type Chunk struct {
 
 // ChunkOptions provides optional import-aware grouping hints.
 type ChunkOptions struct {
-	// ImportGraph maps file path → list of local imports (from ingest.ResolveImports).
+	// ImportGraph maps file path to resolved imports in the admitted source index.
 	ImportGraph map[string][]string
 	// ExportSummaries maps file path → short one-line summary of exports.
 	ExportSummaries map[string]string
@@ -118,7 +118,6 @@ func (c *defaultChunker) Chunk(input ingest.FlattenResult, budget int, opts *Chu
 	}
 
 	// Build fileEntry structs with cached token counts and priority scores.
-	entryMap := make(map[string]*fileEntry, len(allPaths))
 	entries := make([]*fileEntry, 0, len(allPaths))
 	for _, p := range allPaths {
 		content, ok := input.FileMap[p]
@@ -130,10 +129,10 @@ func (c *defaultChunker) Chunk(input ingest.FlattenResult, budget int, opts *Chu
 			path:     p,
 			content:  xml,
 			tokens:   c.counter.Count(xml),
-			imports:  opts.ImportGraph[p],
+			imports:  append([]string(nil), opts.ImportGraph[p]...),
 			priority: computePriority(p),
 		}
-		entryMap[p] = e
+		sort.Strings(e.imports)
 		entries = append(entries, e)
 	}
 
@@ -184,127 +183,46 @@ func (c *defaultChunker) Chunk(input ingest.FlattenResult, budget int, opts *Chu
 		sharedSet[sf.path] = true
 	}
 
-	hasImportGraph := len(opts.ImportGraph) > 0
-
-	// Group files into chunks.
-	assigned := make(map[string]bool)
-	var groups [][]*fileEntry
-
-	if hasImportGraph {
-		// Seed-and-grow: BFS through imports.
-		for _, seed := range entries {
-			if assigned[seed.path] || sharedSet[seed.path] {
-				continue
-			}
-			if seed.tokens > effectiveBudget-sharedTokenTotal {
-				c.logger.Warn("file exceeds chunk budget, skipping",
-					"path", seed.path,
-					"file_tokens", seed.tokens,
-					"budget", effectiveBudget,
-				)
-				assigned[seed.path] = true
-				continue
-			}
-
-			group := []*fileEntry{seed}
-			assigned[seed.path] = true
-			groupTokens := seed.tokens + sharedTokenTotal
-
-			// BFS through imports.
-			queue := make([]string, len(seed.imports))
-			copy(queue, seed.imports)
-			for len(queue) > 0 {
-				imp := queue[0]
-				queue = queue[1:]
-				if assigned[imp] || sharedSet[imp] {
-					continue
-				}
-				ie, ok := entryMap[imp]
-				if !ok {
-					continue
-				}
-				if groupTokens+ie.tokens > effectiveBudget {
-					continue
-				}
-				group = append(group, ie)
-				assigned[imp] = true
-				groupTokens += ie.tokens
-				queue = append(queue, ie.imports...)
-			}
-
-			// Fill remaining budget with directory-proximity files.
-			seedDir := filepath.Dir(seed.path)
-			for _, e := range entries {
-				if assigned[e.path] || sharedSet[e.path] {
-					continue
-				}
-				if filepath.Dir(e.path) != seedDir {
-					continue
-				}
-				if groupTokens+e.tokens > effectiveBudget {
-					continue
-				}
-				group = append(group, e)
-				assigned[e.path] = true
-				groupTokens += e.tokens
-			}
-
-			groups = append(groups, group)
+	// Both candidates use the same admitted files, shared files and budget.
+	// Reject oversized files once, so comparing strategies cannot change coverage.
+	packingBudget := effectiveBudget - sharedTokenTotal
+	// Per-file estimates do not capture the full wrapper, path listing, or
+	// changes in the token heuristic's content sample. Check rendered groups
+	// before scoring either candidate. Reserve the largest metadata width.
+	fits := func(group []*fileEntry) bool {
+		_, paths, filesXML := renderGroup(group, sharedFiles)
+		return c.counter.Count(buildChunkXMLWithFiles(len(entries), len(entries), paths, nil, filesXML)) <= budget
+	}
+	var packable []*fileEntry
+	for _, e := range entries {
+		if sharedSet[e.path] {
+			continue
 		}
-
-		// Pick up any remaining unassigned, non-shared files.
-		var remaining []*fileEntry
-		for _, e := range entries {
-			if !assigned[e.path] && !sharedSet[e.path] {
-				remaining = append(remaining, e)
-			}
+		if e.tokens > packingBudget || !fits([]*fileEntry{e}) {
+			c.logger.Warn("file exceeds chunk budget, skipping", "path", e.path, "file_tokens", e.tokens, "budget", packingBudget)
+			continue
 		}
-		if len(remaining) > 0 {
-			groups = append(groups, c.packGreedy(remaining, effectiveBudget-sharedTokenTotal)...)
+		packable = append(packable, e)
+	}
+	groups := fitGroups(c.directoryGroups(packable, packingBudget), fits)
+	if len(opts.ImportGraph) > 0 && len(packable) > 0 {
+		graphGroups := fitGroups(c.importGroups(packable, packingBudget), fits)
+		directoryScore := scorePacking(groups, sharedFiles)
+		graphScore := scorePacking(graphGroups, sharedFiles)
+		strategy := "directory"
+		if graphScore.betterThan(directoryScore) {
+			groups = graphGroups
+			strategy = "imports"
 		}
-	} else {
-		// No import graph: directory-proximity sort + greedy packing (original behaviour).
-		sort.Slice(entries, func(i, j int) bool {
-			di := filepath.Dir(entries[i].path)
-			dj := filepath.Dir(entries[j].path)
-			if di != dj {
-				return di < dj
-			}
-			return entries[i].path < entries[j].path
-		})
-
-		var packable []*fileEntry
-		for _, e := range entries {
-			if sharedSet[e.path] {
-				continue
-			}
-			if e.tokens > effectiveBudget-sharedTokenTotal {
-				c.logger.Warn("file exceeds chunk budget, skipping",
-					"path", e.path,
-					"file_tokens", e.tokens,
-					"budget", effectiveBudget,
-				)
-				continue
-			}
-			packable = append(packable, e)
-		}
-		groups = c.packGreedy(packable, effectiveBudget-sharedTokenTotal)
+		c.logger.Info("compared chunk grouping strategies", "selected", strategy,
+			"directory_chunks", directoryScore.chunks, "import_chunks", graphScore.chunks,
+			"directory_colocated_edges", directoryScore.colocatedEdges, "import_colocated_edges", graphScore.colocatedEdges,
+			"directory_duplicated_bytes", directoryScore.duplicatedBytes, "import_duplicated_bytes", graphScore.duplicatedBytes)
 	}
 
-	// Merge small groups to maximize context window utilization.
-	// After import-graph BFS or greedy grouping, some groups may be well under
-	// the budget. Combining them reduces the number of LLM calls and avoids
-	// duplicating prompt overhead per call.
-	if len(groups) > 1 {
-		preCount := len(groups)
-		mergeBudget := effectiveBudget - sharedTokenTotal
-		groups = c.mergeGroups(groups, mergeBudget)
-		if len(groups) < preCount {
-			c.logger.Info("merged chunks to maximize context utilization",
-				"before", preCount,
-				"after", len(groups),
-			)
-		}
+	// Shared files still need an analysis chunk when no ordinary group fits.
+	if len(groups) == 0 && len(sharedFiles) > 0 {
+		groups = append(groups, nil)
 	}
 
 	// If all files were skipped, return a single empty chunk.
@@ -319,46 +237,11 @@ func (c *defaultChunker) Chunk(input ingest.FlattenResult, budget int, opts *Chu
 		}}, nil
 	}
 
-	// Build a map of which chunk each file ended up in.
-	fileToChunk := make(map[string]int)
-	for i, group := range groups {
-		for _, e := range group {
-			fileToChunk[e.path] = i
-		}
-	}
-
 	// Build chunk XML documents.
 	total := len(groups)
 	chunks := make([]Chunk, total)
 	for i, group := range groups {
-		// Prepend shared files to each group (if they fit).
-		fullGroup := make([]*fileEntry, 0, len(sharedFiles)+len(group))
-		for _, sf := range sharedFiles {
-			// Don't duplicate if already in group.
-			already := false
-			for _, g := range group {
-				if g.path == sf.path {
-					already = true
-					break
-				}
-			}
-			if !already {
-				fullGroup = append(fullGroup, sf)
-			}
-		}
-		fullGroup = append(fullGroup, group...)
-
-		// Sort paths within chunk for deterministic output.
-		sort.Slice(fullGroup, func(a, b int) bool {
-			return fullGroup[a].path < fullGroup[b].path
-		})
-
-		paths := make([]string, len(fullGroup))
-		var filesXML strings.Builder
-		for j, e := range fullGroup {
-			paths[j] = e.path
-			filesXML.WriteString(e.content)
-		}
+		fullGroup, paths, filesXML := renderGroup(group, sharedFiles)
 
 		// Compute cross-chunk summaries.
 		var relatedSummaries []string
@@ -383,7 +266,7 @@ func (c *defaultChunker) Chunk(input ingest.FlattenResult, budget int, opts *Chu
 			}
 		}
 
-		xml := buildChunkXMLWithFiles(i, total, paths, nil, filesXML.String())
+		xml := buildChunkXMLWithFiles(i, total, paths, nil, filesXML)
 		chunks[i] = Chunk{
 			XML:              xml,
 			Index:            i,

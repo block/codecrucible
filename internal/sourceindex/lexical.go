@@ -1,4 +1,4 @@
-package auditctx
+package sourceindex
 
 import (
 	"regexp"
@@ -24,15 +24,8 @@ var (
 		"if": true, "for": true, "while": true, "switch": true, "catch": true, "return": true, "function": true,
 		"else": true, "do": true, "try": true, "with": true, "new": true, "typeof": true, "await": true,
 	}
-	// Names too common to identify one function.
-	genericNames = map[string]bool{
-		"main": true, "init": true, "handler": true, "handle": true, "New": true, "new": true, "get": true, "set": true,
-		"run": true, "Run": true, "ServeHTTP": true, "toString": true, "constructor": true, "index": true, "render": true,
-		"String": true, "Error": true, "close": true, "Close": true, "execute": true, "apply": true, "call": true,
-	}
-	callName  = regexp.MustCompile(`(?:([A-Za-z_$][\w$]*)\s*\.\s*)?([A-Za-z_$][\w$]*)\s*\(`)
-	typeName  = regexp.MustCompile(`\b(?:([A-Za-z_]\w*)\s*\.\s*)?([A-Z][A-Za-z0-9_]*)\b`)
-	stringLit = regexp.MustCompile("[\"'`]([\\w./-]+)[\"'`]")
+	callName = regexp.MustCompile(`(?:([A-Za-z_$][\w$]*)\s*\.\s*)?([A-Za-z_$][\w$]*)\s*\(`)
+	typeName = regexp.MustCompile(`\b(?:([A-Za-z_]\w*)\s*\.\s*)?([A-Z][A-Za-z0-9_]*)\b`)
 )
 
 func matchDef(line string) (Def, bool) {
@@ -61,7 +54,7 @@ func (lexicalAdapter) parse(file, text string) *sourceInfo {
 }
 
 func parseLexical(file, text string, declaration func(string) (Def, bool)) *sourceInfo {
-	s := &sourceInfo{adapter: lexicalAdapter{}, language: language(file),
+	s := &sourceInfo{mode: "lexical", adapter: lexicalAdapter{}, language: language(file),
 		// Unsupported languages retain lexical source handling. Applying one
 		// language's literal rules here would misread e.g. Rust lifetimes.
 		code: strings.Split(text, "\n")}

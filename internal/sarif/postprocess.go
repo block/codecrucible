@@ -47,7 +47,7 @@ func PostProcess(doc SARIFDocument) SARIFDocument {
 		ruleByID[rule.ID] = rule
 	}
 
-	// --- Step 1: Deduplicate results by (file URI, startLine, CWE) ---
+	// --- Step 1: Consolidate identical claims and evidence ---
 	run.Results = deduplicateResults(run.Results, ruleByID)
 
 	// --- Step 2: Remove low-severity non-source file findings ---
@@ -65,9 +65,12 @@ type dedupKey struct {
 	fileURI   string
 	startLine int
 	cwe       string
+	evidence  string
+	title     string
 }
 
-// deduplicateResults keeps only the highest-severity result per (file, startLine, CWE).
+// deduplicateResults consolidates identical claims and evidence, retaining the
+// highest severity. A shared file/line/CWE alone is not identity.
 func deduplicateResults(results []SARIFResult, ruleByID map[string]SARIFRule) []SARIFResult {
 	bestIndex := make(map[dedupKey]int) // key → index into deduped slice
 	var deduped []SARIFResult
@@ -83,13 +86,15 @@ func deduplicateResults(results []SARIFResult, ruleByID map[string]SARIFRule) []
 		}
 
 		cwe := ResultCWE(r, ruleByID[r.RuleID])
-		key := dedupKey{fileURI: fileURI, startLine: startLine, cwe: cwe}
+		key := dedupKey{fileURI: fileURI, startLine: startLine, cwe: cwe, evidence: evidenceKey(r), title: ruleByID[r.RuleID].ShortDescription.Text}
 
 		if idx, exists := bestIndex[key]; exists {
 			existingSev := ResultSeverity(deduped[idx], ruleByID[deduped[idx].RuleID])
 			newSev := ResultSeverity(r, ruleByID[r.RuleID])
 			if newSev > existingSev {
-				deduped[idx] = r
+				deduped[idx] = combineProvenance(r, deduped[idx])
+			} else {
+				deduped[idx] = combineProvenance(deduped[idx], r)
 			}
 		} else {
 			bestIndex[key] = len(deduped)

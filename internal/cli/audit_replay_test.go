@@ -141,6 +141,24 @@ func TestAuditReplayReusesAnalysisClaims(t *testing.T) {
 		}
 	}
 	meta := replayed.Runs[0].Properties.CodeCrucible
+	baselineExecution := baseline.Runs[0].Properties.CodeCrucible.Execution
+	if baselineExecution.SourceIndex == nil || meta.Execution.SourceIndex == nil ||
+		baselineExecution.SourceIndex.SourceFingerprint != meta.Execution.SourceIndex.SourceFingerprint ||
+		baselineExecution.SourceIndex.IndexFingerprint != meta.Execution.SourceIndex.IndexFingerprint {
+		t.Fatal("audit replay did not reproduce the source index")
+	}
+	if coverage := baselineExecution.SourceCoverage; coverage == nil || coverage.Admitted != 1 || coverage.Analyzed != 1 || len(coverage.Unanalyzed) != 0 {
+		t.Fatalf("baseline coverage not recorded: %+v", coverage)
+	}
+	var originalAuditFingerprint string
+	for _, bundle := range baselineExecution.SourceBundles {
+		if bundle.Phase == "audit" {
+			originalAuditFingerprint = bundle.Fingerprint
+		}
+	}
+	if len(meta.Execution.SourceBundles) != 1 || originalAuditFingerprint == "" || meta.Execution.SourceBundles[0].Fingerprint != originalAuditFingerprint {
+		t.Fatal("audit replay changed source bundle identity")
+	}
 	if meta.Recipe.AuditReplay == nil || meta.Recipe.AuditReplay.SHA256 == "" || meta.Recipe.AuditReplay.Findings != 2 || meta.Recipe.AuditReplay.ArtifactStage != "analysis" {
 		t.Fatalf("missing replay identity: %+v", meta.Recipe.AuditReplay)
 	}

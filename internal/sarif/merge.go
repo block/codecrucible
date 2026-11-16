@@ -3,7 +3,8 @@ package sarif
 import "strings"
 
 // Merge combines multiple SARIF documents (one per chunk) into a single document.
-// It deduplicates rules by normalized ID and results by (ruleID, filePath, startLine).
+// It deduplicates rules by normalized ID and results with identical claims and
+// evidence. Sharing a rule and source location alone is insufficient.
 // Partial failure notifications from all chunks are preserved.
 func Merge(docs []SARIFDocument) SARIFDocument {
 	if len(docs) == 0 {
@@ -41,8 +42,10 @@ func Merge(docs []SARIFDocument) SARIFDocument {
 		ruleID    string
 		filePath  string
 		startLine int
+		evidence  string
+		cwe       string
 	}
-	seenResults := make(map[resultKey]bool)
+	seenResults := make(map[resultKey]int)
 	var results []SARIFResult
 
 	// Collect notifications from all chunks.
@@ -81,6 +84,10 @@ func Merge(docs []SARIFDocument) SARIFDocument {
 			}
 		}
 
+		localRules := make(map[string]SARIFRule, len(run.Tool.Driver.Rules))
+		for _, rule := range run.Tool.Driver.Rules {
+			localRules[rule.ID] = rule
+		}
 		// Merge results.
 		for _, r := range run.Results {
 			normID := normalizeRuleID(r.RuleID)
@@ -94,11 +101,22 @@ func Merge(docs []SARIFDocument) SARIFDocument {
 				}
 			}
 
-			key := resultKey{ruleID: normID, filePath: fp, startLine: sl}
-			if seenResults[key] {
+			key := resultKey{ruleID: normID, filePath: fp, startLine: sl, evidence: evidenceKey(r), cwe: ResultCWE(r, localRules[r.RuleID])}
+			if idx, ok := seenResults[key]; ok {
+				existingRule := SARIFRule{}
+				if ruleIdx, exists := ruleIndex[normID]; exists {
+					existingRule = rules[ruleIdx]
+				}
+				if ResultSeverity(r, localRules[r.RuleID]) > ResultSeverity(results[idx], existingRule) {
+					rCopy := combineProvenance(r, results[idx])
+					rCopy.RuleID = normID
+					results[idx] = rCopy
+				} else {
+					results[idx] = combineProvenance(results[idx], r)
+				}
 				continue
 			}
-			seenResults[key] = true
+			seenResults[key] = len(results)
 
 			rCopy := r
 			rCopy.RuleID = normID

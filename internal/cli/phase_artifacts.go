@@ -10,6 +10,7 @@ import (
 
 	"github.com/block/codecrucible/internal/config"
 	"github.com/block/codecrucible/internal/sarif"
+	"github.com/block/codecrucible/internal/sourceindex"
 )
 
 type phaseArtifactWriter struct {
@@ -19,16 +20,18 @@ type phaseArtifactWriter struct {
 }
 
 type featureDetectionArtifact struct {
-	Phase            string   `json:"phase"`
-	Status           string   `json:"status"`
-	Repo             string   `json:"repo,omitempty"`
-	Provider         string   `json:"provider,omitempty"`
-	Model            string   `json:"model,omitempty"`
-	DetectedFeatures []string `json:"detected_features"`
-	TokenCorrection  float64  `json:"token_correction,omitempty"`
-	Reason           string   `json:"reason,omitempty"`
-	Error            string   `json:"error,omitempty"`
-	Fallback         string   `json:"fallback,omitempty"`
+	SourceIndex      *sourceindex.Snapshot `json:"source_index,omitempty"`
+	SourceBundles    []sarif.SourceBundle  `json:"source_bundles,omitempty"`
+	Phase            string                `json:"phase"`
+	Status           string                `json:"status"`
+	Repo             string                `json:"repo,omitempty"`
+	Provider         string                `json:"provider,omitempty"`
+	Model            string                `json:"model,omitempty"`
+	DetectedFeatures []string              `json:"detected_features"`
+	TokenCorrection  float64               `json:"token_correction,omitempty"`
+	Reason           string                `json:"reason,omitempty"`
+	Error            string                `json:"error,omitempty"`
+	Fallback         string                `json:"fallback,omitempty"`
 }
 
 func newPhaseArtifactWriter(cfg *config.Config) phaseArtifactWriter {
@@ -38,6 +41,7 @@ func newPhaseArtifactWriter(cfg *config.Config) phaseArtifactWriter {
 			"feature-detection": filepath.Join(dir, "feature-detection.json"),
 			"analysis":          filepath.Join(dir, "analysis.sarif"),
 			"audit":             filepath.Join(dir, "audit.sarif"),
+			"lineage":           filepath.Join(dir, "lineage.jsonl"),
 		}}
 	}
 
@@ -57,6 +61,7 @@ func newPhaseArtifactWriter(cfg *config.Config) phaseArtifactWriter {
 		"feature-detection": filepath.Join(dir, stem+".feature-detection.json"),
 		"analysis":          filepath.Join(dir, stem+".analysis.sarif"),
 		"audit":             filepath.Join(dir, stem+".audit.sarif"),
+		"lineage":           filepath.Join(dir, stem+".lineage.jsonl"),
 	}}
 }
 
@@ -78,6 +83,14 @@ func (w phaseArtifactWriter) Path(phase string) string {
 }
 
 func (w phaseArtifactWriter) WriteFeatureDetection(artifact featureDetectionArtifact) error {
+	if w.metadata != nil {
+		artifact.SourceIndex = w.metadata.Execution.SourceIndex
+		for _, b := range w.metadata.Execution.SourceBundles {
+			if b.Phase == "feature-detection" {
+				artifact.SourceBundles = append(artifact.SourceBundles, b)
+			}
+		}
+	}
 	return w.writeJSON("feature-detection", artifact)
 }
 

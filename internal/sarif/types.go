@@ -140,22 +140,32 @@ type SARIFSuppression struct {
 	Justification string `json:"justification,omitempty"`
 }
 
-// FindingProperties is the per-finding record. Everything here belongs to
-// exactly one result; rules are shared by every result with the same title,
-// so finding-specific state must never be stored on the rule.
+// FindingProvenance links this projection to immutable lineage records.
+type FindingProvenance struct {
+	RunID          string   `json:"runId"`
+	ObservationIDs []string `json:"observationIds"`
+	RevisionID     string   `json:"revisionId"`
+	Parents        []string `json:"-"`
+}
+
+// FindingProperties is the per-finding record. Rules are shared by results with
+// the same title, so finding-specific state must never be stored on the rule.
 type FindingProperties struct {
-	FindingID          string   `json:"findingId,omitempty"`
-	Verified           bool     `json:"verified"`
-	AuditStatus        string   `json:"auditStatus,omitempty"`
-	AuditConfidence    *float64 `json:"auditConfidence,omitempty"`
-	AuditJustification string   `json:"auditJustification,omitempty"`
-	AuditBlockingCode  string   `json:"auditBlockingCode,omitempty"`
-	AuditReasons       []string `json:"auditReasons,omitempty"`
-	Severity           *float64 `json:"severity,omitempty"`
-	CWE                string   `json:"cwe,omitempty"`
-	Summary            string   `json:"summary,omitempty"`
-	Remediation        string   `json:"remediation,omitempty"`
-	TechnicalDetails   string   `json:"technicalDetails,omitempty"`
+	ReportedLocations  []SARIFLocation    `json:"reportedLocations,omitempty"`
+	LocationWarnings   []string           `json:"locationWarnings,omitempty"`
+	Provenance         *FindingProvenance `json:"provenance,omitempty"`
+	FindingID          string             `json:"findingId,omitempty"`
+	Verified           bool               `json:"verified"`
+	AuditStatus        string             `json:"auditStatus,omitempty"`
+	AuditConfidence    *float64           `json:"auditConfidence,omitempty"`
+	AuditJustification string             `json:"auditJustification,omitempty"`
+	AuditBlockingCode  string             `json:"auditBlockingCode,omitempty"`
+	AuditReasons       []string           `json:"auditReasons,omitempty"`
+	Severity           *float64           `json:"severity,omitempty"`
+	CWE                string             `json:"cwe,omitempty"`
+	Summary            string             `json:"summary,omitempty"`
+	Remediation        string             `json:"remediation,omitempty"`
+	TechnicalDetails   string             `json:"technicalDetails,omitempty"`
 	// ReportedPath is the model's file path when it named no scanned file and
 	// was repaired to the one scanned file it uniquely matches.
 	ReportedPath string `json:"reportedPath,omitempty"`

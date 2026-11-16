@@ -12,19 +12,12 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/block/codecrucible/internal/sourceindex"
 )
 
-// Def is a function or type definition found in a scanned file.
-type Def struct {
-	Name               string
-	Type               bool // a type (struct, class, interface) rather than a function
-	File               string
-	Line               int
-	End                int // inclusive; lexical fallback stops at the next declaration
-	owner              string
-	params             []parameter
-	bodyStart, bodyEnd int // byte offsets, exclusive end; zero if binding is unsupported
-}
+type Def = sourceindex.Def
+type defID = sourceindex.DefID
 
 // Excerpt is a line range retrieved for context, 1-based and inclusive.
 type Excerpt struct {
@@ -33,14 +26,10 @@ type Excerpt struct {
 	Reason     string
 }
 
-// Index holds the scanned files and their definitions.
+// Index applies audit retrieval policy to a reusable source snapshot.
 type Index struct {
-	files     map[string]string
-	lines     map[string][]string
-	defs      map[string][]Def // by name
-	byFile    map[string][]Def // in line order
+	source    *sourceindex.Index
 	templates map[string][]string
-	sources   map[string]*sourceInfo
 	callers   map[defID][]hit
 }
 
@@ -60,33 +49,19 @@ var templateExts = map[string]bool{
 	".njk": true, ".twig": true, ".mustache": true, ".vue": true, ".jsp": true, ".ftl": true, ".vm": true,
 }
 
-// NewIndex indexes the definitions in files.
-func NewIndex(files map[string]string) *Index {
-	ix := &Index{files: files, lines: make(map[string][]string, len(files)), defs: map[string][]Def{},
-		byFile: map[string][]Def{}, templates: map[string][]string{}, callers: map[defID][]hit{}, sources: map[string]*sourceInfo{}}
-	paths := make([]string, 0, len(files))
-	for p := range files {
-		paths = append(paths, p)
-	}
-	sort.Strings(paths)
-	for _, p := range paths {
-		lines := strings.Split(files[p], "\n")
-		ix.lines[p] = lines
+// NewIndex is a convenience for callers that do not already have a snapshot.
+func NewIndex(files map[string]string) *Index { return NewRetriever(sourceindex.New(files)) }
+
+// NewRetriever reuses the source facts extracted during ingestion.
+func NewRetriever(source *sourceindex.Index) *Index {
+	ix := &Index{source: source, templates: map[string][]string{}, callers: map[defID][]hit{}}
+	for _, p := range source.Paths() {
 		if ext := path.Ext(p); templateExts[ext] {
 			base := path.Base(p)
 			ix.templates[base] = append(ix.templates[base], p)
-			ix.templates[strings.TrimSuffix(base, ext)] = append(ix.templates[strings.TrimSuffix(base, ext)], p)
-			// Template claims can themselves reference included templates.
-			// They have no language bindings, but still participate in retrieval.
-			ix.sources[p] = &sourceInfo{adapter: lexicalAdapter{}, language: language(p), code: lines}
-			continue
+			stem := strings.TrimSuffix(base, ext)
+			ix.templates[stem] = append(ix.templates[stem], p)
 		}
-		src := adapterFor(p).parse(p, files[p])
-		ix.sources[p] = src
-		for _, d := range src.defs {
-			ix.defs[d.Name] = append(ix.defs[d.Name], d)
-		}
-		ix.byFile[p] = src.defs
 	}
 	return ix
 }
@@ -119,12 +94,12 @@ type Claim struct {
 // flagged code renders, then definitions of called functions and named types.
 // Excerpts in skip (files already sent in full) are omitted.
 func (ix *Index) Retrieve(c Claim, skip map[string]bool) []Excerpt {
-	lines, ok := ix.lines[c.File]
-	if !ok || c.Start < 1 || c.Start > len(lines) || ix.sources[c.File] == nil {
+	lines := ix.source.Lines(c.File)
+	if c.Start < 1 || c.Start > len(lines) {
 		return nil
 	}
 	end := min(len(lines), max(c.End, c.Start))
-	enclosing, haveEnclosing := ix.enclosing(c.File, c.Start)
+	enclosing, haveEnclosing := ix.source.Enclosing(c.File, c.Start)
 	// A definition far above the claim is more likely a neighbor than the
 	// function containing an anonymous handler.
 	if haveEnclosing && c.Start-enclosing.Line > maxEnclosingSpan {
@@ -155,66 +130,50 @@ func (ix *Index) Retrieve(c Claim, skip map[string]bool) []Excerpt {
 	}
 	seen := map[defID]bool{}
 	if haveEnclosing {
-		seen[enclosing.id()] = true
+		seen[enclosing.ID()] = true
 	}
-	src := ix.sources[c.File]
 	n := 0
-	for _, receiver := range src.containingCalls(c.Start, end, lo) {
-		if n >= maxContaining || genericNames[receiver.name] {
+	for _, receiver := range ix.source.ContainingCalls(c.File, c.Start, end, lo) {
+		if n >= maxContaining || genericNames[receiver.Name] {
 			continue
 		}
-		d, ok := ix.resolve(c.File, receiver.reference, false)
+		d, ok := ix.source.Resolve(c.File, receiver.Reference, false)
 		if !ok {
-			d, ok = ix.resolve(c.File, receiver.reference, true)
+			d, ok = ix.source.Resolve(c.File, receiver.Reference, true)
 		}
-		if !ok || seen[d.id()] {
+		if !ok || seen[d.ID()] {
 			continue
 		}
-		seen[d.id()] = true
-		add(defExcerpt(d, "receives the flagged expression: "+receiver.name))
+		seen[d.ID()] = true
+		add(defExcerpt(d, "receives the flagged expression: "+receiver.Name))
 		for _, e := range ix.forwarded(d, receiver, seen) {
 			add(e)
 		}
 		n++
 	}
 	n = 0
-	for _, call := range src.calls {
-		if n >= maxCallees || call.line < lo || call.line > hi || keywords[call.name] || genericNames[call.name] {
+	for _, call := range ix.source.Calls(c.File, lo, hi) {
+		if n >= maxCallees || call.Line < lo || call.Line > hi || keywords[call.Name] || genericNames[call.Name] {
 			continue
 		}
-		if d, ok := ix.resolve(c.File, call.reference, false); ok && !seen[d.id()] {
-			seen[d.id()] = true
-			add(defExcerpt(d, "definition of "+call.name))
+		if d, ok := ix.source.Resolve(c.File, call, false); ok && !seen[d.ID()] {
+			seen[d.ID()] = true
+			add(defExcerpt(d, "definition of "+call.Name))
 			n++
 		}
 	}
 	n = 0
-	offset := 0
-	for i, line := range src.code {
-		if i+1 >= lo && i+1 <= hi {
-			for _, m := range typeName.FindAllStringSubmatchIndex(line, -1) {
-				ref := reference{name: line[m[4]:m[5]], offset: offset + m[0]}
-				refs := []reference{ref}
-				if m[2] >= 0 {
-					ref.qualifier = line[m[2]:m[3]]
-					// In Direction.OUTBOUND the qualifier is itself the type;
-					// in models.User the qualified member is the type.
-					refs = []reference{{name: ref.qualifier, offset: ref.offset}, ref}
-				}
-				for _, ref := range refs {
-					if n >= maxTypes {
-						break
-					}
-					if d, ok := ix.resolve(c.File, ref, true); ok && !seen[d.id()] {
-						seen[d.id()] = true
-						add(defExcerpt(d, "type "+ref.name))
-						n++
-					}
-				}
-			}
+	for _, ref := range ix.source.TypeReferences(c.File, lo, hi) {
+		if n >= maxTypes {
+			break
 		}
-		offset += len(line) + 1
+		if d, ok := ix.source.Resolve(c.File, ref, true); ok && !seen[d.ID()] {
+			seen[d.ID()] = true
+			add(defExcerpt(d, "type "+ref.Name))
+			n++
+		}
 	}
+
 	return out
 }
 
@@ -222,42 +181,51 @@ func defExcerpt(d Def, reason string) Excerpt {
 	return Excerpt{File: d.File, Start: d.Line, End: min(d.End, d.Line+maxDefLines-1), Reason: reason}
 }
 
-// enclosing returns the function definition containing line.
-func (ix *Index) enclosing(file string, line int) (Def, bool) {
-	var best Def
-	found := false
-	for _, d := range ix.byFile[file] {
-		if d.Line > line {
+// Follow only the extractor's explicit one-hop parameter uses. The audit
+// decides how many uses to show and never treats them as proven taint flow.
+func (ix *Index) forwarded(d Def, c sourceindex.BoundCall, seen map[defID]bool) []Excerpt {
+	var out []Excerpt
+	for _, next := range ix.source.ForwardedUses(d, c) {
+		if next.Line >= d.Line+maxDefLines || genericNames[next.Name] {
+			continue
+		}
+		f, ok := ix.source.Resolve(d.File, next.Reference, false)
+		if !ok {
+			f, ok = ix.source.Resolve(d.File, next.Reference, true)
+		}
+		if ok && !seen[f.ID()] {
+			seen[f.ID()] = true
+			out = append(out, defExcerpt(f, "possible use of "+d.Name+" parameter "+next.Parameter+" in "+next.Name))
+		}
+		if len(out) == maxForwarded {
 			break
 		}
-		if !d.Type && line <= d.End {
-			best, found = d, true
-		}
 	}
-	return best, found
+	return out
 }
 
 // callerExcerpts returns the lines that reference def's name in other files,
 // preferring lines that look like route registration.
 func (ix *Index) callerExcerpts(def Def) []Excerpt {
-	hits, ok := ix.callers[def.id()]
+	hits, ok := ix.callers[def.ID()]
 	if !ok {
 		word := regexp.MustCompile(`(?:^|[^\w$])` + regexp.QuoteMeta(def.Name) + `(?:[^\w$]|$)`)
-		for _, p := range sortedKeys(ix.lines) {
-			src := ix.sources[p]
-			if p == def.File || src == nil || src.language != ix.sources[def.File].language || !strings.Contains(ix.files[p], def.Name) {
+		for _, p := range ix.source.Paths() {
+			code := ix.source.Code(p)
+			content, _ := ix.source.Content(p)
+			if p == def.File || code == nil || ix.source.Language(p) != ix.source.Language(def.File) || !strings.Contains(content, def.Name) {
 				continue
 			}
-			for i, line := range src.code {
+			for i, line := range code {
 				if len(line) < 500 && word.MatchString(line) {
-					if ix.isDefinition(p, i+1, def.Name) {
+					if ix.source.IsDefinition(p, i+1, def.Name) {
 						continue
 					}
 					hits = append(hits, hit{p, i + 1})
 				}
 			}
 		}
-		ix.callers[def.id()] = hits
+		ix.callers[def.ID()] = hits
 	}
 	byFile := map[string][]hit{}
 	var order []string
@@ -272,7 +240,7 @@ func (ix *Index) callerExcerpts(def Def) []Excerpt {
 	}
 	routed := func(f string) bool {
 		for _, h := range byFile[f] {
-			if routeHint.MatchString(ix.lines[f][h.line-1]) {
+			if routeHint.MatchString(ix.source.Lines(f)[h.line-1]) {
 				return true
 			}
 		}
@@ -293,7 +261,7 @@ func (ix *Index) callerExcerpts(def Def) []Excerpt {
 	var out []Excerpt
 	for _, f := range order[:min(len(order), maxCallerFiles)] {
 		for _, h := range byFile[f][:min(len(byFile[f]), maxCallerHits)] {
-			out = append(out, Excerpt{File: f, Start: max(1, h.line-callerRadius), End: min(len(ix.lines[f]), h.line+callerRadius),
+			out = append(out, Excerpt{File: f, Start: max(1, h.line-callerRadius), End: min(len(ix.source.Lines(f)), h.line+callerRadius),
 				Reason: "reference to " + def.Name})
 		}
 	}
@@ -314,7 +282,7 @@ func (ix *Index) templateLines(file string, window []string) []string {
 		return window
 	}
 	out := append([]string(nil), window...)
-	for _, line := range ix.lines[file] {
+	for _, line := range ix.source.Lines(file) {
 		for v := range vars {
 			if strings.Contains(line, v) {
 				out = append(out, line)
@@ -345,7 +313,7 @@ func (ix *Index) templateExcerpts(window []string, from string) []Excerpt {
 			}
 			p := cands[0]
 			seen[p] = true
-			out = append(out, Excerpt{File: p, Start: 1, End: min(len(ix.lines[p]), maxTemplate), Reason: "template " + name})
+			out = append(out, Excerpt{File: p, Start: 1, End: min(len(ix.source.Lines(p)), maxTemplate), Reason: "template " + name})
 		}
 	}
 	return out
@@ -366,15 +334,6 @@ func closest(cands []string, name, from string) []string {
 	return nil
 }
 
-func sortedKeys(m map[string][]string) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
-}
-
 // Render writes excerpts as numbered <file> blocks, merging overlapping
 // ranges per file, in order of each file's first excerpt. count measures a
 // block's tokens; excerpts are added in priority order until budget is spent.
@@ -388,7 +347,7 @@ func Render(ix *Index, excerpts []Excerpt, budget int, count func(string) int) (
 	used := 0
 	kept := 0
 	for _, e := range excerpts {
-		lines := ix.lines[e.File]
+		lines := ix.source.Lines(e.File)
 		start, end := max(1, e.Start), min(len(lines), e.End)
 		if start > end {
 			continue
@@ -418,7 +377,7 @@ func Render(ix *Index, excerpts []Excerpt, budget int, count func(string) int) (
 			labels[i] = fmt.Sprintf("%d-%d", r[0], r[1])
 		}
 		fmt.Fprintf(&b, "<file path=\"%s\" lines=\"%s\">\n", f.path, strings.Join(labels, ","))
-		lines := ix.lines[f.path]
+		lines := ix.source.Lines(f.path)
 		for i, r := range ranges {
 			if i > 0 {
 				b.WriteString("...\n")
@@ -461,3 +420,17 @@ var testFile = regexp.MustCompile(`(?i)(^|/)(tests?|__tests__|spec)/|(_test|\.te
 func testPath(path string) bool {
 	return testFile.MatchString(path)
 }
+
+var (
+	keywords = map[string]bool{
+		"if": true, "for": true, "while": true, "switch": true, "catch": true, "return": true, "function": true,
+		"else": true, "do": true, "try": true, "with": true, "new": true, "typeof": true, "await": true,
+	}
+	// Names too common to identify one function.
+	genericNames = map[string]bool{
+		"main": true, "init": true, "handler": true, "handle": true, "New": true, "new": true, "get": true, "set": true,
+		"run": true, "Run": true, "ServeHTTP": true, "toString": true, "constructor": true, "index": true, "render": true,
+		"String": true, "Error": true, "close": true, "Close": true, "execute": true, "apply": true, "call": true,
+	}
+	stringLit = regexp.MustCompile("[\"'`]([\\w./-]+)[\"'`]")
+)

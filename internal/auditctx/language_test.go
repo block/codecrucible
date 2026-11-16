@@ -226,7 +226,7 @@ func FuzzRetrieveLocations(f *testing.F) {
 		ix := NewIndex(files)
 		for file := range files {
 			for _, e := range ix.Retrieve(Claim{File: file, Start: line, End: line}, nil) {
-				if e.Start < 1 || e.End < e.Start || e.End > len(ix.lines[e.File]) {
+				if e.Start < 1 || e.End < e.Start || e.End > len(ix.source.Lines(e.File)) {
 					t.Fatalf("invalid excerpt: %+v", e)
 				}
 			}

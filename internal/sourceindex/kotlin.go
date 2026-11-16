@@ -1,4 +1,4 @@
-package auditctx
+package sourceindex
 
 import (
 	"regexp"
@@ -12,7 +12,7 @@ import (
 type kotlinAdapter struct{}
 
 var kotlinPackage = regexp.MustCompile(`(?m)^\s*package\s+([\w.]+)`)
-var kotlinImport = regexp.MustCompile(`(?m)^\s*import\s+([\w.]+)(?:\s+as\s+(\w+))?\s*;?\s*$`)
+var kotlinImport = regexp.MustCompile(`(?m)^\s*import\s+([\w.]+\*?)(?:\s+as\s+(\w+))?\s*;?\s*$`)
 
 type kotlinToken struct {
 	text       string
@@ -136,11 +136,15 @@ func kotlinParameters(ts []kotlinToken, pairs map[int]int, open, close int) []pa
 
 func (kotlinAdapter) parse(file, text string) *sourceInfo {
 	code := maskSource(text, false)
-	s := &sourceInfo{adapter: kotlinAdapter{}, language: language(file), code: strings.Split(code, "\n"), imports: map[string]string{}}
+	s := &sourceInfo{mode: "syntax", adapter: kotlinAdapter{}, language: language(file), code: strings.Split(code, "\n"), imports: map[string]string{}}
 	if m := kotlinPackage.FindStringSubmatch(code); m != nil {
 		s.packageName = m[1]
 	}
 	for _, m := range kotlinImport.FindAllStringSubmatch(code, -1) {
+		s.importPaths = append(s.importPaths, m[1])
+		if strings.HasSuffix(m[1], ".*") {
+			continue
+		}
 		name := m[2]
 		if name == "" {
 			name = m[1][strings.LastIndex(m[1], ".")+1:]
