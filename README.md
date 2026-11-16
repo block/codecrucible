@@ -97,9 +97,11 @@ first grouped by primary file, start line, and normalized CWE. Rule IDs and
 model wording (title, message, summary, details, remediation) are not part of
 the key, so the same defect reported in different words by overlapping chunks
 merges. Each group is then split by structural anchors: the first and last
-location of every code-flow thread (source and sink) plus any
-`reportedLocations`, compared as `file:line`. Intermediate flow steps are
-ignored. Results with the same anchors merge and keep the highest severity.
+location of every code-flow thread (source and sink), any
+`reportedLocations`, and every structured `finding_evidence` reference except
+guards (`initialEvidence` in SARIF), compared as `file:line`. Intermediate flow
+steps and guards are ignored, so a flow and structured evidence that cite the
+same source and sink match. Results with the same anchors merge and keep the highest severity.
 Different sources or sinks at the same location stay separate findings. A
 result with no anchors joins the group's anchored results only when they share
 exactly one anchor set; otherwise it merges only with other anchorless

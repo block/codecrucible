@@ -2,8 +2,10 @@ package sarif
 
 import (
 	"encoding/json"
+	"path"
 	"sort"
 	"strconv"
+	"strings"
 )
 
 // combineProvenance preserves all contributing observations and revision
@@ -52,7 +54,9 @@ func uniqueStrings(values []string) []string {
 	return out
 }
 
-// evidenceKey identifies structural source anchors independently of model prose.
+// evidenceKey identifies structural source anchors independently of model
+// prose: code-flow endpoints, reported locations and structured finding
+// evidence other than guards.
 func evidenceKey(r SARIFResult) string {
 	anchors := map[string]bool{}
 	add := func(loc SARIFLocation) {
@@ -73,6 +77,16 @@ func evidenceKey(r SARIFResult) string {
 	if r.Properties != nil {
 		for _, loc := range r.Properties.ReportedLocations {
 			add(loc)
+		}
+		// Structured source/sink evidence anchors the claim just as a rendered
+		// flow does, and uses the same file:line form so the two can match.
+		// Guards describe mitigations rather than the defect, so they are not
+		// identity.
+		for _, ev := range r.Properties.InitialEvidence {
+			if ev.Evidence.File == "" || strings.EqualFold(strings.TrimSpace(ev.Kind), "guard") {
+				continue
+			}
+			anchors[path.Clean(ev.Evidence.File)+":"+strconv.Itoa(ev.Evidence.Start)] = true
 		}
 	}
 	keys := make([]string, 0, len(anchors))

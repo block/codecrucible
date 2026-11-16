@@ -35,7 +35,8 @@ readers extract source facts; security policy stays in shared code.
   identity fields prevent some cross-wiring, but an echoed ID/title is not
   evidence that an explanation concerns the right claim.
 - Deduplication groups results by location and normalized CWE, then splits
-  each group by source/sink anchors. Wording decides identity in neither
+  each group by source/sink anchors from code flows, reported locations and
+  structured finding evidence (guards excluded). Wording decides identity in neither
   direction: reworded reports of one defect merge, and different sources or
   sinks at the same location remain separate.
 
