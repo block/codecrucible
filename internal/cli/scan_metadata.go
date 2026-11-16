@@ -104,7 +104,9 @@ func phaseRecipe(pc config.PhaseConfig, cfg *config.Config) sarif.PhaseRecipe {
 		}
 		endpoint = strings.TrimSuffix(endpoint, "/invocations")
 	} else if baseURL == "" {
-		baseURL = providerPresets[pc.Provider].baseURL
+		if p, ok := config.LookupProvider(pc.Provider); ok {
+			baseURL = p.BaseURL
+		}
 	}
 	transport := "http"
 	if pc.Provider == "anthropic" && pc.APIKey == "" {

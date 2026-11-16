@@ -43,7 +43,7 @@ pipeline and produces SARIF output suitable for GitHub Code Scanning integration
 	// the analysis values.
 	for _, p := range phaseFlagSets {
 		cmd.Flags().String(p.prefix+"model", "", p.what+" model"+p.inherit)
-		cmd.Flags().String(p.prefix+"provider", "", p.what+" provider: anthropic, openai, google, cerebras, ollama, openai-compat, databricks"+p.inherit)
+		cmd.Flags().String(p.prefix+"provider", "", p.what+" provider: "+strings.Join(config.ProviderNames(), ", ")+p.inherit)
 		cmd.Flags().String(p.prefix+"api-key", "", p.what+" API key (optional for ollama/openai-compat)"+p.inherit)
 		cmd.Flags().String(p.prefix+"base-url", "", p.what+" base URL override"+p.inherit)
 		cmd.Flags().String(p.prefix+"model-params", "", p.what+" model request params as JSON (merged into request body)"+p.inherit)

@@ -20,57 +20,6 @@ import (
 	"github.com/block/codecrucible/internal/supctx"
 )
 
-// providerPreset describes how to build a client for a given provider.
-// The preset controls defaults; any value set explicitly on PhaseConfig wins.
-type providerPreset struct {
-	baseURL      string // default base URL (empty = must be provided)
-	keyEnv       string // env var name for the error message (empty = auth not required)
-	authRequired bool   // whether an API key is mandatory
-	// wireProvider is the provider string passed to the LLM HTTP client,
-	// which controls URL path and request body format. Providers that use
-	// OpenAI-compatible APIs set this to "openai".
-	wireProvider string
-}
-
-// providerPresets maps --provider values to their defaults. Databricks is
-// handled separately because it uses host+token env vars rather than a
-// single API key.
-var providerPresets = map[string]providerPreset{
-	"cerebras": {
-		baseURL:      "https://api.cerebras.ai",
-		keyEnv:       "CEREBRAS_API_KEY",
-		authRequired: true,
-		wireProvider: "cerebras",
-	},
-	"anthropic": {
-		baseURL:      "https://api.anthropic.com",
-		keyEnv:       "ANTHROPIC_API_KEY",
-		authRequired: true,
-		wireProvider: "anthropic",
-	},
-	"openai": {
-		baseURL:      "https://api.openai.com",
-		keyEnv:       "OPENAI_API_KEY",
-		authRequired: true,
-		wireProvider: "openai",
-	},
-	"google": {
-		baseURL:      "https://generativelanguage.googleapis.com/v1beta/openai",
-		keyEnv:       "GOOGLE_API_KEY",
-		authRequired: true,
-		wireProvider: "google",
-	},
-	"ollama": {
-		baseURL:      "http://localhost:11434",
-		authRequired: false,
-		wireProvider: "openai",
-	},
-	"openai-compat": {
-		authRequired: false,
-		wireProvider: "openai",
-	},
-}
-
 // buildPhaseClient constructs an LLM client from a resolved PhaseConfig.
 // Everything that varies per-phase (provider, key, timeout, headers,
 // base URL, model params) comes from pc. Only Databricks host/token stay
@@ -111,21 +60,27 @@ func buildPhaseClient(pc config.PhaseConfig, cfg *config.Config) (llm.Client, st
 	}
 
 	// Known providers — use preset defaults, allow overrides.
-	if preset, ok := providerPresets[pc.Provider]; ok {
-		if preset.authRequired && pc.APIKey == "" {
-			return nil, "", fmt.Errorf("no API key for provider=%s (set %s, or phases.<phase>.api-key)", pc.Provider, preset.keyEnv)
+	if preset, ok := config.LookupProvider(pc.Provider); ok && preset.Protocol != "databricks" {
+		if (preset.Auth.Type == "bearer" || preset.Auth.Type == "api-key") && pc.APIKey == "" {
+			return nil, "", fmt.Errorf("no API key for provider=%s (set %s, or phases.<phase>.api-key)", pc.Provider, preset.Auth.APIKeyEnv)
 		}
 		baseURL := pc.BaseURL
 		if baseURL == "" {
-			if preset.baseURL == "" {
+			if preset.BaseURL == "" {
 				return nil, "", fmt.Errorf("provider=%s requires --base-url (no default URL)", pc.Provider)
 			}
-			baseURL = preset.baseURL
+			baseURL = preset.BaseURL
+		}
+		for name, value := range preset.Headers {
+			if headers.Get(name) == "" {
+				headers.Set(name, value)
+			}
 		}
 		client := llm.NewClient(llm.ClientConfig{
+			ChatPath: preset.Request.Path, AuthType: preset.Auth.Type, MaxTokensField: preset.Request.MaxTokensField,
 			BaseURL:    baseURL,
 			Token:      pc.APIKey, // empty string is fine for no-auth providers
-			Provider:   preset.wireProvider,
+			Provider:   preset.Protocol,
 			Headers:    headers,
 			MaxRetries: 3,
 			Timeout:    timeout,

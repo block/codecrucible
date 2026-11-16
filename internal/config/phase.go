@@ -328,17 +328,7 @@ func detectProvider(pc *PhaseConfig, cfg *Config) string {
 // phase didn't set its own. Databricks auth is host+token, not a single
 // key, so it's handled in the client builder instead.
 func ambientKey(provider string, cfg *Config) string {
-	switch provider {
-	case "anthropic":
-		return cfg.AnthropicAPIKey
-	case "openai":
-		return cfg.OpenAIAPIKey
-	case "google":
-		return cfg.GoogleAPIKey
-	case "cerebras":
-		return cfg.CerebrasAPIKey
-	}
-	return ""
+	return cfg.ProviderKey(provider)
 }
 
 func lookupOrDefault(name, phase string) ModelConfig {

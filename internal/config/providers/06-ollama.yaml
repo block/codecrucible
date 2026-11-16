@@ -1,0 +1,10 @@
+name: ollama
+protocol: openai-chat
+base_url: http://localhost:11434
+auth:
+  type: none
+request:
+  path: /v1/chat/completions
+discovery:
+  format: ollama-tags
+  path: /api/tags

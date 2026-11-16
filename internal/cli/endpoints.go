@@ -19,16 +19,16 @@ func newListEndpointsCommand() *cobra.Command {
 		Use:     "list-models",
 		Aliases: []string{"list-endpoints"},
 		Short:   "List available models/endpoints for a provider",
-		Long: `Queries a model provider for its available models and prints a table.
+		Long: fmt.Sprintf(`Queries a model provider for its available models and prints a table.
 
 Provider is chosen by --provider if set. Otherwise, Databricks is used when
 DATABRICKS_HOST + DATABRICKS_TOKEN are set; failing that, the first of
 ANTHROPIC_API_KEY / OPENAI_API_KEY / GOOGLE_API_KEY / CEREBRAS_API_KEY present is used.
 
-Supported providers: databricks, anthropic, openai, google, cerebras, ollama.`,
+Supported providers: %s.`, strings.Join(config.ProviderNames(), ", ")),
 		RunE: runListEndpoints,
 	}
-	cmd.Flags().String("provider", "", "provider to query (databricks, anthropic, openai, google, cerebras, ollama)")
+	cmd.Flags().String("provider", "", "provider to query (from the embedded YAML catalog)")
 	cmd.Flags().String("base-url", "", "override provider base URL (useful for OpenAI-compat endpoints)")
 	return cmd
 }
@@ -48,38 +48,23 @@ func runListEndpoints(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
 	}
-
-	provider, err := resolveListProvider(cmd, cfg)
+	name, err := resolveListProvider(cmd, cfg)
 	if err != nil {
 		return err
 	}
-
-	var entries []modelEntry
-	switch provider {
-	case "databricks":
-		entries, err = listDatabricks(cmd.Context(), cfg)
-	case "anthropic":
-		entries, err = listAnthropic(cmd.Context(), cfg, cmdStringFlag(cmd, "base-url"))
-	case "cerebras":
-		entries, err = listCerebras(cmd.Context(), cfg, cmdStringFlag(cmd, "base-url"))
-	case "openai":
-		entries, err = listOpenAI(cmd.Context(), cfg, cmdStringFlag(cmd, "base-url"))
-	case "google":
-		entries, err = listGoogle(cmd.Context(), cfg, cmdStringFlag(cmd, "base-url"))
-	case "ollama":
-		entries, err = listOllama(cmd.Context(), cmdStringFlag(cmd, "base-url"))
-	default:
-		return fmt.Errorf("unsupported provider %q (supported: databricks, anthropic, openai, google, cerebras, ollama)", provider)
+	p, ok := config.LookupProvider(name)
+	if !ok {
+		return fmt.Errorf("unsupported provider %q (see list-models --help)", name)
 	}
+	entries, err := listProvider(cmd.Context(), cfg, p, cmdStringFlag(cmd, "base-url"))
 	if err != nil {
 		return err
 	}
 
 	if len(entries) == 0 {
-		fmt.Fprintf(cmd.OutOrStdout(), "No models returned for provider %q.\n", provider)
+		fmt.Fprintf(cmd.OutOrStdout(), "No models returned for provider %q.\n", name)
 		return nil
 	}
-
 	w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 4, 2, ' ', 0)
 	fmt.Fprintln(w, "ENDPOINT\tSTATE\tMODEL\tUSAGE")
 	for _, e := range entries {
@@ -133,7 +118,84 @@ func emptyDash(s string) string {
 	return s
 }
 
-// ===== Databricks ===================================================
+func listProvider(ctx context.Context, cfg *config.Config, p config.ProviderConfig, baseURL string) ([]modelEntry, error) {
+	if p.Discovery.Format == "none" {
+		return nil, fmt.Errorf("provider=%s does not support model discovery", p.Name)
+	}
+	base := firstNonEmpty(baseURL, cfg.BaseURL, p.BaseURL)
+	if p.Protocol == "databricks" && base == "" {
+		base = cfg.DatabricksHost
+		if base == "" {
+			return nil, fmt.Errorf("DATABRICKS_HOST is not set")
+		}
+	}
+	key := cfg.ProviderKey(p.Name)
+	if (p.Auth.Type == "bearer" || p.Auth.Type == "api-key") && key == "" {
+		return nil, fmt.Errorf("%s is not set (provider=%s)", p.Auth.APIKeyEnv, p.Name)
+	}
+	if base == "" {
+		return nil, fmt.Errorf("provider=%s requires --base-url (no default URL)", p.Name)
+	}
+	headers := http.Header{}
+	for name, value := range p.Headers {
+		headers.Set(name, value)
+	}
+	if key != "" {
+		switch p.Auth.Type {
+		case "bearer", "optional-bearer":
+			headers.Set("Authorization", "Bearer "+key)
+		case "api-key":
+			headers.Set("x-api-key", key)
+		}
+	}
+	body, err := httpGetJSON(ctx, strings.TrimRight(base, "/")+p.Discovery.Path, headers)
+	if err != nil {
+		return nil, fmt.Errorf("querying %s: %w", p.Name, err)
+	}
+	entries := []modelEntry{}
+	add := func(name, state, model string) {
+		entries = append(entries, modelEntry{Name: name, State: state, Model: model, Usage: "--provider " + p.Name + " --model " + name})
+	}
+	switch p.Discovery.Format {
+	case "openai-models", "anthropic-models":
+		var list struct {
+			Data []struct {
+				ID          string `json:"id"`
+				DisplayName string `json:"display_name"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(body, &list); err != nil {
+			return nil, fmt.Errorf("parsing %s models: %w", p.Name, err)
+		}
+		for _, m := range list.Data {
+			add(m.ID, "available", firstNonEmpty(m.DisplayName, m.ID))
+		}
+	case "ollama-tags":
+		var list struct {
+			Models []struct {
+				Name  string `json:"name"`
+				Model string `json:"model"`
+			} `json:"models"`
+		}
+		if err := json.Unmarshal(body, &list); err != nil {
+			return nil, fmt.Errorf("parsing Ollama tags: %w", err)
+		}
+		for _, m := range list.Models {
+			name := firstNonEmpty(m.Name, m.Model)
+			add(name, "local", name)
+		}
+	case "databricks":
+		var list databricksEndpointList
+		if err := json.Unmarshal(body, &list); err != nil {
+			return nil, fmt.Errorf("parsing Databricks endpoints: %w", err)
+		}
+		for _, ep := range list.Endpoints {
+			add(ep.Name, ep.State.Ready, describeModel(ep))
+			entries[len(entries)-1].Usage = usageHint(ep.Name)
+		}
+	}
+	return entries, nil
+}
 
 // databricksEndpointList is the response from the Databricks serving-endpoints API.
 type databricksEndpointList struct {
@@ -177,41 +239,6 @@ type databricksServedModel struct {
 	ModelName string `json:"model_name"`
 }
 
-func listDatabricks(ctx context.Context, cfg *config.Config) ([]modelEntry, error) {
-	if cfg.DatabricksHost == "" {
-		return nil, fmt.Errorf("DATABRICKS_HOST is not set")
-	}
-	if cfg.DatabricksToken == "" {
-		return nil, fmt.Errorf("DATABRICKS_TOKEN is not set")
-	}
-
-	host := strings.TrimRight(cfg.DatabricksHost, "/")
-	url := host + "/api/2.0/serving-endpoints"
-
-	body, err := httpGetJSON(ctx, url, http.Header{
-		"Authorization": []string{"Bearer " + cfg.DatabricksToken},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("querying Databricks: %w", err)
-	}
-
-	var result databricksEndpointList
-	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, fmt.Errorf("parsing response: %w", err)
-	}
-
-	entries := make([]modelEntry, 0, len(result.Endpoints))
-	for _, ep := range result.Endpoints {
-		entries = append(entries, modelEntry{
-			Name:  ep.Name,
-			State: ep.State.Ready,
-			Model: describeModel(ep),
-			Usage: usageHint(ep.Name),
-		})
-	}
-	return entries, nil
-}
-
 // describeModel extracts a human-readable model name from the endpoint config.
 func describeModel(ep databricksEndpoint) string {
 	for _, e := range ep.Config.ServedEntities {
@@ -240,195 +267,6 @@ func usageHint(name string) string {
 	}
 	return "DATABRICKS_ENDPOINT=" + name
 }
-
-// ===== Anthropic ====================================================
-
-// anthropicModelList is the response from GET /v1/models.
-type anthropicModelList struct {
-	Data []struct {
-		ID          string `json:"id"`
-		DisplayName string `json:"display_name"`
-		Type        string `json:"type"`
-	} `json:"data"`
-}
-
-func listAnthropic(ctx context.Context, cfg *config.Config, baseURL string) ([]modelEntry, error) {
-	if cfg.AnthropicAPIKey == "" {
-		return nil, fmt.Errorf("ANTHROPIC_API_KEY is not set")
-	}
-	base := firstNonEmpty(baseURL, cfg.BaseURL, "https://api.anthropic.com")
-	url := strings.TrimRight(base, "/") + "/v1/models"
-
-	body, err := httpGetJSON(ctx, url, http.Header{
-		"x-api-key":         []string{cfg.AnthropicAPIKey},
-		"anthropic-version": []string{"2023-06-01"},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("querying Anthropic: %w", err)
-	}
-
-	var list anthropicModelList
-	if err := json.Unmarshal(body, &list); err != nil {
-		return nil, fmt.Errorf("parsing response: %w", err)
-	}
-
-	entries := make([]modelEntry, 0, len(list.Data))
-	for _, m := range list.Data {
-		entries = append(entries, modelEntry{
-			Name:  m.ID,
-			State: "available",
-			Model: firstNonEmpty(m.DisplayName, m.ID),
-			Usage: "--provider anthropic --model " + m.ID,
-		})
-	}
-	return entries, nil
-}
-
-// ===== OpenAI =======================================================
-
-// openaiModelList is the response from GET /v1/models.
-type openaiModelList struct {
-	Data []struct {
-		ID      string `json:"id"`
-		OwnedBy string `json:"owned_by"`
-	} `json:"data"`
-}
-
-func listOpenAI(ctx context.Context, cfg *config.Config, baseURL string) ([]modelEntry, error) {
-	if cfg.OpenAIAPIKey == "" {
-		return nil, fmt.Errorf("OPENAI_API_KEY is not set")
-	}
-	base := firstNonEmpty(baseURL, cfg.BaseURL, "https://api.openai.com")
-	url := strings.TrimRight(base, "/") + "/v1/models"
-
-	body, err := httpGetJSON(ctx, url, http.Header{
-		"Authorization": []string{"Bearer " + cfg.OpenAIAPIKey},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("querying OpenAI: %w", err)
-	}
-
-	var list openaiModelList
-	if err := json.Unmarshal(body, &list); err != nil {
-		return nil, fmt.Errorf("parsing response: %w", err)
-	}
-
-	entries := make([]modelEntry, 0, len(list.Data))
-	for _, m := range list.Data {
-		entries = append(entries, modelEntry{
-			Name:  m.ID,
-			State: "available",
-			Model: firstNonEmpty(m.OwnedBy, m.ID),
-			Usage: "--provider openai --model " + m.ID,
-		})
-	}
-	return entries, nil
-}
-
-func listCerebras(ctx context.Context, cfg *config.Config, baseURL string) ([]modelEntry, error) {
-	if cfg.CerebrasAPIKey == "" {
-		return nil, fmt.Errorf("CEREBRAS_API_KEY is not set")
-	}
-	base := firstNonEmpty(baseURL, cfg.BaseURL, "https://api.cerebras.ai")
-	url := strings.TrimRight(base, "/") + "/v1/models"
-
-	body, err := httpGetJSON(ctx, url, http.Header{
-		"Authorization": []string{"Bearer " + cfg.CerebrasAPIKey},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("querying Cerebras: %w", err)
-	}
-
-	var list openaiModelList
-	if err := json.Unmarshal(body, &list); err != nil {
-		return nil, fmt.Errorf("parsing response: %w", err)
-	}
-
-	entries := make([]modelEntry, 0, len(list.Data))
-	for _, m := range list.Data {
-		entries = append(entries, modelEntry{
-			Name:  m.ID,
-			State: "available",
-			Model: firstNonEmpty(m.OwnedBy, m.ID),
-			Usage: "--provider cerebras --model " + m.ID,
-		})
-	}
-	return entries, nil
-}
-
-// ===== Google (OpenAI-compat layer) =================================
-
-func listGoogle(ctx context.Context, cfg *config.Config, baseURL string) ([]modelEntry, error) {
-	if cfg.GoogleAPIKey == "" {
-		return nil, fmt.Errorf("GOOGLE_API_KEY is not set")
-	}
-	// Google's OpenAI-compat layer mirrors OpenAI's /models endpoint, mounted
-	// under /v1beta/openai/.
-	base := firstNonEmpty(baseURL, cfg.BaseURL, "https://generativelanguage.googleapis.com/v1beta/openai")
-	url := strings.TrimRight(base, "/") + "/models"
-
-	body, err := httpGetJSON(ctx, url, http.Header{
-		"Authorization": []string{"Bearer " + cfg.GoogleAPIKey},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("querying Google: %w", err)
-	}
-
-	var list openaiModelList
-	if err := json.Unmarshal(body, &list); err != nil {
-		return nil, fmt.Errorf("parsing response: %w", err)
-	}
-
-	entries := make([]modelEntry, 0, len(list.Data))
-	for _, m := range list.Data {
-		entries = append(entries, modelEntry{
-			Name:  m.ID,
-			State: "available",
-			Model: firstNonEmpty(m.OwnedBy, m.ID),
-			Usage: "--provider google --model " + m.ID,
-		})
-	}
-	return entries, nil
-}
-
-// ===== Ollama =======================================================
-
-// ollamaTags is the response from GET /api/tags on an Ollama server.
-type ollamaTags struct {
-	Models []struct {
-		Name  string `json:"name"`
-		Model string `json:"model"`
-	} `json:"models"`
-}
-
-func listOllama(ctx context.Context, baseURL string) ([]modelEntry, error) {
-	base := firstNonEmpty(baseURL, "http://localhost:11434")
-	url := strings.TrimRight(base, "/") + "/api/tags"
-
-	body, err := httpGetJSON(ctx, url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("querying Ollama: %w", err)
-	}
-
-	var tags ollamaTags
-	if err := json.Unmarshal(body, &tags); err != nil {
-		return nil, fmt.Errorf("parsing response: %w", err)
-	}
-
-	entries := make([]modelEntry, 0, len(tags.Models))
-	for _, m := range tags.Models {
-		name := firstNonEmpty(m.Name, m.Model)
-		entries = append(entries, modelEntry{
-			Name:  name,
-			State: "local",
-			Model: name,
-			Usage: "--provider ollama --model " + name,
-		})
-	}
-	return entries, nil
-}
-
-// ===== Shared helpers ===============================================
 
 // httpGetJSON performs an authenticated GET and returns the raw body,
 // raising a formatted error on any non-2xx response.

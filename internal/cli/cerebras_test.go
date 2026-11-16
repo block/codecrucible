@@ -84,14 +84,15 @@ func TestCerebrasListModels(t *testing.T) {
 		fmt.Fprint(w, `{"data":[{"id":"custom-glm","owned_by":"Cerebras"}]}`)
 	}))
 	defer server.Close()
-	rows, err := listCerebras(context.Background(), &config.Config{CerebrasAPIKey: "test-key"}, server.URL)
+	p, _ := config.LookupProvider("cerebras")
+	rows, err := listProvider(context.Background(), &config.Config{CerebrasAPIKey: "test-key"}, p, server.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(rows) != 1 || rows[0].Usage != "--provider cerebras --model custom-glm" {
 		t.Fatalf("incorrect rows: %v", rows)
 	}
-	if _, err := listCerebras(context.Background(), &config.Config{}, server.URL); err == nil {
+	if _, err := listProvider(context.Background(), &config.Config{}, p, server.URL); err == nil {
 		t.Fatal("missing credentials accepted")
 	}
 	if _, _, err := buildPhaseClient(config.PhaseConfig{Provider: "cerebras"}, &config.Config{}); err == nil {

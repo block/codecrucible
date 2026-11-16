@@ -1,0 +1,62 @@
+name: anthropic
+protocol: anthropic-messages
+base_url: https://api.anthropic.com
+auth:
+  type: api-key
+  api_key_env: ANTHROPIC_API_KEY
+request:
+  path: /v1/messages
+headers:
+  anthropic-version: "2023-06-01"
+discovery:
+  format: anthropic-models
+  path: /v1/models
+
+models:
+  # Sonnet 5 enables adaptive thinking by default. Anthropic documents
+  # temperature changes as incompatible with thinking, so omit it.
+  - name: "claude-sonnet-5"
+    endpoint: "claude-sonnet-5/invocations"
+    input_price_per_million: 2.0 # Introductory price through 2026-08-31.
+    output_price_per_million: 10.0 # Introductory price through 2026-08-31.
+    context_limit: 1000000
+    max_output_tokens: 128000
+    temperature: 0.0
+    omit_temperature: true
+    tokenizer_encoding: "claude"
+    supports_structured_output: true
+    native_structured_output: true
+  - name: "claude-opus-4-8"
+    endpoint: "claude-opus-4-8/invocations"
+    input_price_per_million: 5.0
+    output_price_per_million: 25.0
+    context_limit: 1000000
+    max_output_tokens: 128000
+    temperature: 0.0
+    omit_temperature: true
+    tokenizer_encoding: "claude"
+    supports_structured_output: true
+    native_structured_output: true
+  # Fable 5 always uses adaptive thinking and cannot disable it.
+  - name: "claude-fable-5"
+    endpoint: "claude-fable-5/invocations"
+    execution_warning: "claude-fable-5 may trigger security-policy errors during security analysis and may require Anthropic workspace data retention access; provider rejection invalidates scan results"
+    input_price_per_million: 10.0
+    output_price_per_million: 50.0
+    context_limit: 1000000
+    max_output_tokens: 128000
+    temperature: 0.0
+    omit_temperature: true
+    tokenizer_encoding: "claude"
+    supports_structured_output: true
+    native_structured_output: true
+  - name: "claude-haiku-4-5"
+    endpoint: "claude-haiku-4-5/invocations"
+    input_price_per_million: 1.0
+    output_price_per_million: 5.0
+    context_limit: 200000
+    max_output_tokens: 64000
+    temperature: 0.0
+    tokenizer_encoding: "claude"
+    supports_structured_output: true
+    native_structured_output: true

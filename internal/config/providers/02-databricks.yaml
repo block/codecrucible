@@ -1,0 +1,36 @@
+name: databricks
+protocol: databricks
+auth:
+  type: bearer
+  api_key_env: DATABRICKS_TOKEN
+request:
+  path: /{endpoint}/invocations
+discovery:
+  format: databricks
+  path: /api/2.0/serving-endpoints
+
+models:
+  # Block-internal Databricks serving endpoint. Keep workspace serving
+  # aliases explicit: public provider model IDs do not establish which
+  # internal deployment name a workspace exposes.
+  - name: "goose-claude-4-6-opus"
+    endpoint: "goose-claude-4-6-opus/invocations"
+    input_price_per_million: 5.0
+    output_price_per_million: 25.0
+    context_limit: 200000
+    max_output_tokens: 32768
+    temperature: 0.0
+    tokenizer_encoding: "claude"
+    supports_structured_output: true
+  # Block-internal Databricks serving endpoint. Keep workspace serving
+  # aliases explicit: public provider model IDs do not establish which
+  # internal deployment name a workspace exposes.
+  - name: "goose-claude-4-7-opus"
+    endpoint: "goose-claude-4-7-opus/invocations"
+    input_price_per_million: 5.0
+    output_price_per_million: 25.0
+    context_limit: 1000000
+    max_output_tokens: 128000
+    temperature: 0.0
+    tokenizer_encoding: "claude"
+    supports_structured_output: true
