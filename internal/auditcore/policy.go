@@ -76,20 +76,30 @@ type Child struct {
 	Covers   []Coverage `json:"covers"`
 	Evidence []Evidence `json:"evidence"`
 }
+
+// ContextRequest asks for an admitted declaration or a bounded source range.
+// It is evidence retrieval only, never permission to read other files or run code.
+type ContextRequest struct {
+	File   string `json:"file"`
+	Symbol string `json:"symbol"`
+	Start  int    `json:"start_line"`
+	End    int    `json:"end_line"`
+}
 type Assessment struct {
-	CoveredMaterial []Coverage  `json:"covered_material"`
-	FindingID       string      `json:"finding_id"`
-	RevisionID      string      `json:"revision_id"`
-	Digest          string      `json:"claim_digest"`
-	Assertions      []Assertion `json:"assertions"`
-	Crux            string      `json:"crux"`
-	Missing         []Evidence  `json:"missing_evidence"`
-	Children        []Child     `json:"children"`
-	Summary         string      `json:"summary"`
-	Remediation     string      `json:"remediation"`
-	RefinedSeverity float64     `json:"refined_severity"`
-	SeverityBasis   string      `json:"severity_basis"`
-	RefinedCWE      string      `json:"refined_cwe"`
+	ContextRequests []ContextRequest `json:"context_requests"`
+	CoveredMaterial []Coverage       `json:"covered_material"`
+	FindingID       string           `json:"finding_id"`
+	RevisionID      string           `json:"revision_id"`
+	Digest          string           `json:"claim_digest"`
+	Assertions      []Assertion      `json:"assertions"`
+	Crux            string           `json:"crux"`
+	Missing         []Evidence       `json:"missing_evidence"`
+	Children        []Child          `json:"children"`
+	Summary         string           `json:"summary"`
+	Remediation     string           `json:"remediation"`
+	RefinedSeverity float64          `json:"refined_severity"`
+	SeverityBasis   string           `json:"severity_basis"`
+	RefinedCWE      string           `json:"refined_cwe"`
 }
 type Outcome struct {
 	Status     string      `json:"status"`
