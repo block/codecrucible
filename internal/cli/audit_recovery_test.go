@@ -287,7 +287,7 @@ func TestAuditRetryKeepsMaximumConfidenceAddition(t *testing.T) {
 				calls++
 				return &llm.ChatResponse{Content: string(data)}, nil
 			})
-			got, _, _, err := runAuditPhase(context.Background(), doc, "fixture", traceClient(client, ledger, "audit"), "", config.ModelConfig{Name: "test"}, llm.NewPromptLoader(os.DirFS("../../prompts/default")), llm.OutputModeNone, ingest.FileMap{"a.go": "sink()", "b.go": "sink()", "c.go": "sink()"}, .3, nil, "", 20, true, chunk.NewTokenCounter("", nil), nil, nil)
+			got, _, _, err := runAuditPhase(context.Background(), doc, "fixture", traceClient(client, ledger, "audit"), "", config.ModelConfig{Name: "test"}, additionsAllowedLoader(t), llm.OutputModeNone, ingest.FileMap{"a.go": "sink()", "b.go": "sink()", "c.go": "sink()"}, .3, nil, "", 20, true, chunk.NewTokenCounter("", nil), nil, nil)
 			if err != nil || got == nil {
 				t.Fatal(err)
 			}
@@ -337,7 +337,7 @@ func TestAuditBatchesKeepMaximumConfidenceAddition(t *testing.T) {
 				calls++
 				return &llm.ChatResponse{Content: string(data)}, nil
 			})
-			got, _, _, err := runAuditPhase(context.Background(), doc, "fixture", traceClient(client, ledger, "audit"), "", config.ModelConfig{Name: "test"}, llm.NewPromptLoader(os.DirFS("../../prompts/default")), llm.OutputModeNone, ingest.FileMap{"a.go": "sink()", "b.go": "sink()", "c.go": "sink()"}, .3, nil, "", 1, true, chunk.NewTokenCounter("", nil), nil, nil)
+			got, _, _, err := runAuditPhase(context.Background(), doc, "fixture", traceClient(client, ledger, "audit"), "", config.ModelConfig{Name: "test"}, additionsAllowedLoader(t), llm.OutputModeNone, ingest.FileMap{"a.go": "sink()", "b.go": "sink()", "c.go": "sink()"}, .3, nil, "", 1, true, chunk.NewTokenCounter("", nil), nil, nil)
 			if err != nil || got == nil {
 				t.Fatal(err)
 			}
@@ -382,7 +382,7 @@ func TestAuditAdditionDuplicatesAnalysisWithoutRevivingIt(t *testing.T) {
 		data, _ := json.Marshal(AuditResult{AuditedFindings: []AuditedFinding{verdict}, NewFindings: []NewFinding{{Issue: " first ", FilePath: "a.go", StartLine: 1, Severity: 8, Confidence: .9, CodePath: []sarif.CodePathStep{{FilePath: "c.go", StartLine: 1, Message: "source"}, {FilePath: "a.go", StartLine: 1, Message: "sink"}}}}})
 		return &llm.ChatResponse{Content: string(data)}, nil
 	})
-	got, _, _, err := runAuditPhase(context.Background(), doc, "fixture", traceClient(client, ledger, "audit"), "", config.ModelConfig{Name: "test"}, llm.NewPromptLoader(os.DirFS("../../prompts/default")), llm.OutputModeNone, ingest.FileMap{"a.go": "sink()", "b.go": "sink()", "c.go": "source()"}, .3, nil, "", 1, true, chunk.NewTokenCounter("", nil), nil, nil)
+	got, _, _, err := runAuditPhase(context.Background(), doc, "fixture", traceClient(client, ledger, "audit"), "", config.ModelConfig{Name: "test"}, additionsAllowedLoader(t), llm.OutputModeNone, ingest.FileMap{"a.go": "sink()", "b.go": "sink()", "c.go": "source()"}, .3, nil, "", 1, true, chunk.NewTokenCounter("", nil), nil, nil)
 	if err != nil || got == nil {
 		t.Fatal(err)
 	}
@@ -464,7 +464,7 @@ func TestAuditDiscardFailureAfterCompletedBatch(t *testing.T) {
 		data, _ := json.Marshal(a)
 		return &llm.ChatResponse{Content: string(data), Usage: llm.TokenUsage{PromptTokens: 10, CompletionTokens: 5}}, nil
 	})
-	got, u, cost, err := runAuditPhase(context.Background(), doc, "fixture", traceClient(client, ledger, "audit"), "", config.ModelConfig{Name: "test", InputPricePerM: 1, OutputPricePerM: 2}, llm.NewPromptLoader(os.DirFS("../../prompts/default")), llm.OutputModeNone, ingest.FileMap{"a.go": "sink()\nsink()\nsink()", "b.go": "sink()\nsink()"}, .3, nil, "", 2, true, chunk.NewTokenCounter("", nil), nil, nil)
+	got, u, cost, err := runAuditPhase(context.Background(), doc, "fixture", traceClient(client, ledger, "audit"), "", config.ModelConfig{Name: "test", InputPricePerM: 1, OutputPricePerM: 2}, additionsAllowedLoader(t), llm.OutputModeNone, ingest.FileMap{"a.go": "sink()\nsink()\nsink()", "b.go": "sink()\nsink()"}, .3, nil, "", 2, true, chunk.NewTokenCounter("", nil), nil, nil)
 	if err != nil || got == nil || !writer.failed || calls != 3 || u.PromptTokens != 30 || u.CompletionTokens != 15 {
 		t.Fatalf("err=%v failed=%v calls=%d usage=%+v", err, writer.failed, calls, u)
 	}

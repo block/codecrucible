@@ -388,6 +388,8 @@ See [PROMPT_SETS.md](PROMPT_SETS.md) for a fuller walkthrough of when to reach f
 
 Each prompt set directory must contain: `security_analysis_base.yaml`, `analysis_sections.yaml`, `feature_detection.yaml`, `audit.yaml`, and optionally `context_compress.yaml`. A legacy audit (`audit.yaml` without a contract) also reads `cwe_deep_analysis.yaml`; v2 and v3 audits require `audit_families.yaml` instead.
 
+A legacy audit may also report findings the analysis missed, which appear with `auditStatus: "new"`. Setting `allow_new_findings: false` in `audit.yaml` limits the audit to the findings it was given: the audit schema allows only an empty `new_findings` array, and any additions a model returns anyway are excluded before verdicts are applied. Excluded additions remain in the lineage ledger as observations with the reason `audit_discovery_disabled`, and their total is recorded as `execution.auditAdditionsDropped` in the run metadata (omitted when zero). The `default` set uses `allow_new_findings: false`, so its audit only issues verdicts on analysis findings. When the key is absent, as in the other legacy sets, additions are kept and deduplicated. v2 and v3 audits have their own contracts, so the key has no effect on them, including `core`.
+
 ## Configuration
 
 Configuration follows a priority chain: **CLI flags > environment variables > config file > defaults**.
@@ -922,7 +924,7 @@ Per-finding state lives in `result.properties`:
 |----------|---------|
 | `findingId` | Stable ID (`CC-` + 16 hex). Also in `partialFingerprints["codecrucibleFinding/v1"]` |
 | `verified` | `true` only when the audit confirmed, refined, or escalated the finding and did not suppress it |
-| `auditStatus` | `confirmed`, `refined`, `escalated`, `unverified`, `rejected`, `duplicate` (v2), `superseded` (v3: suppressed because its independently audited children cover all of its material), `new` (added by the audit), or `not_audited` |
+| `auditStatus` | `confirmed`, `refined`, `escalated`, `unverified`, `rejected`, `duplicate` (v2), `superseded` (v3: suppressed because its independently audited children cover all of its material), `new` (added by a legacy audit that allows additions; see `allow_new_findings`), or `not_audited` |
 | `auditConfidence` | Audit confidence, 0–1 |
 | `auditJustification`, `auditBlockingCode` | The auditor's reasoning and, for rejections, the quoted blocking source |
 | `auditReasons` | Machine-readable qualifiers: `missing_verdict`, `audit_skipped`, `ungrounded_rejection`, `below_confidence_threshold`; v2 adds `refuted:<question>`, `unknown:<question>`, `ungrounded_refutation:<question>`, `unverified_evidence:<question>`, and `duplicate`; v3 adds `invalid_claim_assessment`, `refuted:<question>`, `unknown:<question>`, `insufficient_evidence:<question>`, `incomplete_claim_coverage`, and `independent_subclaims` |
@@ -1085,7 +1087,7 @@ Every SARIF run includes `properties.codecrucible` with `schemaVersion: 1`:
 | `recipe.phases` | Analysis, feature detection, audit, and context compression: provider/model, sanitized base URL/endpoint, transport, model parameters, context/output limits, temperature settings, output mode, timeout, tokenizer, and pricing assumptions |
 | `recipe.controls` | Scope filters, test/document inclusion, file-size limit, compression, concurrency, cost limit, severity gate, phase toggles, audit confidence/batch size, and context budget |
 | `recipeFingerprint` | SHA-256 of the canonical JSON recipe (sorted object keys, preserved array order); excludes output paths, credentials, timestamps, and execution outcomes |
-| `execution` | Artifact stage, phase statuses and actual phase configurations, fallbacks, per-phase model calls, the models used, detected features, token correction, chunk/recovery counts, source loading/compression outcomes, packed-context fingerprints/truncation, and `lineageIncomplete` (set when any lineage event was not recorded) |
+| `execution` | Artifact stage, phase statuses and actual phase configurations, fallbacks, per-phase model calls, the models used, detected features, token correction, chunk/recovery counts, source loading/compression outcomes, packed-context fingerprints/truncation, `auditAdditionsDropped` (audit additions excluded under `allow_new_findings: false`), and `lineageIncomplete` (set when any lineage event was not recorded) |
 | `execution.sourceIndex` | Extractor version, fingerprints of admitted source bytes and the index, file/line counts, extraction modes, and import-resolution counts |
 | `execution.sourceBundles` | Fingerprints of the source context assembled for feature detection, analysis chunks/recovery, and audit batches |
 | `execution.sourceCoverage` | Admitted, planned, and successfully analyzed file counts; repeated files (including retries), and repo-relative lists of unplanned or unanalyzed files |

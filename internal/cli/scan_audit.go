@@ -268,11 +268,18 @@ func runAuditPhase(
 		auditResult.AuditedFindings = append(auditResult.AuditedFindings, r.AuditedFindings...)
 		if allowNewFindings {
 			auditResult.NewFindings = append(auditResult.NewFindings, r.NewFindings...)
-		} else if len(r.NewFindings) > 0 {
-			if err := journal.excludeCandidates(r.NewFindings, fileMap); err != nil {
-				return &doc, usage, cost, err
+		} else {
+			// Every addition the model returned counts, including repeats of
+			// one another that were collapsed before the policy applied.
+			if metadata != nil {
+				metadata.Execution.AuditAdditionsDropped += len(r.NewFindings) + len(r.DiscardedAdditions)
 			}
-			slog.Warn("audit additions excluded by prompt-set policy", "label", label, "candidates", len(r.NewFindings))
+			if len(r.NewFindings) > 0 {
+				if err := journal.excludeCandidates(r.NewFindings, fileMap); err != nil {
+					return &doc, usage, cost, err
+				}
+				slog.Warn("audit additions excluded by prompt-set policy", "label", label, "candidates", len(r.NewFindings))
+			}
 		}
 		if r.AuditSummary != "" {
 			if auditResult.AuditSummary != "" {

@@ -52,8 +52,10 @@ the variant that matches the repo's primary language; fall back to the
 language-agnostic `exploit-proof` for polyglot codebases.
 
 Legacy audit sets may set `allow_new_findings: false` in `audit.yaml` to audit
-only supplied claims. The schema and runtime enforce this choice, and excluded
-model additions remain recorded in lineage. The default is `true`; v2/v3 use
+only supplied claims. The schema and runtime enforce this choice, excluded
+model additions remain recorded in lineage, and the count is reported as
+`execution.auditAdditionsDropped`. The `default` set sets it;
+for any set that omits the key the audit may still add findings. v2/v3 use
 their own contracts.
 
 ## Authoring a new set
