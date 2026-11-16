@@ -1042,7 +1042,9 @@ All audit contracts carry more than the files the findings cite. Up to about 24K
 tokens of excerpts are retrieved per batch, with real line numbers, so the
 auditor can check what decides a claim:
 
-- references to the flagged function, such as route registration;
+- references to the flagged function, with route registrations first;
+- local definitions of other names in the same statement as such a reference,
+  such as middleware registered with the handler (up to eight per claim);
 - templates the flagged code renders;
 - functions or constructors receiving the flagged expression, and one further
   call using the corresponding parameter;
@@ -1056,16 +1058,29 @@ with the overshoot removed; only if that also fails is the batch sent with an
 omission note in place of the retrieved excerpts. The claims' own files and the
 source ranges they cite are always sent.
 
-When the budget leaves excerpts out, the batch says so in plain text, so a
-guard that was not retrieved is not mistaken for a guard that does not exist:
+When retrieval leaves out context that may decide a claim, the batch says so
+in plain text, so a guard that was not retrieved is not mistaken for a guard
+that does not exist:
 
+- `Audit context omitted: ambiguous caller reference <name> in <file>`: more
+  than one local definition matches, and no import says which.
+- `Audit context omitted: unresolved or external caller reference <name> in
+  <file>`: no scanned file defines the name, or it is imported from a module
+  that does not resolve to a scanned file, such as a package dependency. A
+  qualified reference (`authz.RequireAdmin`) that does not resolve is noted
+  only when the flagged function may be passed to it directly; for languages
+  read lexically, which do not record call arguments, it is always noted.
+- `Audit context omitted: caller definition limit reached`: more definitions
+  were found than the per-claim limit.
 - `Audit context omitted: token budget exhausted`: some excerpts did not fit
   the retrieval budget.
 - `Audit context omitted: retrieval budget exhausted`: a legacy batch's
   rendered context could not be made to fit, and no excerpts were sent.
 
-A v3 audit records budget shortfalls as `budget_exhausted` omissions in its
-context bundle instead.
+A v3 audit lists the caller notes among the `Context omissions` of its context
+bundle, so they are recorded in the bundle artifact and its fingerprint. It
+records budget shortfalls as `budget_exhausted` omissions instead of the two
+budget notes.
 
 Retrieval is deterministic. Language adapters supply syntax and name lookup;
 the shared engine controls traversal limits, ranking, excerpt coverage and the
@@ -1073,6 +1088,16 @@ token budget. Go uses its standard parser. Kotlin has a dedicated syntax reader
 for ordinary functions, primary constructors, objects, named arguments and
 import aliases. Other languages retain lexical retrieval without parameter
 binding. Go parse failures also fall back to lexical retrieval.
+
+Caller-definition retrieval has no language rules of its own. The source index
+supplies statement boundaries, names, comment masking and import bindings:
+each language's import syntax (ES modules and `require`, Python `import` and
+`from … import`, Go and Kotlin imports) stays in its import parser, and a name
+imported from a module that resolves outside the scanned files never matches a
+local namesake. Non-relative JavaScript specifiers, including `@/` and `~/`
+aliases and directory `index` files, match scanned files at complete path
+segments only. Adding a language means teaching the source index, not the
+audit.
 
 Retrieval supplies context candidates, not vulnerability verdicts or proof of
 data flow. Ambiguous definitions and unsupported Kotlin dispatch remain

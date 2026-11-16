@@ -64,6 +64,9 @@ func TestRetrieveFindsCallersTemplatesAndDefinitions(t *testing.T) {
 	}
 	var have []string
 	for _, e := range got {
+		if e.File == "" {
+			continue
+		}
 		have = append(have, fmt.Sprintf("%s:%d-%d %s", e.File, e.Start, e.End, e.Reason))
 	}
 	if strings.Join(have, "\n") != strings.Join(want, "\n") {
@@ -181,6 +184,9 @@ func TestRetrieveFollowsFlaggedValueIntoConstructor(t *testing.T) {
 	claim := "app/src/main/kotlin/pay/RequestTransferAction.kt"
 	var have []string
 	for _, e := range ix.Retrieve(Claim{File: claim, Start: 14, End: 14}, map[string]bool{claim: true}) {
+		if e.File == "" {
+			continue
+		}
 		have = append(have, fmt.Sprintf("%s:%d-%d %s", e.File, e.Start, e.End, e.Reason))
 	}
 	want := []string{

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"path"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -23,6 +24,7 @@ type defID = sourceindex.DefID
 const BudgetNote = "Audit context omitted: token budget exhausted"
 
 // Excerpt is a line range retrieved for context, 1-based and inclusive.
+// An empty File carries an omission note in Reason instead of source.
 type Excerpt struct {
 	File       string
 	Start, End int
@@ -81,6 +83,9 @@ const (
 	maxForwarded   = 2 // definitions a receiving call passes the value to
 	maxDefLines    = 60
 	maxTemplate    = 400
+	// maxCallerDefinitions caps the definitions of names that share a caller's
+	// statement with the flagged function, such as middleware.
+	maxCallerDefinitions = 8
 	// maxEnclosingSpan is how far below a definition a claim can sit and
 	// still count as inside it.
 	maxEnclosingSpan = 150
@@ -118,22 +123,30 @@ func (ix *Index) Retrieve(c Claim, skip map[string]bool) []Excerpt {
 	var out []Excerpt
 	coverage := map[string][][2]int{}
 	add := func(e Excerpt) {
+		if e.File == "" {
+			out = append(out, e)
+			return
+		}
 		if !skip[e.File] && !covered(coverage[e.File], e.Start, e.End) {
 			out = append(out, e)
 			coverage[e.File] = merge(append(coverage[e.File], [2]int{e.Start, e.End}))
 		}
 	}
+	seen := map[defID]bool{}
+	if haveEnclosing {
+		seen[enclosing.ID()] = true
+	}
 	if haveEnclosing && !genericNames[enclosing.Name] && len(enclosing.Name) >= 4 {
-		for _, e := range ix.callerExcerpts(enclosing) {
+		callers := ix.callerExcerpts(enclosing)
+		for _, e := range callers {
+			add(e)
+		}
+		for _, e := range ix.callerDefinitions(enclosing, callers, seen) {
 			add(e)
 		}
 	}
 	for _, e := range ix.templateExcerpts(ix.templateLines(c.File, window), c.File) {
 		add(e)
-	}
-	seen := map[defID]bool{}
-	if haveEnclosing {
-		seen[enclosing.ID()] = true
 	}
 	n := 0
 	for _, receiver := range ix.source.ContainingCalls(c.File, c.Start, end, lo) {
@@ -263,6 +276,13 @@ func (ix *Index) callerExcerpts(def Def) []Excerpt {
 	sort.SliceStable(order, func(i, j int) bool { return rank(order[i]) < rank(order[j]) })
 	var out []Excerpt
 	for _, f := range order[:min(len(order), maxCallerFiles)] {
+		// Route registrations are the evidence of what runs before the handler.
+		lines := ix.source.Lines(f)
+		route := make(map[int]bool, len(byFile[f]))
+		for _, h := range byFile[f] {
+			route[h.line] = routeHint.MatchString(lines[h.line-1])
+		}
+		sort.SliceStable(byFile[f], func(i, j int) bool { return route[byFile[f][i].line] && !route[byFile[f][j].line] })
 		for _, h := range byFile[f][:min(len(byFile[f]), maxCallerHits)] {
 			out = append(out, Excerpt{File: f, Start: max(1, h.line-callerRadius), End: min(len(ix.source.Lines(f)), h.line+callerRadius),
 				Reason: "reference to " + def.Name})
@@ -349,9 +369,14 @@ func Render(ix *Index, excerpts []Excerpt, budget int, count func(string) int) (
 	var files []*fileRanges
 	byPath := map[string]*fileRanges{}
 	used := 0
+	var notes []string
 	truncated := false
 	kept := 0
 	for _, e := range excerpts {
+		if e.File == "" {
+			notes = append(notes, e.Reason)
+			continue
+		}
 		lines := ix.source.Lines(e.File)
 		start, end := max(1, e.Start), min(len(lines), e.End)
 		if start > end {
@@ -397,7 +422,14 @@ func Render(ix *Index, excerpts []Excerpt, budget int, count func(string) int) (
 	}
 	// Say what is missing, so an unretrieved guard is not read as an absent one.
 	if truncated {
-		b.WriteString(BudgetNote + "\n")
+		notes = append(notes, BudgetNote)
+	}
+	seenNotes := map[string]bool{}
+	for _, note := range notes {
+		if !seenNotes[note] {
+			seenNotes[note] = true
+			b.WriteString(note + "\n")
+		}
 	}
 	return b.String(), kept
 }
@@ -445,3 +477,107 @@ var (
 	}
 	stringLit = regexp.MustCompile("[\"'`]([\\w./-]+)[\"'`]")
 )
+
+// callerDefinitions retrieves local definitions of the other names in a
+// caller's statement, such as middleware registered with the handler. These
+// are context candidates, not proof that a guard executes or applies to the
+// claim. A name that cannot be resolved to one admitted definition yields an
+// omission note instead, so a guard that was not retrieved is not mistaken for
+// one that does not exist. Statement boundaries, name syntax and import
+// bindings come from the source index's language adapters.
+func (ix *Index) callerDefinitions(subject Def, callers []Excerpt, seen map[defID]bool) []Excerpt {
+	type candidate struct {
+		file string
+		ref  sourceindex.Reference
+	}
+	var candidates []candidate
+	for _, e := range callers {
+		for _, span := range ix.source.StatementsReferencing(e.File, subject.Name) {
+			refs := ix.source.NamesIn(e.File, span)
+			if len(refs) == 0 || refs[len(refs)-1].Line < e.Start || refs[0].Line > e.End {
+				continue
+			}
+			for _, ref := range refs {
+				_, imported := ix.source.ImportOf(e.File, ref.Name)
+				if ix.source.Declared(ref.Name) || imported || ref.Qualifier != "" {
+					candidates = append(candidates, candidate{e.File, ref})
+				}
+			}
+		}
+	}
+	var out []Excerpt
+	noted := map[string]bool{}
+	definitions := 0
+	for _, c := range candidates {
+		if keywords[c.ref.Name] || genericNames[c.ref.Name] || c.ref.Name == subject.Name {
+			continue
+		}
+		d, ok := ix.resolveCallerName(c.file, c.ref)
+		if !ok {
+			// A qualified reference that does not resolve is usually a method
+			// of something outside the snapshot. Note it only when it may wrap
+			// the subject; adapters that do not record call arguments cannot
+			// rule that out.
+			if c.ref.Qualifier != "" && ix.source.KnowsArguments(c.file) && !ix.source.PassesName(c.file, c.ref, subject.Name) {
+				continue
+			}
+			reason := "unresolved or external"
+			if len(ix.source.Candidates(c.file, c.ref.Name, false)) > 1 {
+				reason = "ambiguous"
+			}
+			note := fmt.Sprintf("Audit context omitted: %s caller reference %s in %s", reason, c.ref.Name, c.file)
+			if !noted[note] {
+				out = append(out, Excerpt{Reason: note})
+				noted[note] = true
+			}
+			continue
+		}
+		if seen[d.ID()] {
+			continue
+		}
+		seen[d.ID()] = true
+		if definitions == maxCallerDefinitions {
+			out = append(out, Excerpt{Reason: "Audit context omitted: caller definition limit reached"})
+			break
+		}
+		definitions++
+		out = append(out, defExcerpt(d, "candidate definition near caller of "+subject.Name+": "+c.ref.Name))
+	}
+	return out
+}
+
+// resolveCallerName resolves a name used in a caller's statement. A name bound
+// by import must resolve into that import's targets: an external module's
+// name never matches a local namesake, and a local module's declaration wins
+// over a name-only guess. A local import whose targets do not declare the name
+// (a re-export) keeps the name-only resolution.
+func (ix *Index) resolveCallerName(file string, ref sourceindex.Reference) (Def, bool) {
+	d, ok := ix.source.Resolve(file, ref, false)
+	bound := ref.Name
+	if ref.Qualifier != "" {
+		bound = ref.Qualifier
+	}
+	binding, imported := ix.source.ImportOf(file, bound)
+	if !imported {
+		return d, ok
+	}
+	if len(binding.Targets) == 0 {
+		return Def{}, false
+	}
+	if ok && slices.Contains(binding.Targets, d.File) {
+		return d, true
+	}
+	var inTargets []Def
+	for _, candidate := range ix.source.Candidates(file, ref.Name, false) {
+		if slices.Contains(binding.Targets, candidate.File) {
+			inTargets = append(inTargets, candidate)
+		}
+	}
+	if len(inTargets) == 1 {
+		return inTargets[0], true
+	}
+	if len(inTargets) > 1 {
+		return Def{}, false
+	}
+	return d, ok
+}

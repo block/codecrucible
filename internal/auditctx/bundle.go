@@ -67,7 +67,17 @@ func (ix *Index) Bundle(claims []Claim, explicit []Excerpt, budget int, count fu
 		}
 	}
 	ranges := map[string][][2]int{}
+	notes := map[string]bool{}
 	for _, e := range candidates {
+		if e.File == "" {
+			// Retrieval notes name context it could not resolve. Carry them
+			// into the prompt as omissions, once each.
+			if !notes[e.Reason] {
+				notes[e.Reason] = true
+				b.Omitted = append(b.Omitted, Omission{Reason: e.Reason})
+			}
+			continue
+		}
 		lines := ix.source.Lines(e.File)
 		reason := ""
 		switch {
