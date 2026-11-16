@@ -170,7 +170,7 @@ func runAuditPhase(
 	// Files shared across batches get sent more than once — a deliberate
 	// tradeoff: more tokens, but each call is stateless and can be retried
 	// without coordination.
-	auditCall := func(batch []auditClaim, label string) (*llm.ChatResponse, error) {
+	auditCall := func(batch []auditClaim, label, repair string) (*llm.ChatResponse, error) {
 		var cweIDs []string
 		filesNeeded := make(map[string]bool)
 		for _, f := range batch {
@@ -218,7 +218,7 @@ func runAuditPhase(
 		cited, _ := citedAuditContext(retrieval, source, batch, filesNeeded, counter)
 		codeCtx.WriteString(cited)
 		assemble := func(code string) ([]llm.Message, error) {
-			return promptLoader.AssembleAuditMessages(llm.AuditParams{
+			messages, err := promptLoader.AssembleAuditMessages(llm.AuditParams{
 				RepoName:             repoName,
 				FindingsJSON:         string(findingsJSON),
 				CodeContext:          code,
@@ -227,6 +227,12 @@ func runAuditPhase(
 				ProductionOnly:       productionOnly,
 				SupplementaryContext: supContext,
 			})
+			// Repair feedback is part of the fixed prompt, so the retrieval
+			// budget below accounts for it.
+			if err == nil && repair != "" && len(messages) > 0 {
+				messages[len(messages)-1].Content += "\n\n" + repair
+			}
+			return messages, err
 		}
 		countMessages := func(messages []llm.Message) int {
 			n := 0

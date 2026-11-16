@@ -205,7 +205,7 @@ func TestLegacyRetryDeduplicatesAdditions(t *testing.T) {
 	var records bytes.Buffer
 	ledger := provenance.New("retry", &records)
 	calls := 0
-	got, _, _, err := runLegacyAuditBatch(context.Background(), []auditClaim{{FindingID: "a"}, {FindingID: "b"}}, "test", config.ModelConfig{}, func(_ []auditClaim, _ string) (*llm.ChatResponse, error) {
+	got, _, _, err := runLegacyAuditBatch(context.Background(), []auditClaim{{FindingID: "a"}, {FindingID: "b"}}, "test", config.ModelConfig{}, func(_ []auditClaim, _, _ string) (*llm.ChatResponse, error) {
 		calls++
 		id := "a"
 		if calls == 2 {
