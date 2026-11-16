@@ -19,6 +19,9 @@ import (
 type Def = sourceindex.Def
 type defID = sourceindex.DefID
 
+// BudgetNote marks rendered context that left excerpts out for lack of budget.
+const BudgetNote = "Audit context omitted: token budget exhausted"
+
 // Excerpt is a line range retrieved for context, 1-based and inclusive.
 type Excerpt struct {
 	File       string
@@ -346,6 +349,7 @@ func Render(ix *Index, excerpts []Excerpt, budget int, count func(string) int) (
 	var files []*fileRanges
 	byPath := map[string]*fileRanges{}
 	used := 0
+	truncated := false
 	kept := 0
 	for _, e := range excerpts {
 		lines := ix.source.Lines(e.File)
@@ -360,6 +364,7 @@ func Render(ix *Index, excerpts []Excerpt, budget int, count func(string) int) (
 		}
 		cost := count(strings.Join(lines[start-1:end], "\n")) + 10
 		if used+cost > budget {
+			truncated = true
 			continue
 		}
 		used += cost
@@ -389,6 +394,10 @@ func Render(ix *Index, excerpts []Excerpt, budget int, count func(string) int) (
 			}
 		}
 		b.WriteString("</file>\n\n")
+	}
+	// Say what is missing, so an unretrieved guard is not read as an absent one.
+	if truncated {
+		b.WriteString(BudgetNote + "\n")
 	}
 	return b.String(), kept
 }

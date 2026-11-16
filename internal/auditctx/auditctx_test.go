@@ -111,7 +111,7 @@ func TestRenderMergesRangesWithinBudget(t *testing.T) {
 		{File: "a.go", Start: 2, End: 2}, // already covered
 		{File: "b.go", Start: 1, End: 50},
 	}, 60, count)
-	want := "<file path=\"a.go\" lines=\"2-4,7-8\">\n2| l2\n3| l3\n4| l4\n...\n7| l7\n8| l8\n</file>\n\n"
+	want := "<file path=\"a.go\" lines=\"2-4,7-8\">\n2| l2\n3| l3\n4| l4\n...\n7| l7\n8| l8\n</file>\n\nAudit context omitted: token budget exhausted\n"
 	// Three admitted excerpts plus the contained excerpt are all covered.
 	if out != want || kept != 4 {
 		t.Fatalf("Render = %q (kept %d); want %q", out, kept, want)

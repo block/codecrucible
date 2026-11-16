@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math"
 	"sort"
 	"strings"
 
@@ -16,6 +17,34 @@ import (
 	"github.com/block/codecrucible/internal/sarif"
 	"github.com/block/codecrucible/internal/sourceindex"
 )
+
+const (
+	// auditContextReserve is left unspent in the model's context window when
+	// fitting retrieved evidence, for tokenizer error and message framing.
+	auditContextReserve = 512
+	// auditContextSlack is how far rendered wrappers and notes may exceed the
+	// retrieval budget before retrieval is retried with less.
+	auditContextSlack = 256
+	// auditBudgetNote replaces retrieved evidence that cannot be made to fit.
+	auditBudgetNote = "Audit context omitted: retrieval budget exhausted\n"
+)
+
+// fitAuditContext retrieves evidence within budget. Retrieval only estimates
+// what file wrappers and notes cost, so when the assembled request overshoots
+// by more than the slack it retrieves once more with the overshoot removed.
+// Only if that still overshoots is the evidence replaced by an omission note;
+// the claims' own source is never what gives way.
+func fitAuditContext(budget int, retrieve func(int) string, cost func(string) int) string {
+	retrieved := retrieve(budget)
+	over := cost(retrieved) - budget
+	if over <= auditContextSlack {
+		return retrieved
+	}
+	if retrieved = retrieve(max(0, budget-over)); cost(retrieved) <= budget+auditContextSlack {
+		return retrieved
+	}
+	return auditBudgetNote
+}
 
 // AuditResult represents the structured output from the audit phase LLM call.
 type AuditResult struct {
@@ -188,27 +217,57 @@ func runAuditPhase(
 		}
 		cited, _ := citedAuditContext(retrieval, source, batch, filesNeeded, counter)
 		codeCtx.WriteString(cited)
-		retrieved, _ := retrieveAuditContext(retrieval, claims, filesNeeded, counter, auditRetrievalBudget-counter.Count(cited))
-		codeCtx.WriteString(retrieved)
-		recordSourceBundle(metadata, "audit", label, codeCtx.String())
-
-		messages, err := promptLoader.AssembleAuditMessages(llm.AuditParams{
-			RepoName:             repoName,
-			FindingsJSON:         string(findingsJSON),
-			CodeContext:          codeCtx.String(),
-			CWEIDs:               cweIDs,
-			Schema:               string(*auditSchema),
-			ProductionOnly:       productionOnly,
-			SupplementaryContext: supContext,
-		})
+		assemble := func(code string) ([]llm.Message, error) {
+			return promptLoader.AssembleAuditMessages(llm.AuditParams{
+				RepoName:             repoName,
+				FindingsJSON:         string(findingsJSON),
+				CodeContext:          code,
+				CWEIDs:               cweIDs,
+				Schema:               string(*auditSchema),
+				ProductionOnly:       productionOnly,
+				SupplementaryContext: supContext,
+			})
+		}
+		countMessages := func(messages []llm.Message) int {
+			n := 0
+			for _, m := range messages {
+				n += counter.Count(m.Content)
+			}
+			return n
+		}
+		// The claims' own files and cited ranges are always sent. Retrieved
+		// evidence gets what remains of the retrieval budget and, when the
+		// model has a context limit, of the context window.
+		messages, err := assemble(codeCtx.String())
 		if err != nil {
 			return nil, fmt.Errorf("assemble audit prompt: %w", err)
 		}
-
-		var estTokens int
-		for _, m := range messages {
-			estTokens += counter.Count(m.Content)
+		baseTokens := countMessages(messages)
+		budget := auditRetrievalBudget - counter.Count(cited)
+		if modelCfg.ContextLimit > 0 {
+			budget = min(budget, modelCfg.ContextLimit-modelCfg.MaxOutputTokens-baseTokens-auditContextReserve)
 		}
+		budget = max(0, budget)
+		retrieved := fitAuditContext(budget,
+			func(b int) string {
+				text, _ := retrieveAuditContext(retrieval, claims, filesNeeded, counter, b)
+				return text
+			},
+			func(text string) int {
+				m, err := assemble(codeCtx.String() + text)
+				if err != nil {
+					return math.MaxInt / 2
+				}
+				return countMessages(m) - baseTokens
+			})
+		withRetrieved := codeCtx.String() + retrieved
+		messages, err = assemble(withRetrieved)
+		if err != nil {
+			return nil, fmt.Errorf("assemble audit prompt: %w", err)
+		}
+		recordSourceBundle(metadata, "audit", label, withRetrieved)
+
+		estTokens := countMessages(messages)
 		slog.Info("running audit batch",
 			"label", label,
 			"findings", len(batch),
@@ -220,7 +279,7 @@ func runAuditPhase(
 
 		request := llm.ChatRequest{
 			Label:                   label,
-			SourceBundleFingerprint: fingerprint([]byte(codeCtx.String())),
+			SourceBundleFingerprint: fingerprint([]byte(withRetrieved)),
 			Endpoint:                endpoint,
 			Model:                   modelCfg.Name,
 			Messages:                messages,

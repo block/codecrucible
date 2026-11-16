@@ -1048,6 +1048,25 @@ auditor can check what decides a claim:
   call using the corresponding parameter;
 - definitions of the functions and types it uses.
 
+Excerpts are taken round-robin across the batch's claims and never repeat a
+file the batch already includes. A legacy audit also shrinks the retrieval
+budget so the prompt fits the model's context limit after reserving output
+tokens. If the rendered excerpts still overshoot, retrieval is retried once
+with the overshoot removed; only if that also fails is the batch sent with an
+omission note in place of the retrieved excerpts. The claims' own files and the
+source ranges they cite are always sent.
+
+When the budget leaves excerpts out, the batch says so in plain text, so a
+guard that was not retrieved is not mistaken for a guard that does not exist:
+
+- `Audit context omitted: token budget exhausted`: some excerpts did not fit
+  the retrieval budget.
+- `Audit context omitted: retrieval budget exhausted`: a legacy batch's
+  rendered context could not be made to fit, and no excerpts were sent.
+
+A v3 audit records budget shortfalls as `budget_exhausted` omissions in its
+context bundle instead.
+
 Retrieval is deterministic. Language adapters supply syntax and name lookup;
 the shared engine controls traversal limits, ranking, excerpt coverage and the
 token budget. Go uses its standard parser. Kotlin has a dedicated syntax reader
