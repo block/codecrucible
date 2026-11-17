@@ -37,6 +37,8 @@ type Event struct {
 }
 
 type Ledger struct {
+	incomplete   bool
+	warning      func(error)
 	mu           sync.Mutex
 	err          error
 	run          string
@@ -57,7 +59,30 @@ func digest(v any) string {
 	h := sha256.Sum256(b)
 	return hex.EncodeToString(h[:])
 }
-func (l *Ledger) emit(e Event) error {
+
+// BestEffort makes recording errors diagnostic while retaining in-memory accounting.
+func (l *Ledger) BestEffort(warn func(error)) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.warning = warn
+}
+
+func (l *Ledger) emit(e Event) (result error) {
+	defer func() {
+		if result != nil && l.warning != nil {
+			l.incomplete = true
+			l.warning(result)
+			writeFailed := l.err != nil
+			if writeFailed {
+				l.writer = io.Discard
+				l.err = nil
+			}
+			result = nil
+			if writeFailed {
+				result = l.emit(e)
+			}
+		}
+	}()
 	if l.err != nil {
 		return l.err
 	}
@@ -365,3 +390,5 @@ func (l *Ledger) Discard(operation, producer, reason string, raw json.RawMessage
 	defer l.mu.Unlock()
 	return l.emit(Event{Operation: "discard/" + operation, Type: "discarded", Inputs: []string{producer}, Reason: reason, Artifact: raw})
 }
+
+func (l *Ledger) Incomplete() bool { l.mu.Lock(); defer l.mu.Unlock(); return l.incomplete }

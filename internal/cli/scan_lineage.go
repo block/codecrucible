@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 
@@ -14,6 +16,8 @@ import (
 	"github.com/block/codecrucible/internal/provenance"
 	"github.com/block/codecrucible/internal/sarif"
 )
+
+var lineageWriter = func(w io.Writer) io.Writer { return w }
 
 func openLineage(w phaseArtifactWriter, m *sarif.ScanMetadata) (*provenance.Ledger, *os.File, error) {
 	var nonce [16]byte
@@ -40,8 +44,9 @@ func openLineage(w phaseArtifactWriter, m *sarif.ScanMetadata) (*provenance.Ledg
 	if file == nil {
 		l = provenance.New(m.Execution.RunID, nil)
 	} else {
-		l = provenance.New(m.Execution.RunID, file)
+		l = provenance.New(m.Execution.RunID, lineageWriter(file))
 	}
+	l.BestEffort(warnLineage)
 	if err := l.Metadata("run-start", m); err != nil {
 		if file != nil {
 			_ = file.Close()
@@ -86,6 +91,7 @@ type lineageClient struct {
 }
 
 func traceClient(base llm.Client, ledger *provenance.Ledger, phase string) llm.Client {
+	ledger.BestEffort(warnLineage)
 	return &lineageClient{base: base, ledger: ledger, phase: phase}
 }
 func clientLedger(client llm.Client) *provenance.Ledger {
@@ -105,7 +111,7 @@ func (c *lineageClient) ChatCompletion(ctx context.Context, req llm.ChatRequest)
 	schema, _ := json.Marshal(req.ResponseSchema)
 	p, err := c.ledger.BeginRequest(c.phase, req.Label, auditcore.Producer{RequestedModel: llm.RequestModel(req), PromptFingerprint: fingerprint(prompt), SchemaFingerprint: fingerprint(schema), SourceBundleFingerprint: req.SourceBundleFingerprint, Repairs: req.Repairs})
 	if err != nil {
-		return nil, err
+		warnLineage(err)
 	}
 	response, err := c.base.ChatCompletion(ctx, req)
 	e := provenance.Exchange{Label: req.Label, Model: p.RequestedModel, PromptFingerprint: p.PromptFingerprint, SchemaFingerprint: p.SchemaFingerprint, Failed: err != nil}
@@ -120,7 +126,7 @@ func (c *lineageClient) ChatCompletion(ctx context.Context, req llm.ChatRequest)
 	}
 	response.ProducerID = p.ResponseID
 	if writeErr := c.ledger.CompleteRequest(p, e); writeErr != nil {
-		return response, writeErr
+		warnLineage(writeErr)
 	}
 	return response, err
 }
@@ -133,4 +139,8 @@ func parsedProducer(client llm.Client, response *llm.ChatResponse, content strin
 		return l.Transform(id, "local-json-repair", content)
 	}
 	return id, nil
+}
+
+func warnLineage(err error) {
+	slog.Warn("lineage incomplete; continuing with scan results", "error", err)
 }

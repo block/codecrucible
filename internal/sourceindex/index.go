@@ -89,10 +89,10 @@ func New(files map[string]string) *Index {
 	identities := make([]identity, 0, len(files))
 	for _, p := range ix.paths {
 		text := ix.files[p]
-		lines := strings.Split(text, "\n")
+		lines := strings.Split(strings.TrimSuffix(text, "\n"), "\n")
 		ix.lines[p] = lines
 		ix.snapshot.Lines += len(lines)
-		src := adapterFor(p).parse(p, text)
+		src := adapterFor(p).parse(p, strings.TrimSuffix(text, "\n"))
 		ix.sources[p] = src
 		ix.snapshot.Extraction[src.mode]++
 		for _, d := range src.defs {

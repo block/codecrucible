@@ -22,8 +22,10 @@ readers extract source facts; security policy stays in shared code.
 - `internal/sourceindex` pins admitted source and resolves local dependencies.
   `internal/auditctx` retrieves numbered excerpts from those bytes.
 - `internal/provenance` records responses, observations, revisions and terminal
-  dispositions. Explicit producer links and individual audit decisions are
-  still missing. Semantic split/duplicate edges are not yet implemented.
+  dispositions. Earlier ledgers lacked explicit producer links, individual
+  audit decisions and semantic split/duplicate edges. The v2 ledger now
+  records producers, `decision` events, and `split_from`/`duplicate_of`
+  relationships (`internal/provenance/ledger.go`).
 - `internal/cli/model_usage.go` now records every phase's usage and lineage,
   including fallback clients. Extend this common path rather than add another
   provider-specific recorder.
@@ -34,8 +36,11 @@ readers extract source facts; security policy stays in shared code.
 - Legacy audit output can still rewrite an entire grouped claim. The supplied
   identity fields prevent some cross-wiring, but an echoed ID/title is not
   evidence that an explanation concerns the right claim.
-- Evidence-aware exact deduplication deliberately retains more records. Same
-  location, CWE, or similar wording alone must remain insufficient identity.
+- Deduplication groups results by location and normalized CWE, then splits
+  each group by source/sink anchors from code flows, reported locations and
+  structured finding evidence (guards excluded). Wording decides identity in neither
+  direction: reworded reports of one defect merge, and different sources or
+  sinks at the same location remain separate.
 
 ## Data model
 

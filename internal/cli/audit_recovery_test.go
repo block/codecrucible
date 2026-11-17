@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,10 +10,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/block/codecrucible/internal/auditcore"
 	"github.com/block/codecrucible/internal/chunk"
 	"github.com/block/codecrucible/internal/config"
 	"github.com/block/codecrucible/internal/ingest"
 	"github.com/block/codecrucible/internal/llm"
+	"github.com/block/codecrucible/internal/provenance"
 	"github.com/block/codecrucible/internal/sarif"
 )
 
@@ -195,5 +198,280 @@ func TestAuditIncludesCodePathFilesAndReplacesPath(t *testing.T) {
 	uncertain := applyAuditVerdicts(doc, AuditResult{AuditedFindings: []AuditedFinding{{OriginalIssue: "First", FilePath: "a.go", StartLine: 1, Verdict: "unverified", CodePath: path}}}, ingest.FileMap(files), .3)
 	if len(uncertain.Runs[0].Results[0].CodeFlows) != 0 {
 		t.Fatal("unverified finding retains asserted code flow")
+	}
+}
+
+func TestLegacyRetryDeduplicatesAdditions(t *testing.T) {
+	var records bytes.Buffer
+	ledger := provenance.New("retry", &records)
+	calls := 0
+	got, _, _, err := runLegacyAuditBatch(context.Background(), []auditClaim{{FindingID: "a"}, {FindingID: "b"}}, "test", config.ModelConfig{}, func(_ []auditClaim, _ string) (*llm.ChatResponse, error) {
+		calls++
+		id := "a"
+		if calls == 2 {
+			id = "b"
+		}
+		data, _ := json.Marshal(AuditResult{AuditedFindings: []AuditedFinding{{FindingID: id, Verdict: "confirmed", Confidence: .9}}, NewFindings: []NewFinding{{Issue: "Unsafe query", FilePath: "a.go", StartLine: 3, CWEID: "CWE-89", Confidence: .9}}})
+		producer, e := ledger.BeginRequest("audit", fmt.Sprint(calls), auditcore.Producer{})
+		if e != nil {
+			return nil, e
+		}
+		if e = ledger.CompleteRequest(producer, provenance.Exchange{Content: string(data)}); e != nil {
+			return nil, e
+		}
+		return &llm.ChatResponse{Content: string(data), ProducerID: producer.ResponseID}, nil
+	})
+	journal := &auditJournal{ledger: ledger}
+	if e := journal.discardAdditions(got.DiscardedAdditions); e != nil {
+		t.Fatal(e)
+	}
+	if len(got.DiscardedAdditions) != 1 || !strings.Contains(records.String(), `"reason":"duplicate audit addition"`) {
+		t.Fatal("duplicate discard missing", records.String())
+	}
+	if err != nil || calls != 2 || len(got.AuditedFindings) != 2 || len(got.NewFindings) != 1 {
+		t.Fatalf("calls=%d additions=%d verdicts=%d err=%v", calls, len(got.NewFindings), len(got.AuditedFindings), err)
+	}
+}
+
+func TestLegacyAdditionIdentityPreservesDistinctCauses(t *testing.T) {
+	base := NewFinding{Issue: "Unsafe query", FilePath: "a.go", StartLine: 3, CWEID: "CWE-89", CodePath: []sarif.CodePathStep{{FilePath: "source.go", StartLine: 1}, {FilePath: "a.go", StartLine: 3}}}
+	for _, tc := range []struct {
+		name string
+		edit func(*NewFinding)
+		want int
+	}{
+		{"CWE", func(f *NewFinding) { f.CWEID = "CWE-943" }, 1},
+		{"missing", func(f *NewFinding) { f.CodePath = nil }, 1},
+		{"middle", func(f *NewFinding) {
+			f.CodePath = []sarif.CodePathStep{base.CodePath[0], {FilePath: "middle.go", StartLine: 2}, base.CodePath[1]}
+		}, 1},
+		{"source", func(f *NewFinding) {
+			f.CodePath = []sarif.CodePathStep{{FilePath: "other.go", StartLine: 1}, base.CodePath[1]}
+		}, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			other := base
+			tc.edit(&other)
+			got, _ := deduplicateLegacyAdditions([]NewFinding{base, other})
+			if len(got) != tc.want {
+				t.Fatalf("got %d want %d", len(got), tc.want)
+			}
+		})
+	}
+}
+
+func TestAuditRetryKeepsMaximumConfidenceAddition(t *testing.T) {
+	for _, confidences := range [][]float64{{.2, .9}, {.9, .2}} {
+		t.Run(fmt.Sprint(confidences), func(t *testing.T) {
+			var records bytes.Buffer
+			ledger := provenance.New("max-confidence", &records)
+			doc := auditFixture()
+			if err := ledger.Observe("analysis", &doc); err != nil {
+				t.Fatal(err)
+			}
+			calls := 0
+			client := auditClientFunc(func(_ context.Context, _ llm.ChatRequest) (*llm.ChatResponse, error) {
+				issue, path := "First", "a.go"
+				if calls == 1 {
+					issue, path = "Second", "b.go"
+				}
+				data, _ := json.Marshal(AuditResult{AuditedFindings: []AuditedFinding{{OriginalIssue: issue, FilePath: path, StartLine: 1, Verdict: "confirmed", Confidence: .9}}, NewFindings: []NewFinding{{Issue: "Unsafe query", FilePath: "c.go", StartLine: 1, Severity: 8, Confidence: confidences[calls]}}})
+				if confidences[calls] < .9 {
+					var response AuditResult
+					if err := json.Unmarshal(data, &response); err != nil {
+						t.Fatal(err)
+					}
+					response.NewFindings[0].CodePath = []sarif.CodePathStep{{FilePath: "c.go", StartLine: 1, EndLine: 1, Message: "Unsafe query"}}
+					data, _ = json.Marshal(response)
+				}
+				calls++
+				return &llm.ChatResponse{Content: string(data)}, nil
+			})
+			got, _, _, err := runAuditPhase(context.Background(), doc, "fixture", traceClient(client, ledger, "audit"), "", config.ModelConfig{Name: "test"}, llm.NewPromptLoader(os.DirFS("../../prompts/default")), llm.OutputModeNone, ingest.FileMap{"a.go": "sink()", "b.go": "sink()", "c.go": "sink()"}, .3, nil, "", 20, true, chunk.NewTokenCounter("", nil), nil, nil)
+			if err != nil || got == nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(records.String(), `"reason":"duplicate audit addition"`) {
+				t.Fatal("missing wired discard", records.String())
+			}
+			count := 0
+			for _, result := range got.Runs[0].Results {
+				if result.Properties.AuditStatus == "new" {
+					count++
+					if (result.Properties.AuditConfidence == nil || *result.Properties.AuditConfidence != .9) || len(result.Suppressions) != 0 || len(result.CodeFlows) == 0 {
+						t.Fatalf("lost high confidence addition: %+v", result)
+					}
+				}
+			}
+			if calls != 2 || count != 1 {
+				t.Fatalf("calls=%d new=%d", calls, count)
+			}
+		})
+	}
+}
+
+func TestAuditBatchesKeepMaximumConfidenceAddition(t *testing.T) {
+	for _, confidences := range [][]float64{{.2, .9}, {.9, .2}} {
+		t.Run(fmt.Sprint(confidences), func(t *testing.T) {
+			var records bytes.Buffer
+			ledger := provenance.New("max-confidence", &records)
+			doc := auditFixture()
+			if err := ledger.Observe("analysis", &doc); err != nil {
+				t.Fatal(err)
+			}
+			calls := 0
+			client := auditClientFunc(func(_ context.Context, _ llm.ChatRequest) (*llm.ChatResponse, error) {
+				issue, path := "First", "a.go"
+				if calls == 1 {
+					issue, path = "Second", "b.go"
+				}
+				data, _ := json.Marshal(AuditResult{AuditedFindings: []AuditedFinding{{OriginalIssue: issue, FilePath: path, StartLine: 1, Verdict: "confirmed", Confidence: .9}}, NewFindings: []NewFinding{{Issue: "Unsafe query", FilePath: "c.go", StartLine: 1, Severity: 8, Confidence: confidences[calls]}}})
+				if confidences[calls] < .9 {
+					var response AuditResult
+					if err := json.Unmarshal(data, &response); err != nil {
+						t.Fatal(err)
+					}
+					response.NewFindings[0].CodePath = []sarif.CodePathStep{{FilePath: "c.go", StartLine: 1, EndLine: 1, Message: "Unsafe query"}}
+					data, _ = json.Marshal(response)
+				}
+				calls++
+				return &llm.ChatResponse{Content: string(data)}, nil
+			})
+			got, _, _, err := runAuditPhase(context.Background(), doc, "fixture", traceClient(client, ledger, "audit"), "", config.ModelConfig{Name: "test"}, llm.NewPromptLoader(os.DirFS("../../prompts/default")), llm.OutputModeNone, ingest.FileMap{"a.go": "sink()", "b.go": "sink()", "c.go": "sink()"}, .3, nil, "", 1, true, chunk.NewTokenCounter("", nil), nil, nil)
+			if err != nil || got == nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(records.String(), `"reason":"duplicate audit addition"`) {
+				t.Fatal("missing wired discard", records.String())
+			}
+			count := 0
+			for _, result := range got.Runs[0].Results {
+				if result.Properties.AuditStatus == "new" {
+					count++
+					if (result.Properties.AuditConfidence == nil || *result.Properties.AuditConfidence != .9) || len(result.Suppressions) != 0 || len(result.CodeFlows) == 0 {
+						t.Fatalf("lost high confidence addition: %+v", result)
+					}
+				}
+			}
+			if calls != 2 || count != 1 {
+				t.Fatalf("calls=%d new=%d", calls, count)
+			}
+		})
+	}
+}
+
+func TestAuditAdditionDuplicatesAnalysisWithoutRevivingIt(t *testing.T) {
+	var records bytes.Buffer
+	ledger := provenance.New("original-duplicate", &records)
+	doc := auditFixture()
+	if err := ledger.Observe("analysis", &doc); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	client := auditClientFunc(func(_ context.Context, _ llm.ChatRequest) (*llm.ChatResponse, error) {
+		issue, path := "First", "a.go"
+		if calls > 0 {
+			issue, path = "Second", "b.go"
+		}
+		verdict := AuditedFinding{OriginalIssue: issue, FilePath: path, StartLine: 1, Verdict: "confirmed", Confidence: .9}
+		if calls == 0 {
+			verdict.Verdict = "rejected"
+			verdict.BlockingCode = "sink()"
+		}
+		calls++
+		data, _ := json.Marshal(AuditResult{AuditedFindings: []AuditedFinding{verdict}, NewFindings: []NewFinding{{Issue: " first ", FilePath: "a.go", StartLine: 1, Severity: 8, Confidence: .9, CodePath: []sarif.CodePathStep{{FilePath: "c.go", StartLine: 1, Message: "source"}, {FilePath: "a.go", StartLine: 1, Message: "sink"}}}}})
+		return &llm.ChatResponse{Content: string(data)}, nil
+	})
+	got, _, _, err := runAuditPhase(context.Background(), doc, "fixture", traceClient(client, ledger, "audit"), "", config.ModelConfig{Name: "test"}, llm.NewPromptLoader(os.DirFS("../../prompts/default")), llm.OutputModeNone, ingest.FileMap{"a.go": "sink()", "b.go": "sink()", "c.go": "source()"}, .3, nil, "", 1, true, chunk.NewTokenCounter("", nil), nil, nil)
+	if err != nil || got == nil {
+		t.Fatal(err)
+	}
+	if len(got.Runs[0].Results) != 2 {
+		t.Fatalf("duplicate survived: %+v", got.Runs[0].Results)
+	}
+	first := got.Runs[0].Results[0]
+	if first.Properties.AuditStatus != "rejected" || len(first.Suppressions) == 0 || len(first.CodeFlows) == 0 {
+		t.Fatalf("lost rejection or evidence: %+v", first)
+	}
+	if !strings.Contains(records.String(), `"reason":"duplicate of analysis finding"`) {
+		t.Fatal("missing analysis discard", records.String())
+	}
+	if len(doc.Runs[0].Results[0].CodeFlows) != 0 {
+		t.Fatal("mutated original snapshot")
+	}
+}
+
+func TestAuditLineageFailureKeepsBatchesAndUsage(t *testing.T) {
+	ledger := provenance.New("failed", failedLineageWriter{})
+	calls := 0
+	client := auditClientFunc(func(_ context.Context, _ llm.ChatRequest) (*llm.ChatResponse, error) {
+		calls++
+		if calls == 1 {
+			return auditReply("First", "a.go"), nil
+		}
+		return auditReply("Second", "b.go"), nil
+	})
+	got, usage, cost, err := runFixtureAudit(context.Background(), auditFixture(), traceClient(client, ledger, "audit"))
+	if err != nil || got == nil {
+		t.Fatal(err)
+	}
+	if calls != 2 || usage.PromptTokens != 20 || usage.CompletionTokens != 10 || cost != 0.00004 {
+		t.Fatalf("calls=%d usage=%+v cost=%v", calls, usage, cost)
+	}
+	for _, r := range got.Runs[0].Results {
+		if r.Properties.AuditStatus != "confirmed" {
+			t.Fatalf("lost verdict: %+v", r)
+		}
+	}
+}
+
+type discardFailureWriter struct{ failed bool }
+
+func (w *discardFailureWriter) Write(p []byte) (int, error) {
+	if bytes.Contains(p, []byte(`duplicate audit addition`)) {
+		w.failed = true
+		return 0, fmt.Errorf("discard writer failed")
+	}
+	return len(p), nil
+}
+func TestAuditDiscardFailureAfterCompletedBatch(t *testing.T) {
+	writer := &discardFailureWriter{}
+	ledger := provenance.New("discard", writer)
+	doc := auditFixture()
+	more := auditFixture()
+	for i := range more.Runs[0].Results {
+		more.Runs[0].Results[i].Message.Text += " extra"
+	}
+	// Separate locations preserve four independently auditable claims.
+	for i := range more.Runs[0].Results {
+		more.Runs[0].Results[i].Locations[0].PhysicalLocation.Region.StartLine = 2
+	}
+	doc.Runs[0].Results = append(doc.Runs[0].Results, more.Runs[0].Results...)
+	calls := 0
+	client := auditClientFunc(func(_ context.Context, _ llm.ChatRequest) (*llm.ChatResponse, error) {
+		calls++
+		a := AuditResult{}
+		if calls == 1 {
+			a.AuditedFindings = []AuditedFinding{{OriginalIssue: "First", FilePath: "a.go", StartLine: 1, Verdict: "confirmed", Confidence: .9}, {OriginalIssue: "Second", FilePath: "b.go", StartLine: 1, Verdict: "confirmed", Confidence: .9}}
+		} else {
+			issue, file := "First", "a.go"
+			if calls == 3 {
+				issue, file = "Second", "b.go"
+			}
+			a.AuditedFindings = []AuditedFinding{{OriginalIssue: issue, FilePath: file, StartLine: 2, Verdict: "confirmed", Confidence: .9}}
+			a.NewFindings = []NewFinding{{Issue: "Extra", FilePath: "a.go", StartLine: 3, Confidence: .9, Severity: 8}}
+		}
+		data, _ := json.Marshal(a)
+		return &llm.ChatResponse{Content: string(data), Usage: llm.TokenUsage{PromptTokens: 10, CompletionTokens: 5}}, nil
+	})
+	got, u, cost, err := runAuditPhase(context.Background(), doc, "fixture", traceClient(client, ledger, "audit"), "", config.ModelConfig{Name: "test", InputPricePerM: 1, OutputPricePerM: 2}, llm.NewPromptLoader(os.DirFS("../../prompts/default")), llm.OutputModeNone, ingest.FileMap{"a.go": "sink()\nsink()\nsink()", "b.go": "sink()\nsink()"}, .3, nil, "", 2, true, chunk.NewTokenCounter("", nil), nil, nil)
+	if err != nil || got == nil || !writer.failed || calls != 3 || u.PromptTokens != 30 || u.CompletionTokens != 15 {
+		t.Fatalf("err=%v failed=%v calls=%d usage=%+v", err, writer.failed, calls, u)
+	}
+	if cost < .000059999 || cost > .000060001 {
+		t.Fatalf("cost=%v", cost)
+	}
+	if len(got.Runs[0].Results) != 5 {
+		t.Fatal("lost results", len(got.Runs[0].Results))
 	}
 }

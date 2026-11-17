@@ -75,6 +75,9 @@ func TestDedup_SameFileSameLineSameCWE_KeepsHighestSeverity(t *testing.T) {
 		makeResult("rule-high", "src/app.go", 10, "error"),
 	}
 
+	low, high := 3.0, 9.0
+	results[0].Properties = &FindingProperties{Severity: &low}
+	results[1].Properties = &FindingProperties{Severity: &high}
 	doc := testDoc([]SARIFRule{ruleA, ruleB}, results, []SARIFTaxon{
 		{ID: "CWE-89", ShortDescription: SARIFMessage{Text: "SQL Injection"}},
 	})
@@ -85,8 +88,8 @@ func TestDedup_SameFileSameLineSameCWE_KeepsHighestSeverity(t *testing.T) {
 	if len(run.Results) != 1 {
 		t.Fatalf("expected 1 result after dedup, got %d", len(run.Results))
 	}
-	if run.Results[0].RuleID != "rule-high" {
-		t.Errorf("expected highest severity rule kept (rule-high), got %s", run.Results[0].RuleID)
+	if run.Results[0].Level != "error" {
+		t.Errorf("expected highest severity result, got rule %s", run.Results[0].RuleID)
 	}
 }
 
@@ -271,16 +274,73 @@ func TestCweForRule(t *testing.T) {
 	}
 }
 
-func TestDedupPreservesDifferentClaimsAtSameAnchor(t *testing.T) {
+func TestDedupMergesProseDifferencesAtSameAnchor(t *testing.T) {
 	rule := makeRule("query", "8", "cwe-89")
 	a := makeResult("query", "a.go", 1, "error")
 	b := a
 	b.Message.Text = "Different attacker and data flow"
 	doc := testDoc([]SARIFRule{rule}, []SARIFResult{a, b}, nil)
-	if got := PostProcess(doc); len(got.Runs[0].Results) != 2 {
-		t.Fatal("different claims discarded")
+	if got := PostProcess(doc); len(got.Runs[0].Results) != 1 {
+		t.Fatal("prose-only duplicates retained")
 	}
-	if got := Merge([]SARIFDocument{testDoc([]SARIFRule{rule}, []SARIFResult{a}, nil), testDoc([]SARIFRule{rule}, []SARIFResult{b}, nil)}); len(got.Runs[0].Results) != 2 {
-		t.Fatal("merge discarded different evidence")
+	if got := Merge([]SARIFDocument{testDoc([]SARIFRule{rule}, []SARIFResult{a}, nil), testDoc([]SARIFRule{rule}, []SARIFResult{b}, nil)}); len(got.Runs[0].Results) != 1 {
+		t.Fatal("merge retained prose-only duplicates")
+	}
+}
+
+func TestDedupPreservesStructuralAnchors(t *testing.T) {
+	rule := makeRule("query", "8", "cwe-89")
+	a := makeResult("query", "a.go", 1, "error")
+	a.Properties = &FindingProperties{ReportedLocations: makeResult("query", "other.go", 2, "error").Locations}
+	b := a
+	b.Properties = &FindingProperties{ReportedLocations: makeResult("query", "source.go", 7, "error").Locations}
+	for _, got := range []SARIFDocument{PostProcess(testDoc([]SARIFRule{rule}, []SARIFResult{a, b}, nil)), Merge([]SARIFDocument{testDoc([]SARIFRule{rule}, []SARIFResult{a}, nil), testDoc([]SARIFRule{rule}, []SARIFResult{b}, nil)})} {
+		if len(got.Runs[0].Results) != 2 {
+			t.Fatal("distinct anchors merged")
+		}
+	}
+}
+
+func TestDedupFlowEndpointsAndMissingEvidence(t *testing.T) {
+	flow := func(lines ...int) []SARIFCodeFlow {
+		var locs []SARIFThreadFlowLocation
+		for _, line := range lines {
+			locs = append(locs, SARIFThreadFlowLocation{Location: makeResult("query", "a.go", line, "error").Locations[0]})
+		}
+		return []SARIFCodeFlow{{ThreadFlows: []SARIFThreadFlow{{Locations: locs}}}}
+	}
+	for _, tc := range []struct {
+		name        string
+		left, right []SARIFCodeFlow
+		want        int
+	}{
+		{"missing", nil, flow(2, 10), 1},
+		{"middle step", flow(2, 10), flow(2, 6, 10), 1},
+		{"different source", flow(2, 10), flow(3, 10), 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rule := makeRule("query", "8", "cwe-89")
+			a, b := makeResult("query", "a.go", 10, "error"), makeResult("query", "a.go", 10, "error")
+			a.CodeFlows, b.CodeFlows = tc.left, tc.right
+			got := PostProcess(Merge([]SARIFDocument{testDoc([]SARIFRule{rule}, []SARIFResult{a}, nil), testDoc([]SARIFRule{rule}, []SARIFResult{b}, nil)}))
+			if len(got.Runs[0].Results) != tc.want {
+				t.Fatalf("got %d want %d", len(got.Runs[0].Results), tc.want)
+			}
+		})
+	}
+}
+
+func TestDedupPreservesFlowWhenAnchorlessSeverityWins(t *testing.T) {
+	rule := makeRule("query", "8", "cwe-89")
+	a, b := makeResult("query", "a.go", 10, "error"), makeResult("query", "a.go", 10, "error")
+	low, high := 5.0, 9.0
+	a.Properties = &FindingProperties{Severity: &low}
+	b.Properties = &FindingProperties{Severity: &high}
+	a.CodeFlows = []SARIFCodeFlow{{ThreadFlows: []SARIFThreadFlow{{Locations: []SARIFThreadFlowLocation{{Location: a.Locations[0]}}}}}}
+	for _, results := range [][]SARIFResult{{a, b}, {b, a}} {
+		got := PostProcess(testDoc([]SARIFRule{rule}, results, nil)).Runs[0].Results
+		if len(got) != 1 || len(got[0].CodeFlows) != 1 || ResultSeverity(got[0], rule) != 9 {
+			t.Fatal("severity or source path lost", got)
+		}
 	}
 }

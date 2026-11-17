@@ -77,6 +77,7 @@ func TestMergeAndFilterHaveCompleteLineage(t *testing.T) {
 		return sarif.Build(sarif.AnalysisResult{SecurityIssues: []sarif.SecurityIssue{{Issue: "same", FilePath: file, StartLine: 1, CWEID: "CWE-89", Severity: sev, TechnicalDetails: "same evidence"}}}, nil, sarif.BuilderConfig{})
 	}
 	a, b, c := mk("a.go", 7), mk("a.go", 7), mk("package.json", 2)
+	b.Runs[0].Results[0].Message.Text = "Reworded duplicate"
 	for i, d := range []*sarif.SARIFDocument{&a, &b, &c} {
 		if err := l.Observe(string(rune('a'+i)), d); err != nil {
 			t.Fatal(err)
@@ -169,5 +170,19 @@ func TestCheckpointRejectsUnknownParent(t *testing.T) {
 	d.Runs[0].Results[0].Properties.Provenance = &sarif.FindingProvenance{RunID: "run", RevisionID: "missing"}
 	if err := l.Checkpoint("audit", &d); err == nil {
 		t.Fatal("allowed dangling graph reference")
+	}
+}
+
+func TestBestEffortValidationKeepsHealthyWriter(t *testing.T) {
+	var b bytes.Buffer
+	l := New("validation", &b)
+	warnings := 0
+	l.BestEffort(func(error) { warnings++ })
+	_, _ = l.Transform("missing-parent", "repair", "{}")
+	if err := l.Metadata("run-complete", nil); err != nil {
+		t.Fatal(err)
+	}
+	if warnings != 1 || !bytes.Contains(b.Bytes(), []byte("run-complete")) {
+		t.Fatalf("warnings=%d output=%s", warnings, b.String())
 	}
 }

@@ -45,7 +45,7 @@ func Merge(docs []SARIFDocument) SARIFDocument {
 		evidence  string
 		cwe       string
 	}
-	seenResults := make(map[resultKey]int)
+	seenResults := make(map[resultKey][]int)
 	var results []SARIFResult
 
 	// Collect notifications from all chunks.
@@ -101,8 +101,15 @@ func Merge(docs []SARIFDocument) SARIFDocument {
 				}
 			}
 
-			key := resultKey{ruleID: normID, filePath: fp, startLine: sl, evidence: evidenceKey(r), cwe: ResultCWE(r, localRules[r.RuleID])}
-			if idx, ok := seenResults[key]; ok {
+			key := resultKey{ruleID: normID, filePath: fp, startLine: sl, evidence: evidenceKey(r), cwe: strings.ToUpper(strings.TrimSpace(ResultCWE(r, localRules[r.RuleID])))}
+			idx, ok := -1, false
+			for _, i := range seenResults[key] {
+				if !distinctExpressions(results[i], r) {
+					idx, ok = i, true
+					break
+				}
+			}
+			if ok {
 				existingRule := SARIFRule{}
 				if ruleIdx, exists := ruleIndex[normID]; exists {
 					existingRule = rules[ruleIdx]
@@ -116,7 +123,7 @@ func Merge(docs []SARIFDocument) SARIFDocument {
 				}
 				continue
 			}
-			seenResults[key] = len(results)
+			seenResults[key] = append(seenResults[key], len(results))
 
 			rCopy := r
 			rCopy.RuleID = normID

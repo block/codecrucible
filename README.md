@@ -84,14 +84,40 @@ for stdout workflows.
 The versioned lineage file records model responses, immutable observations before
 merge/filtering, subsequent finding revisions and each observation's final
 disposition. SARIF results link to it through `properties.provenance`; existing
-finding IDs and partial fingerprints remain the correlation keys. A shared
-location and CWE no longer suffice to discard different evidence. Original
+finding IDs and partial fingerprints remain the correlation keys. Original
 observations remain available even when the final result is suppressed or its
-evidence is refined. A missing `run-complete` event indicates an interrupted run.
+evidence is refined. A missing `run-complete` event indicates an interrupted run
+or a lineage write failure.
 Lineage contains source excerpts and model output, like the other phase artifacts;
 request headers and API credentials are not recorded. It is written incrementally
 with owner-only permissions. No lineage file is written for stdout-only scans
 without an artifact directory.
+
+Before audit, duplicate reports are consolidated in two passes. Results are
+first grouped by primary file, start line, and normalized CWE. Rule IDs and
+model wording (title, message, summary, details, remediation) are not part of
+the key, so the same defect reported in different words by overlapping chunks
+merges. Each group is then split by structural anchors: the first and last
+location of every code-flow thread (source and sink), any
+`reportedLocations`, and every structured `finding_evidence` reference except
+guards (`initialEvidence` in SARIF), compared as `file:line`. Intermediate flow
+steps and guards are ignored, so a flow and structured evidence that cite the
+same source and sink match. Results with the same anchors merge and keep the highest severity.
+Different sources or sinks at the same location stay separate findings. A
+result with no anchors joins the group's anchored results only when they share
+exactly one anchor set; otherwise it merges only with other anchorless
+results in that group. When the higher-severity result has no code flow, the
+merged result keeps the other result's flow. A merged result keeps every
+original observation ID in `properties.provenance`, and the lineage records the
+merge as a `merged_from` revision.
+
+Lineage recording is best effort. If the lineage file cannot be opened, written,
+or synced, or an event is rejected, the scan logs a warning and continues. SARIF
+output, audit verdicts, token usage and cost, and the exit code are unaffected.
+After a write failure, no further events are written. A rejected event is
+dropped on its own, and later events are still recorded. Either way, the final
+SARIF records `execution.lineageIncomplete: true`. Treat lineage from such a run
+as partial.
 
 The v2 ledger binds observations to model responses (including repair operations),
 records individual accepted, retried and unresolved audit decisions, and supports
@@ -102,7 +128,25 @@ optionally reconcile final SARIF with:
 codecrucible validate-lineage results.lineage.jsonl --sarif results.sarif
 ```
 
+The ledger is single-line JSONL: one compact JSON record per line, as the writer
+emits it. Hand-formatted records that span several lines are rejected. A final
+record that is torn or not valid JSON, followed only by whitespace, is reported
+as partial lineage (`complete: false`) with
+`reasons: ["truncated final record"]` in the JSON report; unresolved
+observations from the valid prefix are preserved. Such a record followed by more non-whitespace content is corruption
+and fails validation, as does a final record that is valid JSON but not a valid
+event. Reconciliation with `--sarif` remains strict for partial ledgers.
+
+Read `reasons` whenever `complete` is `false`; currently its only value is
+`truncated final record`. A ledger is also partial, with no `reasons` entry,
+when it has no `run-complete` event or its `run-complete` event records
+`lineageIncomplete: true`.
+
 A recorded model verdict or source quote is not proof of exploitability.
+
+When a prompt set allows audit additions, additions that repeat an analysis finding
+or another addition are discarded, with lineage reasons `duplicate of analysis finding`
+or `duplicate audit addition`. A missing code path carries over to the surviving finding.
 
 To compare audit prompts or models without analysis variance, replay the audit
 on saved findings: `codecrucible scan REPO --audit-from results.analysis.sarif`.
@@ -326,7 +370,7 @@ Available sets:
 | Set | Description |
 |-----|-------------|
 | `default` | General-purpose security analysis (used when no `--prompts-dir` is specified) |
-| `core` | Default analysis with the v2 audit contract: evidentiary questions, code-computed verdicts, and weakness-family cards (experimental) |
+| `core` | Default analysis with the v3 audit contract: revision-bound claims, quoted evidence checked against admitted source, code-computed verdicts, and weakness-family cards (experimental) |
 | `carlini` | Slim Carlini-style adversarial CTF-researcher prompts |
 | `carlini-curated` | Carlini v2 with targeted suppression rules and line-precision guidance |
 | `exploit-proof` | Language-agnostic set that requires a concrete exploit per finding |
@@ -878,12 +922,12 @@ Per-finding state lives in `result.properties`:
 |----------|---------|
 | `findingId` | Stable ID (`CC-` + 16 hex). Also in `partialFingerprints["codecrucibleFinding/v1"]` |
 | `verified` | `true` only when the audit confirmed, refined, or escalated the finding and did not suppress it |
-| `auditStatus` | `confirmed`, `refined`, `escalated`, `unverified`, `rejected`, `duplicate` (v2), `new` (added by the audit), or `not_audited` |
+| `auditStatus` | `confirmed`, `refined`, `escalated`, `unverified`, `rejected`, `duplicate` (v2), `superseded` (v3: suppressed because its independently audited children cover all of its material), `new` (added by the audit), or `not_audited` |
 | `auditConfidence` | Audit confidence, 0–1 |
 | `auditJustification`, `auditBlockingCode` | The auditor's reasoning and, for rejections, the quoted blocking source |
-| `auditReasons` | Machine-readable qualifiers: `missing_verdict`, `audit_skipped`, `ungrounded_rejection`, `below_confidence_threshold`; v2 adds `refuted:<question>`, `unknown:<question>`, `ungrounded_refutation:<question>`, `unverified_evidence:<question>`, and `duplicate` |
+| `auditReasons` | Machine-readable qualifiers: `missing_verdict`, `audit_skipped`, `ungrounded_rejection`, `below_confidence_threshold`; v2 adds `refuted:<question>`, `unknown:<question>`, `ungrounded_refutation:<question>`, `unverified_evidence:<question>`, and `duplicate`; v3 adds `invalid_claim_assessment`, `refuted:<question>`, `unknown:<question>`, `insufficient_evidence:<question>`, `incomplete_claim_coverage`, and `independent_subclaims` |
 | `auditAnswers` | v2: each audit question's `status` (`established`, `refuted`, `unknown`), reason, and the evidence quotes that matched the source |
-| `auditCrux` | v2: for an unverified finding, the code or fact that would decide it |
+| `auditCrux` | v2 and v3: for an unverified finding, the code or fact that would decide it |
 | `duplicateOf` | v2: the finding ID this one duplicates (same root cause and fix) |
 | `deploymentExposure` | v2: `default_on`, `config_enabled`, `config_dependent`, `not_deployed`, or `unknown`, with detail and evidence. Informational; never changes the verdict |
 | `severity`, `cwe` | This finding's own severity (0–10) and CWE, including audit refinements |
@@ -891,6 +935,13 @@ Per-finding state lives in `result.properties`:
 | `reportedPath` | The model's file path, when it named no scanned file and was repaired to the one scanned file it uniquely matches (for example a dropped `app/` prefix) |
 | `reportedLocations` | A location the model reported whose region was invalid for the scanned file, kept here as reported. A valid start line keeps its region in `locations`, with the end clamped to the start (reversed range) or to the file's last line; an invalid start line removes the region |
 | `locationWarnings` | One entry per `reportedLocations` entry: `clamped_source_region` when the region was clamped, `invalid_source_region` when it was removed |
+| `initialEvidence` | v3: the discovery model's `finding_evidence` references (kind plus file, line range and quote) for this claim |
+| `auditIntegrity` | v3: the policy outcome — `status`, `reasons`, per-question `assertions`, `crux`, and the `policy` version |
+| `parentFindingId` | v3: the finding this child claim was split from |
+| `childFindingIds` | v3: the independently audited child claims split from this finding |
+| `claimCoverage` | v3: for a child claim, the parent material it covers (`material_id` and `quote`) |
+| `semanticDuplicates` | v3 with `--semantic-dedup report`: IDs of findings judged `same_cause_same_fix` with verified cause and fix evidence. Neither finding is hidden |
+| `provenance` | Links to the lineage ledger: `runId`, the `observationIds` this result derives from, and its current `revisionId` |
 
 The finding ID hashes the CWE (or rule ID), file path, and whitespace-normalized
 flagged source. It excludes model wording and line numbers, so rescans of
@@ -904,7 +955,8 @@ toward `--fail-on-severity`. Consumers that ignore SARIF suppressions will
 display them; filter on `suppressions` or `properties.auditStatus`.
 
 A prompt set opts into the v2 audit contract with `contract: v2` in
-`audit.yaml`. For each finding, the auditor answers three questions with quoted
+`audit.yaml`. No bundled prompt set currently selects v2; `prompts/core`
+uses v3. For each finding, the auditor answers three questions with quoted
 source evidence. `attacker_control` asks whether attacker input reaches the
 flagged code. `privilege_boundary` asks whether the finding grants more than the
 attacker already holds. `unmitigated` asks whether the path lacks a guard. The
@@ -920,6 +972,13 @@ The opt-in `prompts/core` set uses `contract: v3`. V3 binds each assessment to
 an immutable claim revision and digest. It asks separately about attacker
 control, the source weakness, the security boundary, the missing control, and
 the claimed impact. Established and refuted answers require source evidence.
+Attacker-control and boundary evidence must quote the answer's subject, and
+refuting either also requires evidence at the claim's own location, code path,
+or initial evidence, so an unrelated quote elsewhere cannot reject a claim. An
+established upstream source in another file can still confirm one. An answer
+downgraded for missing evidence reports `insufficient_evidence:<question>` (why
+it was downgraded) and, when the claim stays unverified, also
+`unknown:<question>` (the question's resulting state).
 Consumer and guard expressions must occur in their respective quotes; renamed
 values require explicit, quoted flow steps. A missing guard is represented by
 `guard_state: not_found` with source evidence for the actual protection point. These checks establish source
@@ -932,8 +991,12 @@ V3 retries invalid claims individually and permits one bounded local-context
 expansion. Its context artifacts record included ranges and omissions. Grouped
 claims can produce separately audited children with stable IDs and `split_from`
 lineage. An unresolved remainder remains visible unless the child records retain
-all original material. `--semantic-dedup report` adds attributed duplicate
-relationships without hiding findings; `off` disables those extra requests.
+all original material. A validly rejected parent stays rejected even when it
+proposes children; each valid child is still audited on its own evidence. A
+rejected child that proposes a further valid subclaim stays visible as
+`unverified` (the further subclaim is not audited itself).
+`--semantic-dedup report` adds attributed duplicate relationships without
+hiding findings; `off` disables those extra requests.
 Suppression is deliberately unavailable until held-out duplicate-precision and
 claim-preservation checks pass. Legacy and v2 prompt sets retain their contracts.
 
@@ -948,11 +1011,30 @@ The label file contains `cases` and `pairs` arrays. A case identifies a
 `finding_id` and labels `weakness` as `valid`, `invalid`, or `unknown`; optional
 `impact` is `supported`, `unsupported`, or `unknown`. A child can instead be
 selected by `parent_id`, `file`, `line`, and `claim_contains`. A pair contains
-`left`, `right`, and a Boolean `duplicate`. The report includes missing cases,
-known-positive suppression, invalid/unsupported-impact confirmations, labeled
-duplicate precision with 95% intervals, and recorded audit-model usage. Keep
-tuning cases separate from held-out evaluation and record elapsed time alongside
-each replay.
+`left`, `right`, and a Boolean `duplicate`. The report counts labeled cases
+with no matching result (`missing`) and the matched results' audit statuses. It
+gives each rate with a 95% interval:
+
+- `recall`: valid cases whose result is present and unsuppressed, out of all
+  valid cases. A valid case with no result counts in `recallMisses`, not as a
+  suppression.
+- `knownPositiveSuppressed`: valid cases whose result is suppressed, out of all
+  valid cases.
+- `invalidConfirmed` and `unsupportedImpactConfirmed`: invalid cases, and
+  unsupported-impact cases, whose result is still active (unsuppressed) with
+  any audit status, including `unverified`, out of all cases with that label.
+  Despite the key names, these count active results, not only confirmed ones.
+- `duplicatePrecision`: of the labeled pairs the audit reported as duplicates
+  (through `duplicateOf` or `semanticDuplicates`, in either direction), those
+  labeled `duplicate: true`. Pairs whose `left` finding has no result are
+  skipped.
+
+Each rate reports `count`, `total`, `rate`, `lower95` and `upper95`. A rate with
+`total: 0` is undefined, not zero: its `rate` and bounds are reported as `0`,
+so check `total` before reading them.
+
+The report also includes recorded audit-model usage. Keep tuning cases separate
+from held-out evaluation and record elapsed time alongside each replay.
 
 All audit contracts carry more than the files the findings cite. Up to about 24K
 tokens of excerpts are retrieved per batch, with real line numbers, so the
@@ -1003,7 +1085,7 @@ Every SARIF run includes `properties.codecrucible` with `schemaVersion: 1`:
 | `recipe.phases` | Analysis, feature detection, audit, and context compression: provider/model, sanitized base URL/endpoint, transport, model parameters, context/output limits, temperature settings, output mode, timeout, tokenizer, and pricing assumptions |
 | `recipe.controls` | Scope filters, test/document inclusion, file-size limit, compression, concurrency, cost limit, severity gate, phase toggles, audit confidence/batch size, and context budget |
 | `recipeFingerprint` | SHA-256 of the canonical JSON recipe (sorted object keys, preserved array order); excludes output paths, credentials, timestamps, and execution outcomes |
-| `execution` | Artifact stage, phase statuses and actual phase configurations, fallbacks, per-phase model calls, the models used, detected features, token correction, chunk/recovery counts, source loading/compression outcomes, and packed-context fingerprints/truncation |
+| `execution` | Artifact stage, phase statuses and actual phase configurations, fallbacks, per-phase model calls, the models used, detected features, token correction, chunk/recovery counts, source loading/compression outcomes, packed-context fingerprints/truncation, and `lineageIncomplete` (set when any lineage event was not recorded) |
 | `execution.sourceIndex` | Extractor version, fingerprints of admitted source bytes and the index, file/line counts, extraction modes, and import-resolution counts |
 | `execution.sourceBundles` | Fingerprints of the source context assembled for feature detection, analysis chunks/recovery, and audit batches |
 | `execution.sourceCoverage` | Admitted, planned, and successfully analyzed file counts; repeated files (including retries), and repo-relative lists of unplanned or unanalyzed files |
