@@ -97,7 +97,7 @@ func TestEmptyScanMetadataOnStdout(t *testing.T) {
 	t.Cleanup(func() { os.Stdout = original; reader.Close(); writer.Close() })
 	output := make(chan []byte, 1)
 	go func() { data, _ := io.ReadAll(reader); output <- data }()
-	err = outputEmptySARIF(cfg)
+	err = outputEmptySARIF(cfg, time.Now())
 	writer.Close()
 	os.Stdout = original
 	if err != nil {

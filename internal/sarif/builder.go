@@ -147,6 +147,12 @@ func Build(result AnalysisResult, fileMap FileMap, cfg BuilderConfig) SARIFDocum
 					region.Snippet = &SARIFSnippet{Text: snippet}
 				}
 				loc.PhysicalLocation.Region = region
+			} else {
+				// Retain invalid coordinates as diagnostics without inventing an anchor.
+				reported := loc
+				reported.PhysicalLocation.Region = &SARIFRegion{StartLine: issue.StartLine, EndLine: issue.EndLine}
+				r.Properties.ReportedLocations = []SARIFLocation{reported}
+				r.Properties.LocationWarnings = []string{"invalid_source_region"}
 			}
 
 			r.Locations = []SARIFLocation{loc}

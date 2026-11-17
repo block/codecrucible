@@ -259,6 +259,8 @@ type SARIFSnippet struct {
 // SARIFInvocation records metadata about a tool execution.
 type SARIFInvocation struct {
 	ExecutionSuccessful        bool                `json:"executionSuccessful"`
+	StartTimeUTC               string              `json:"startTimeUtc,omitempty"`
+	EndTimeUTC                 string              `json:"endTimeUtc,omitempty"`
 	ToolExecutionNotifications []SARIFNotification `json:"toolExecutionNotifications,omitempty"`
 }
 

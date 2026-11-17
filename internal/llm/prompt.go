@@ -84,7 +84,10 @@ type AuditPrompt struct {
 	// Contract selects the audit response contract. "" is the v1 verdict
 	// schema; "v2" answers evidentiary questions and code computes the
 	// verdict (see AuditSchemaV2), with family cards from audit_families.yaml.
-	Contract            string `yaml:"contract"`
+	Contract string `yaml:"contract"`
+	// AllowNewFindings controls additions under the legacy verdict contract.
+	// Unset preserves the historical behavior.
+	AllowNewFindings    *bool  `yaml:"allow_new_findings"`
 	SystemMessage       string `yaml:"system_message"`
 	UserPromptTemplate  string `yaml:"user_prompt_template"`
 	JSONFormattingRules string `yaml:"json_formatting_rules"`
@@ -92,6 +95,10 @@ type AuditPrompt struct {
 	// excluded test files (--include-tests not set). Adversarial pre-filter
 	// that forces the auditor to prove production reachability.
 	ProductionOnlyGate string `yaml:"production_only_gate"`
+}
+
+func (p AuditPrompt) AllowsNewFindings() bool {
+	return p.AllowNewFindings == nil || *p.AllowNewFindings
 }
 
 // CWEPromptsFile represents the parsed cwe_deep_analysis.yaml.

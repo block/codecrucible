@@ -31,6 +31,7 @@ falls back to whichever template is available at `prompts/default/`.
 | Set | When to reach for it |
 |-----|----------------------|
 | `default` | First-pass, language-agnostic, two-stage (recall-tuned analyzer + adversarial audit). The right starting point for most repos. |
+| `core` | Experimental v3 evidence-bound audit with independent child claims and report-only duplicate relationships. Its strict decision policy is still being calibrated. |
 | `carlini` | Slim CTF-researcher persona. Maximizes code-to-instruction ratio — use when the context budget is tight and you want the model thinking like an attacker, not a linter. |
 | `carlini-curated` | Carlini with added suppression rules and tighter line-precision guidance. Lower false-positive rate at modest token cost. |
 | `exploit-proof` | Language-agnostic with a *concrete exploit required* per finding. The model's own exploitation reasoning replaces the deny-list — good precision without hand-curated rules. |
@@ -49,6 +50,11 @@ it doesn't ship" gate from the base `exploit-proof` set but swap the
 persona and the trace-to-sink list for language-specific hotspots. Pick
 the variant that matches the repo's primary language; fall back to the
 language-agnostic `exploit-proof` for polyglot codebases.
+
+Legacy audit sets may set `allow_new_findings: false` in `audit.yaml` to audit
+only supplied claims. The schema and runtime enforce this choice, and excluded
+model additions remain recorded in lineage. The default is `true`; v2/v3 use
+their own contracts.
 
 ## Authoring a new set
 
