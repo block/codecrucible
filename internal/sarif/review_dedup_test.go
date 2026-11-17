@@ -85,3 +85,50 @@ func TestReviewDedupKeepsAnchorlessReportApartFromConflictingEvidence(t *testing
 		}
 	}
 }
+
+// sameLineShellCalls reports two shell calls on one line fed by two sources
+// on one line. The line coordinates are identical; only the quoted
+// expressions tell the defects apart.
+func sameLineShellCalls(sourceA, sinkA, sourceB, sinkB string) (FileMap, []SecurityIssue) {
+	files := FileMap{
+		"handler.go": "package app\nfunc run(req Request) {\n first, second := req.First, req.Second\n _ = 0\n exec.Command(\"sh\", \"-c\", first).Run(); exec.Command(\"sh\", \"-c\", second).Run()\n}\n",
+	}
+	issue := func(title, source, sink string) SecurityIssue {
+		return SecurityIssue{Issue: title, FilePath: "handler.go", StartLine: 5, EndLine: 5, CWEID: "CWE-78", Severity: 9,
+			TechnicalDetails: title + " reaches a shell invocation; use a fixed command with separate arguments.",
+			FindingEvidence: []auditcore.NamedEvidence{
+				{Kind: "source", Evidence: auditcore.Evidence{File: "handler.go", Start: 3, End: 3, Quote: source}},
+				{Kind: "sink", Evidence: auditcore.Evidence{File: "handler.go", Start: 5, End: 5, Quote: sink}},
+			}}
+	}
+	return files, []SecurityIssue{issue("First command injection", sourceA, sinkA), issue("Second command injection", sourceB, sinkB)}
+}
+
+func TestReviewDedupPreservesDistinctSameLineExpressions(t *testing.T) {
+	files, issues := sameLineShellCalls(
+		"req.First", `exec.Command("sh", "-c", first).Run()`,
+		"req.Second", `exec.Command("sh", "-c", second).Run()`)
+	doc := Build(AnalysisResult{SecurityIssues: issues}, files, BuilderConfig{})
+	if n := len(PostProcess(Merge([]SARIFDocument{doc})).Runs[0].Results); n != 2 {
+		t.Fatalf("collapsed two shell calls with distinct quoted expressions on shared lines: got %d results, want 2", n)
+	}
+	// The same pair reported by separate analysis documents must survive the
+	// cross-document merge too.
+	first := Build(AnalysisResult{SecurityIssues: issues[:1]}, files, BuilderConfig{})
+	second := Build(AnalysisResult{SecurityIssues: issues[1:]}, files, BuilderConfig{})
+	if n := len(Merge([]SARIFDocument{first, second}).Runs[0].Results); n != 2 {
+		t.Fatalf("merge collapsed distinct same-line expressions: got %d results, want 2", n)
+	}
+}
+
+// Quoting the same expression with different spacing, or quoting part of
+// it, is rewording, not a second defect.
+func TestReviewDedupMergesRewordedSameLineExpressions(t *testing.T) {
+	files, issues := sameLineShellCalls(
+		"req.First", `exec.Command("sh", "-c", first).Run()`,
+		"first, second := req.First", `exec.Command("sh","-c",first)`)
+	doc := Build(AnalysisResult{SecurityIssues: issues}, files, BuilderConfig{})
+	if n := len(PostProcess(Merge([]SARIFDocument{doc})).Runs[0].Results); n != 1 {
+		t.Fatalf("reworded quotes of one defect: got %d results, want 1", n)
+	}
+}

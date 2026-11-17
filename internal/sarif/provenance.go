@@ -97,3 +97,50 @@ func evidenceKey(r SARIFResult) string {
 	b, _ := json.Marshal(keys)
 	return string(b)
 }
+
+// quotedExpressions maps each structured anchor (file:line and kind) to the
+// expressions quoted there, with whitespace removed so layout differences do
+// not matter. Guards are skipped, as in evidenceKey.
+func quotedExpressions(r SARIFResult) map[string][]string {
+	if r.Properties == nil {
+		return nil
+	}
+	out := map[string][]string{}
+	for _, ev := range r.Properties.InitialEvidence {
+		kind := strings.ToLower(strings.TrimSpace(ev.Kind))
+		quote := strings.Join(strings.Fields(ev.Evidence.Quote), "")
+		if ev.Evidence.File == "" || kind == "guard" || quote == "" {
+			continue
+		}
+		anchor := path.Clean(ev.Evidence.File) + ":" + strconv.Itoa(ev.Evidence.Start) + ":" + kind
+		out[anchor] = append(out[anchor], quote)
+	}
+	return out
+}
+
+// distinctExpressions reports whether two results with the same structural
+// key quote different expressions at a shared anchor, such as two shell calls
+// on one line fed by two sources on one line. Line coordinates cannot
+// establish that such results are one defect, so they are kept apart. Quotes
+// where one contains the other, or a missing quote, are treated as rewording.
+func distinctExpressions(a, b SARIFResult) bool {
+	qb := quotedExpressions(b)
+	for anchor, as := range quotedExpressions(a) {
+		bs, ok := qb[anchor]
+		if !ok {
+			continue
+		}
+		compatible := false
+		for _, x := range as {
+			for _, y := range bs {
+				if strings.Contains(x, y) || strings.Contains(y, x) {
+					compatible = true
+				}
+			}
+		}
+		if !compatible {
+			return true
+		}
+	}
+	return false
+}

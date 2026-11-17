@@ -72,7 +72,7 @@ type dedupKey struct {
 // Distinct flow endpoints remain separate; anchorless results join only a
 // unique anchored group. The highest severity and available flow are retained.
 func deduplicateResults(results []SARIFResult, ruleByID map[string]SARIFRule) []SARIFResult {
-	bestIndex := make(map[dedupKey]int) // key → index into deduped slice
+	bestIndex := make(map[dedupKey][]int) // key → indexes into deduped slice
 	var deduped []SARIFResult
 
 	// Count structural groups before assigning anchorless observations.
@@ -116,7 +116,14 @@ func deduplicateResults(results []SARIFResult, ruleByID map[string]SARIFRule) []
 			}
 		}
 
-		if idx, exists := bestIndex[key]; exists {
+		idx, exists := -1, false
+		for _, i := range bestIndex[key] {
+			if !distinctExpressions(deduped[i], r) {
+				idx, exists = i, true
+				break
+			}
+		}
+		if exists {
 			existingSev := ResultSeverity(deduped[idx], ruleByID[deduped[idx].RuleID])
 			newSev := ResultSeverity(r, ruleByID[r.RuleID])
 			if newSev > existingSev {
@@ -131,7 +138,7 @@ func deduplicateResults(results []SARIFResult, ruleByID map[string]SARIFRule) []
 				deduped[idx] = combineProvenance(deduped[idx], r)
 			}
 		} else {
-			bestIndex[key] = len(deduped)
+			bestIndex[key] = append(bestIndex[key], len(deduped))
 			deduped = append(deduped, r)
 		}
 	}
