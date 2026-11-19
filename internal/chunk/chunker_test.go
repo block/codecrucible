@@ -19,12 +19,57 @@ func newTestChunker(encoding string) Chunker {
 	return NewChunker(tc, slog.Default())
 }
 
-func TestChunkSharedFilesStillProduceAChunk(t *testing.T) {
+func TestChunkSingleSmallFileProducesAChunk(t *testing.T) {
 	input := ingest.FlattenResult{FileMap: ingest.FileMap{"main.go": "package main\nfunc main() {}"}}
 	for _, opts := range []*ChunkOptions{nil, {ImportGraph: map[string][]string{"main.go": {"missing.go"}}}} {
 		chunks, err := newTestChunker("").Chunk(input, 10000, opts)
 		if err != nil || len(chunks) != 1 || len(chunks[0].Paths) != 1 || chunks[0].Paths[0] != "main.go" || !strings.Contains(chunks[0].XML, "func main") {
-			t.Fatalf("shared file disappeared: chunks=%+v err=%v", chunks, err)
+			t.Fatalf("small file disappeared: chunks=%+v err=%v", chunks, err)
+		}
+	}
+}
+
+// Small, high-priority files used to be copied into every chunk, so each
+// chunk re-analysed them and reported the same defect at slightly different
+// lines. Each file must be analysed by exactly one chunk.
+func TestChunkAnalysesEachFileInExactlyOneChunk(t *testing.T) {
+	files := ingest.FileMap{
+		"routes/appConfiguration.ts": "export function retrieveAppConfiguration () { return (req, res) => res.json({ config }) }\n",
+		"routes/appVersion.ts":       "export function retrieveAppVersion () { return (req, res) => res.json({ version }) }\n",
+	}
+	for i := 0; i < 6; i++ {
+		files[fmt.Sprintf("lib/module%d.ts", i)] = strings.Repeat(fmt.Sprintf("export const value%d = 'data';\n", i), 80)
+	}
+	counter := NewTokenCounter("", nil)
+	budget := 2 * counter.Count(BuildFileXML("lib/module0.ts", files["lib/module0.ts"]))
+	chunks, err := NewChunker(counter, nil).Chunk(ingest.FlattenResult{FileMap: files}, budget, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(chunks) < 3 {
+		t.Fatalf("want a multi-chunk scan, got %d chunks", len(chunks))
+	}
+	seen := map[string]int{}
+	for _, c := range chunks {
+		for _, p := range c.Paths {
+			seen[p]++
+		}
+		for p := range files {
+			inXML := strings.Count(c.XML, `path="`+p+`"`)
+			inPaths := 0
+			for _, q := range c.Paths {
+				if q == p {
+					inPaths = 1
+				}
+			}
+			if inXML != inPaths {
+				t.Errorf("chunk %d renders %s %d times but lists it %d times", c.Index, p, inXML, inPaths)
+			}
+		}
+	}
+	for p := range files {
+		if seen[p] != 1 {
+			t.Errorf("%s is analysed by %d chunks, want 1", p, seen[p])
 		}
 	}
 }
