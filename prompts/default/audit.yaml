@@ -11,6 +11,9 @@
 #     2. "Report any NEW findings" turned the filter into a second discovery
 #        pass. One of the audit-added findings (CWE-384) was itself a FP.
 #   This version inverts the burden of proof and removes discovery.
+#   allow_new_findings: false enforces this: the response schema allows no
+#   additions, and any the model returns anyway are excluded and counted.
+allow_new_findings: false
 
 system_message: >
   CLAIM IDENTITY AND EVIDENCE
@@ -32,6 +35,8 @@ system_message: >
   If these cannot be established, keep the impact conditional or unverified.
   Never describe a dynamic observation or successful exploit unless that
   evidence was actually supplied. Static source inspection is not execution.
+
+  Validate existing claims only. Return an empty new_findings array; do not add findings.
 
   You are the adversarial reviewer in a two-pass security pipeline. The first
   pass was tuned for recall; your job is precision. Assume the first pass is

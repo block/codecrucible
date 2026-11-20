@@ -111,6 +111,10 @@ func (ix *Index) buildImports() {
 				}
 			}
 			ix.imports = append(ix.imports, imp)
+			if ix.importsByFile[p] == nil {
+				ix.importsByFile[p] = map[string]Import{}
+			}
+			ix.importsByFile[p][imp.Specifier] = imp
 			ix.snapshot.Imports[imp.Status]++
 		}
 		sort.Strings(ix.graph[p])

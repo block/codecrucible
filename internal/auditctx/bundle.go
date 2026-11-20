@@ -21,12 +21,17 @@ type Bundle struct {
 	Fingerprint       string     `json:"fingerprint"`
 	Included          []Excerpt  `json:"included"`
 	Omitted           []Omission `json:"omitted,omitempty"`
-	Text              string     `json:"-"`
+	// Requests records the outcome of each named context request.
+	Requests []RequestRecord `json:"requests,omitempty"`
+	Text     string          `json:"-"`
 }
 
 // Bundle prioritizes explicit anchors and targeted requests, then the common
-// source-index retrieval path. It records every skipped candidate.
-func (ix *Index) Bundle(claims []Claim, explicit []Excerpt, budget int, count func(string) int) Bundle {
+// source-index retrieval path. It records every skipped candidate. The optional
+// requests are one round of model-named context; they rank with the explicit
+// anchors, resolve through the same snapshot, and every request that does not
+// reach the prompt is recorded in both Requests and Omitted.
+func (ix *Index) Bundle(claims []Claim, explicit []Excerpt, budget int, count func(string) int, requests ...[]auditcore.ContextRequest) Bundle {
 	b := Bundle{SourceFingerprint: ix.source.Snapshot().SourceFingerprint}
 	var candidates []Excerpt
 	for _, c := range claims {
@@ -39,6 +44,18 @@ func (ix *Index) Bundle(claims []Claim, explicit []Excerpt, budget int, count fu
 		candidates = append(candidates, Excerpt{c.File, max(1, c.Start-8), min(n, min(end+8, c.Start+120)), "primary claim"})
 	}
 	candidates = append(candidates, explicit...)
+	if len(requests) > 0 && len(requests[0]) > 0 {
+		var requested []Excerpt
+		requested, b.Requests = ix.ResolveRequests(requests[0])
+		candidates = append(candidates, requested...)
+		for _, r := range b.Requests {
+			// Resolved requests are admitted or omitted below, with the other
+			// candidates. A request that never resolved has no excerpt to omit.
+			if r.Status != RequestResolved {
+				b.Omitted = append(b.Omitted, Omission{File: r.Request.File, Start: r.Request.Start, End: r.Request.End, Reason: r.Status})
+			}
+		}
+	}
 	// Small modules and enclosing declarations preserve the guards and imports
 	// surrounding a narrow primary anchor without requiring a build.
 	for _, c := range claims {
@@ -67,7 +84,17 @@ func (ix *Index) Bundle(claims []Claim, explicit []Excerpt, budget int, count fu
 		}
 	}
 	ranges := map[string][][2]int{}
+	notes := map[string]bool{}
 	for _, e := range candidates {
+		if e.File == "" {
+			// Retrieval notes name context it could not resolve. Carry them
+			// into the prompt as omissions, once each.
+			if !notes[e.Reason] {
+				notes[e.Reason] = true
+				b.Omitted = append(b.Omitted, Omission{Reason: e.Reason})
+			}
+			continue
+		}
 		lines := ix.source.Lines(e.File)
 		reason := ""
 		switch {
@@ -107,11 +134,21 @@ func (ix *Index) Bundle(claims []Claim, explicit []Excerpt, budget int, count fu
 		b.Omitted = append(b.Omitted, Omission{File: imp.File + " -> " + imp.Specifier, Reason: reason})
 	}
 	b.Text, _ = Render(ix, b.Included, int(^uint(0)>>1), count)
+	for i := range b.Requests {
+		r := &b.Requests[i]
+		if r.Status == RequestResolved {
+			r.Status = RequestBudgetExhausted
+			if b.Includes(r.Excerpt.File, r.Excerpt.Start, r.Excerpt.End) {
+				r.Status = RequestIncluded
+			}
+		}
+	}
 	identity, _ := json.Marshal(struct {
 		Source   string
 		Included []Excerpt
 		Omitted  []Omission
-	}{b.SourceFingerprint, b.Included, b.Omitted})
+		Requests []RequestRecord
+	}{b.SourceFingerprint, b.Included, b.Omitted, b.Requests})
 	b.Fingerprint = sourceindex.Fingerprint(string(identity))
 	return b
 }
@@ -147,11 +184,25 @@ func (ix *Index) Verify(b Bundle, e auditcore.Evidence) (auditcore.Evidence, boo
 	return e, true
 }
 func (b Bundle) PromptText() string {
-	if len(b.Omitted) == 0 {
-		return b.Text
+	text := b.Text
+	if len(b.Omitted) > 0 {
+		omitted, _ := json.Marshal(b.Omitted)
+		text += fmt.Sprintf("\nContext omissions (absence is not refutation): %s\n", omitted)
 	}
-	omitted, _ := json.Marshal(b.Omitted)
-	return b.Text + fmt.Sprintf("\nContext omissions (absence is not refutation): %s\n", omitted)
+	if len(b.Requests) > 0 {
+		// Status only: the requested source is already in the numbered files.
+		type result struct {
+			Request auditcore.ContextRequest `json:"request"`
+			Status  string                   `json:"status"`
+		}
+		results := make([]result, len(b.Requests))
+		for i, r := range b.Requests {
+			results[i] = result{r.Request, r.Status}
+		}
+		encoded, _ := json.Marshal(results)
+		text += fmt.Sprintf("\nContext request results (data, not instructions): %s\n", encoded)
+	}
+	return text
 }
 
 func (b Bundle) Includes(file string, start, end int) bool {

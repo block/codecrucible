@@ -388,6 +388,8 @@ See [PROMPT_SETS.md](PROMPT_SETS.md) for a fuller walkthrough of when to reach f
 
 Each prompt set directory must contain: `security_analysis_base.yaml`, `analysis_sections.yaml`, `feature_detection.yaml`, `audit.yaml`, and optionally `context_compress.yaml`. A legacy audit (`audit.yaml` without a contract) also reads `cwe_deep_analysis.yaml`; v2 and v3 audits require `audit_families.yaml` instead.
 
+A legacy audit may also report findings the analysis missed, which appear with `auditStatus: "new"`. Setting `allow_new_findings: false` in `audit.yaml` limits the audit to the findings it was given: the audit schema allows only an empty `new_findings` array, and any additions a model returns anyway are excluded before verdicts are applied. Excluded additions remain in the lineage ledger as observations with the reason `audit_discovery_disabled`, and their total is recorded as `execution.auditAdditionsDropped` in the run metadata (omitted when zero). The `default` set uses `allow_new_findings: false`, so its audit only issues verdicts on analysis findings. When the key is absent, as in the other legacy sets, additions are kept and deduplicated. v2 and v3 audits have their own contracts, so the key has no effect on them, including `core`.
+
 ## Configuration
 
 Configuration follows a priority chain: **CLI flags > environment variables > config file > defaults**.
@@ -922,7 +924,7 @@ Per-finding state lives in `result.properties`:
 |----------|---------|
 | `findingId` | Stable ID (`CC-` + 16 hex). Also in `partialFingerprints["codecrucibleFinding/v1"]` |
 | `verified` | `true` only when the audit confirmed, refined, or escalated the finding and did not suppress it |
-| `auditStatus` | `confirmed`, `refined`, `escalated`, `unverified`, `rejected`, `duplicate` (v2), `superseded` (v3: suppressed because its independently audited children cover all of its material), `new` (added by the audit), or `not_audited` |
+| `auditStatus` | `confirmed`, `refined`, `escalated`, `unverified`, `rejected`, `duplicate` (v2), `superseded` (v3: suppressed because its independently audited children cover all of its material), `new` (added by a legacy audit that allows additions; see `allow_new_findings`), or `not_audited` |
 | `auditConfidence` | Audit confidence, 0–1 |
 | `auditJustification`, `auditBlockingCode` | The auditor's reasoning and, for rejections, the quoted blocking source |
 | `auditReasons` | Machine-readable qualifiers: `missing_verdict`, `audit_skipped`, `ungrounded_rejection`, `below_confidence_threshold`; v2 adds `refuted:<question>`, `unknown:<question>`, `ungrounded_refutation:<question>`, `unverified_evidence:<question>`, and `duplicate`; v3 adds `invalid_claim_assessment`, `refuted:<question>`, `unknown:<question>`, `insufficient_evidence:<question>`, `incomplete_claim_coverage`, and `independent_subclaims` |
@@ -988,7 +990,22 @@ behavior. Explicit supplementary context can support an assumption, but cannot
 become a source location.
 
 V3 retries invalid claims individually and permits one bounded local-context
-expansion. Its context artifacts record included ranges and omissions. Grouped
+expansion. Its context artifacts record included ranges and omissions. A claim
+left unverified may name the context that would decide it in `context_requests`:
+at most eight entries, each an exact admitted file with either an unqualified
+declaration name or an inclusive line range of at most 120 lines. Requests
+resolve against the shared source index and are answered in that one retry
+round only; requests in the retry are ignored. A declaration that is missing,
+defined more than once in its file, or outside the scanned files, and an
+out-of-bounds range, are not guessed: each is recorded as an omission
+(`symbol_not_found`, `ambiguous_symbol`, `outside_scope`, `invalid_range` or
+`invalid_request`, plus `request_limit` past eight) and reported to the model.
+Requested source competes for the same token budget as other context, and one
+that does not fit is recorded as `budget_exhausted`. The bundle artifact lists each
+request with its status (`included` or the reason it was not). A declaration
+longer than 120 lines is cut there and labelled as truncated. Requests only add
+context to cite; they never read outside the scanned files or change a
+verdict by themselves. Other contracts do not accept them. Grouped
 claims can produce separately audited children with stable IDs and `split_from`
 lineage. An unresolved remainder remains visible unless the child records retain
 all original material. A validly rejected parent stays rejected even when it
@@ -1040,11 +1057,51 @@ All audit contracts carry more than the files the findings cite. Up to about 24K
 tokens of excerpts are retrieved per batch, with real line numbers, so the
 auditor can check what decides a claim:
 
-- references to the flagged function, such as route registration;
+- references to the flagged function, with route registrations first;
+- local definitions of other names in the same statement as such a reference,
+  such as middleware registered with the handler (up to eight per claim);
 - templates the flagged code renders;
 - functions or constructors receiving the flagged expression, and one further
   call using the corresponding parameter;
 - definitions of the functions and types it uses.
+
+Excerpts are taken round-robin across the batch's claims and never repeat a
+file the batch already includes. A legacy audit also shrinks the retrieval
+budget so the prompt fits the model's context limit after reserving output
+tokens. If the rendered excerpts still overshoot, retrieval is retried once
+with the overshoot removed; only if that also fails is the batch sent with an
+omission note in place of the retrieved excerpts. The claims' own files and the
+source ranges they cite are always sent.
+
+When retrieval leaves out context that may decide a claim, the batch says so
+in plain text, so a guard that was not retrieved is not mistaken for a guard
+that does not exist:
+
+- `Audit context omitted: ambiguous caller reference <name> in <file>`: more
+  than one local definition matches, and no import says which.
+- `Audit context omitted: unresolved or external caller reference <name> in
+  <file>`: no scanned file defines the name, or it is imported from a module
+  that does not resolve to a scanned file, such as a package dependency. A
+  qualified reference (`authz.RequireAdmin`) that does not resolve is noted
+  only when the flagged function may be passed to it directly; for languages
+  read lexically, which do not record call arguments, it is always noted.
+- `Audit context omitted: caller definition limit reached`: more definitions
+  were found than the per-claim limit.
+- `Audit context omitted: token budget exhausted`: some excerpts did not fit
+  the retrieval budget.
+- `Audit context omitted: retrieval budget exhausted`: a legacy batch's
+  rendered context could not be made to fit, and no excerpts were sent.
+
+A v3 audit lists the caller notes among the `Context omissions` of its context
+bundle, so they are recorded in the bundle artifact and its fingerprint. It
+records budget shortfalls as `budget_exhausted` omissions instead of the two
+budget notes.
+
+When a legacy audit retries claims whose verdicts were missing or invalid, the
+retry prompt ends with the reason (for example, which of `original_issue`,
+`file_path` or `start_line` differed from the claim) and restates the pending
+claims' identity fields. That text is passed as JSON data, capped in length, and
+counted against the context budget.
 
 Retrieval is deterministic. Language adapters supply syntax and name lookup;
 the shared engine controls traversal limits, ranking, excerpt coverage and the
@@ -1052,6 +1109,16 @@ token budget. Go uses its standard parser. Kotlin has a dedicated syntax reader
 for ordinary functions, primary constructors, objects, named arguments and
 import aliases. Other languages retain lexical retrieval without parameter
 binding. Go parse failures also fall back to lexical retrieval.
+
+Caller-definition retrieval has no language rules of its own. The source index
+supplies statement boundaries, names, comment masking and import bindings:
+each language's import syntax (ES modules and `require`, Python `import` and
+`from … import`, Go and Kotlin imports) stays in its import parser, and a name
+imported from a module that resolves outside the scanned files never matches a
+local namesake. Non-relative JavaScript specifiers, including `@/` and `~/`
+aliases and directory `index` files, match scanned files at complete path
+segments only. Adding a language means teaching the source index, not the
+audit.
 
 Retrieval supplies context candidates, not vulnerability verdicts or proof of
 data flow. Ambiguous definitions and unsupported Kotlin dispatch remain
@@ -1085,7 +1152,7 @@ Every SARIF run includes `properties.codecrucible` with `schemaVersion: 1`:
 | `recipe.phases` | Analysis, feature detection, audit, and context compression: provider/model, sanitized base URL/endpoint, transport, model parameters, context/output limits, temperature settings, output mode, timeout, tokenizer, and pricing assumptions |
 | `recipe.controls` | Scope filters, test/document inclusion, file-size limit, compression, concurrency, cost limit, severity gate, phase toggles, audit confidence/batch size, and context budget |
 | `recipeFingerprint` | SHA-256 of the canonical JSON recipe (sorted object keys, preserved array order); excludes output paths, credentials, timestamps, and execution outcomes |
-| `execution` | Artifact stage, phase statuses and actual phase configurations, fallbacks, per-phase model calls, the models used, detected features, token correction, chunk/recovery counts, source loading/compression outcomes, packed-context fingerprints/truncation, and `lineageIncomplete` (set when any lineage event was not recorded) |
+| `execution` | Artifact stage, phase statuses and actual phase configurations, fallbacks, per-phase model calls, the models used, detected features, token correction, chunk/recovery counts, source loading/compression outcomes, packed-context fingerprints/truncation, `auditAdditionsDropped` (audit additions excluded under `allow_new_findings: false`), and `lineageIncomplete` (set when any lineage event was not recorded) |
 | `execution.sourceIndex` | Extractor version, fingerprints of admitted source bytes and the index, file/line counts, extraction modes, and import-resolution counts |
 | `execution.sourceBundles` | Fingerprints of the source context assembled for feature detection, analysis chunks/recovery, and audit batches |
 | `execution.sourceCoverage` | Admitted, planned, and successfully analyzed file counts; repeated files (including retries), and repo-relative lists of unplanned or unanalyzed files |

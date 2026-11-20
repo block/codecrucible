@@ -263,3 +263,74 @@ func TestRejectedChildKeepsSupportedGrandchildVisible(t *testing.T) {
 		finishV3(t, l, buf, got)
 	}
 }
+
+func TestAuditV3NamedContextRetrievalIsBoundedAndRecorded(t *testing.T) {
+	doc, files, l, buf := v3Fixture(t, []sarif.SecurityIssue{{Issue: "unsafe", FilePath: "a.go", StartLine: 2, EndLine: 2, TechnicalDetails: "one"}})
+	files["policy.go"] = "package a\nfunc hiddenPolicy() { denyAccess() }\n"
+	calls := 0
+	client := auditClientFunc(func(_ context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+		calls++
+		c := requestClaimsV3(t, req)[0]
+		a := assessmentV3(c, "sink(value)", "sink", "confirmed")
+		a.Assertions[3].Status = "unknown"
+		a.ContextRequests = []auditcore.ContextRequest{{File: "policy.go", Symbol: "hiddenPolicy"}}
+		text := req.Messages[len(req.Messages)-1].Content
+		if calls == 1 && strings.Contains(text, "denyAccess()") {
+			t.Fatal("unrelated declaration was included before it was requested")
+		}
+		if calls == 2 && (!strings.Contains(text, "denyAccess()") || !strings.Contains(text, `"status":"included"`)) {
+			t.Fatal("requested declaration or result missing", text)
+		}
+		return replyV3(a), nil
+	})
+	got, err := runV3(t, doc, files, l, client, "off")
+	if err != nil || calls != 2 || got.Runs[0].Results[0].Properties.AuditStatus != "unverified" || len(got.Runs[0].Results[0].Suppressions) != 0 {
+		t.Fatalf("unbounded or destructive retrieval: calls=%d err=%v doc=%+v", calls, err, got)
+	}
+	if !strings.Contains(buf.String(), `\"context_requests\"`) && !strings.Contains(buf.String(), `"requests":[`) {
+		t.Fatal("retrieval was not recorded")
+	}
+	finishV3(t, l, buf, got)
+}
+
+func TestAuditV3ContextRequestsOnlyRunForUnresolvedClaims(t *testing.T) {
+	doc, files, l, buf := v3Fixture(t, []sarif.SecurityIssue{{Issue: "unsafe", FilePath: "a.go", StartLine: 2, EndLine: 2, TechnicalDetails: "one"}})
+	files["policy.go"] = "package a\nfunc hiddenPolicy() { denyAccess() }\n"
+	calls := 0
+	client := auditClientFunc(func(_ context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+		calls++
+		a := assessmentV3(requestClaimsV3(t, req)[0], "sink(value)", "sink", "confirmed")
+		a.ContextRequests = []auditcore.ContextRequest{{File: "policy.go", Symbol: "hiddenPolicy"}}
+		return replyV3(a), nil
+	})
+	got, err := runV3(t, doc, files, l, client, "off")
+	if err != nil || calls != 1 || got.Runs[0].Results[0].Properties.AuditStatus != "confirmed" {
+		t.Fatalf("a decided claim spent a retrieval round: calls=%d err=%v", calls, err)
+	}
+	finishV3(t, l, buf, got)
+}
+
+func TestAuditV3UnavailableContextRequestsAreReportedNotFollowed(t *testing.T) {
+	doc, files, l, buf := v3Fixture(t, []sarif.SecurityIssue{{Issue: "unsafe", FilePath: "a.go", StartLine: 2, EndLine: 2, TechnicalDetails: "one"}})
+	calls := 0
+	client := auditClientFunc(func(_ context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+		calls++
+		a := assessmentV3(requestClaimsV3(t, req)[0], "sink(value)", "sink", "confirmed")
+		a.Assertions[3].Status = "unknown"
+		a.ContextRequests = []auditcore.ContextRequest{{File: "../secret.go", Symbol: "key"}, {File: "a.go", Symbol: "absent"}, {File: "vendor/dep.go", Start: 1, End: 5}}
+		if calls == 2 {
+			text := req.Messages[len(req.Messages)-1].Content
+			for _, want := range []string{`"status":"outside_scope"`, `"status":"symbol_not_found"`, "Context omissions"} {
+				if !strings.Contains(text, want) {
+					t.Fatalf("retry does not report %s: %s", want, text)
+				}
+			}
+		}
+		return replyV3(a), nil
+	})
+	got, err := runV3(t, doc, files, l, client, "off")
+	if err != nil || calls != 2 || got.Runs[0].Results[0].Properties.AuditStatus != "unverified" {
+		t.Fatalf("unavailable requests were followed or lost: calls=%d err=%v", calls, err)
+	}
+	finishV3(t, l, buf, got)
+}

@@ -62,23 +62,26 @@ type Snapshot struct {
 }
 
 type Index struct {
-	files     map[string]string
-	paths     []string
-	lines     map[string][]string
-	defs      map[string][]Def
-	byFile    map[string][]Def
-	sources   map[string]*sourceInfo
-	imports   []Import
-	graph     map[string][]string
-	summaries map[string]string
-	snapshot  Snapshot
+	files   map[string]string
+	paths   []string
+	lines   map[string][]string
+	defs    map[string][]Def
+	byFile  map[string][]Def
+	sources map[string]*sourceInfo
+	imports []Import
+	// importsByFile indexes imports by file and specifier.
+	importsByFile map[string]map[string]Import
+	graph         map[string][]string
+	summaries     map[string]string
+	snapshot      Snapshot
 }
 
 // New builds one immutable snapshot from already-filtered, repo-relative files.
 func New(files map[string]string) *Index {
 	ix := &Index{files: make(map[string]string, len(files)), lines: map[string][]string{},
 		defs: map[string][]Def{}, byFile: map[string][]Def{}, sources: map[string]*sourceInfo{},
-		graph: map[string][]string{}, summaries: map[string]string{}}
+		importsByFile: map[string]map[string]Import{},
+		graph:         map[string][]string{}, summaries: map[string]string{}}
 	for p, text := range files {
 		ix.files[p] = text
 		ix.paths = append(ix.paths, p)
@@ -93,6 +96,9 @@ func New(files map[string]string) *Index {
 		ix.lines[p] = lines
 		ix.snapshot.Lines += len(lines)
 		src := adapterFor(p).parse(p, strings.TrimSuffix(text, "\n"))
+		if src.imports == nil {
+			src.imports, src.importSpans = scriptBindings(p, text)
+		}
 		ix.sources[p] = src
 		ix.snapshot.Extraction[src.mode]++
 		for _, d := range src.defs {
@@ -196,6 +202,40 @@ func (ix *Index) Resolve(file string, ref Reference, typ bool) (Def, bool) {
 		return Def{}, false
 	}
 	return ix.resolve(file, ref.internal(), typ)
+}
+
+// Candidates lists the function (or, with typ, type) declarations named name
+// in the same language as file. More than one means a name-only lookup is
+// ambiguous.
+func (ix *Index) Candidates(file, name string, typ bool) []Def {
+	if ix.sources[file] == nil {
+		return nil
+	}
+	return ix.candidates(file, name, typ)
+}
+
+// Declared reports whether any admitted file declares a function or type
+// called name.
+func (ix *Index) Declared(name string) bool { return len(ix.defs[name]) > 0 }
+
+// PassesName reports whether the call at ref has name as a bare argument.
+// It is a syntactic fact, not proof that the callee applies or runs it.
+func (ix *Index) PassesName(file string, ref Reference, name string) bool {
+	src := ix.sources[file]
+	if src == nil {
+		return false
+	}
+	for _, c := range src.calls {
+		if c.name != ref.Name || c.qualifier != ref.Qualifier || c.offset != ref.Offset {
+			continue
+		}
+		for _, arg := range c.args {
+			if arg.direct == name {
+				return true
+			}
+		}
+	}
+	return false
 }
 func (ix *Index) IsDefinition(file string, line int, name string) bool {
 	return ix.isDefinition(file, line, name)

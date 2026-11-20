@@ -3,6 +3,7 @@ package llm
 import (
 	"encoding/json"
 	"github.com/block/codecrucible/internal/config"
+	"strings"
 	"testing"
 )
 
@@ -143,5 +144,19 @@ func TestStrictSchemaObjects(t *testing.T) {
 	}
 	for _, raw := range []*json.RawMessage{SecurityAnalysisSchema(), SecurityAnalysisSchemaV3(), FeatureDetectionSchema(), AuditSchema(), AuditSchemaV2(), AuditSchemaV3(), DuplicateSchemaV3()} {
 		check(decodeSchemaPayload(t, raw)["schema"])
+	}
+}
+
+func TestContextRequestsArePartOfOnlyTheV3AuditContract(t *testing.T) {
+	for name, raw := range map[string]*json.RawMessage{"v1": AuditSchema(), "existing claims": AuditSchemaExistingClaims(), "v2": AuditSchemaV2()} {
+		if strings.Contains(string(*raw), "context_requests") {
+			t.Errorf("%s audit schema offers context requests", name)
+		}
+	}
+	text := string(*AuditSchemaV3())
+	for _, want := range []string{"context_requests", "Ambiguous declarations are not guessed", "at most eight"} {
+		if !strings.Contains(strings.ToLower(text), strings.ToLower(want)) {
+			t.Errorf("v3 schema lacks %q", want)
+		}
 	}
 }

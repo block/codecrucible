@@ -3,6 +3,7 @@ package sourceindex
 import (
 	"path"
 	"sort"
+	"sync"
 )
 
 // Adapters supply syntax and name resolution only. Traversal, prioritization,
@@ -21,8 +22,11 @@ type sourceInfo struct {
 	defs        []Def
 	calls       []call
 	packageName string
-	imports     map[string]string
+	imports     map[string]string // local name bound by import -> import specifier
 	importPaths []string
+	importSpans [][2]int // byte spans of import statements, where recorded
+	masked      string
+	maskOnce    sync.Once
 	unbound     [][2]int // scopes in which parameter identity is not established
 }
 

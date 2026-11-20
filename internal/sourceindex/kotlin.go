@@ -140,7 +140,14 @@ func (kotlinAdapter) parse(file, text string) *sourceInfo {
 	if m := kotlinPackage.FindStringSubmatch(code); m != nil {
 		s.packageName = m[1]
 	}
-	for _, m := range kotlinImport.FindAllStringSubmatch(code, -1) {
+	for _, at := range kotlinImport.FindAllStringSubmatchIndex(code, -1) {
+		s.importSpans = append(s.importSpans, [2]int{at[0], at[1]})
+		m := make([]string, len(at)/2)
+		for i := range m {
+			if at[2*i] >= 0 {
+				m[i] = code[at[2*i]:at[2*i+1]]
+			}
+		}
 		s.importPaths = append(s.importPaths, m[1])
 		if strings.HasSuffix(m[1], ".*") {
 			continue

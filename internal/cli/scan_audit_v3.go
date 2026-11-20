@@ -214,8 +214,11 @@ func (r *auditV3Run) assess(ctx context.Context, claims []auditcore.Claim, label
 				}
 			}
 			extra := missingExcerpts(missing)
-			if len(extra) > 0 {
-				for id, retry := range r.assessCall(ctx, []auditcore.Claim{c}, label+" context "+c.FindingID, extra) {
+			// Named requests are honored in this round only. The retry's own
+			// requests are ignored, so retrieval cannot loop.
+			requests := a.raw.ContextRequests
+			if len(extra) > 0 || len(requests) > 0 {
+				for id, retry := range r.assessCall(ctx, []auditcore.Claim{c}, label+" context "+c.FindingID, extra, requests) {
 					got[id] = retry
 				}
 			}
@@ -231,14 +234,14 @@ func missingExcerpts(refs []auditcore.Evidence) []auditctx.Excerpt {
 	}
 	return out
 }
-func (r *auditV3Run) assessCall(ctx context.Context, claims []auditcore.Claim, label string, extra []auditctx.Excerpt) map[string]assessedV3 {
+func (r *auditV3Run) assessCall(ctx context.Context, claims []auditcore.Claim, label string, extra []auditctx.Excerpt, requests ...[]auditcore.ContextRequest) map[string]assessedV3 {
 	out := map[string]assessedV3{}
 	if ctx.Err() != nil {
 		return out
 	}
 	schema := llm.AuditSchemaV3()
 	payload, _ := json.Marshal(map[string]any{"claims_to_verify": claims})
-	resp, bundle, err := r.callV3(ctx, label, string(payload), schema, claims, extra, "")
+	resp, bundle, err := r.callV3(ctx, label, string(payload), schema, claims, extra, "", requests...)
 	if err != nil {
 		slog.Warn("v3 audit request unavailable", "label", label, "error", err)
 		if e := r.journal.attempt(legacyClaimsV3(claims), resp, nil, nil, err); e != nil {
@@ -293,7 +296,7 @@ func (r *auditV3Run) assessCall(ctx context.Context, claims []auditcore.Claim, l
 	}
 	return out
 }
-func (r *auditV3Run) callV3(ctx context.Context, label, payload string, schema *json.RawMessage, claims []auditcore.Claim, extra []auditctx.Excerpt, system string) (*llm.ChatResponse, auditctx.Bundle, error) {
+func (r *auditV3Run) callV3(ctx context.Context, label, payload string, schema *json.RawMessage, claims []auditcore.Claim, extra []auditctx.Excerpt, system string, requests ...[]auditcore.ContextRequest) (*llm.ChatResponse, auditctx.Bundle, error) {
 	var locations []auditctx.Claim
 	var cwes []string
 	for _, c := range claims {
@@ -326,7 +329,7 @@ func (r *auditV3Run) callV3(ctx context.Context, label, payload string, schema *
 		fixedTokens += r.counter.Count(m.Content)
 	}
 	budget := min(auditRetrievalBudget, max(0, r.modelCfg.ContextLimit-r.modelCfg.MaxOutputTokens-fixedTokens-1024))
-	bundle := r.index.Bundle(locations, extra, budget, r.counter.Count)
+	bundle := r.index.Bundle(locations, extra, budget, r.counter.Count, requests...)
 	messages, err := assemble(bundle.PromptText())
 	if err != nil {
 		return nil, bundle, err

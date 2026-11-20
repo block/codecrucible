@@ -125,3 +125,16 @@ func TestAnchoredRefutationMustNameSubject(t *testing.T) {
 		}
 	}
 }
+
+func TestEveryEstablishedAssertionMustQuoteItsSubject(t *testing.T) {
+	for i, question := range Questions {
+		t.Run(question, func(t *testing.T) {
+			c, a, verify := fixture()
+			a.Assertions[i].Subject = "unrelatedInput"
+			got := Evaluate(c, a, verify)
+			if got.Status != "unverified" || got.Assertions[i].Status != "unknown" {
+				t.Fatal("unquoted subject was accepted", got)
+			}
+		})
+	}
+}
