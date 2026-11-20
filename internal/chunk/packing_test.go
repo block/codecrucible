@@ -15,7 +15,7 @@ func TestChunkSelectsGroupingWithoutLosingFilesOrSummaries(t *testing.T) {
 	for _, p := range []string{"a/one.ts", "a/two.ts", "b/one.ts", "b/two.ts"} {
 		files[p] = strings.Repeat("export const value = 123;\n", 100)
 	}
-	// Fit two ordinary files per chunk, plus wrapper and a small shared file.
+	// Fit two ordinary files per chunk, plus wrapper and the small main.ts.
 	budget := 2*counter.Count(BuildFileXML("a/one.ts", files["a/one.ts"])) + 150
 	files["main.ts"] = "import './a/one';"
 	for _, tc := range []struct {
@@ -26,12 +26,12 @@ func TestChunkSelectsGroupingWithoutLosingFilesOrSummaries(t *testing.T) {
 		{
 			"imports improve colocation",
 			map[string][]string{"a/one.ts": {"b/one.ts"}, "a/two.ts": {"b/two.ts"}, "main.ts": {"a/one.ts"}},
-			[][]string{{"a/one.ts", "b/one.ts", "main.ts"}, {"a/two.ts", "b/two.ts", "main.ts"}},
+			[][]string{{"a/one.ts", "b/one.ts", "main.ts"}, {"a/two.ts", "b/two.ts"}},
 		},
 		{
 			"directory baseline has more colocated edges",
 			map[string][]string{"a/one.ts": {"b/one.ts"}, "a/two.ts": {"a/one.ts"}, "b/one.ts": {"b/two.ts"}, "b/two.ts": {"b/one.ts"}, "main.ts": {"a/one.ts"}},
-			[][]string{{"a/one.ts", "a/two.ts", "main.ts"}, {"b/one.ts", "b/two.ts", "main.ts"}},
+			[][]string{{"a/one.ts", "a/two.ts", "main.ts"}, {"b/one.ts", "b/two.ts"}},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -67,12 +67,8 @@ func TestChunkSelectsGroupingWithoutLosingFilesOrSummaries(t *testing.T) {
 				t.Errorf("paths = %v, want %v", paths, tc.want)
 			}
 			for p := range files {
-				want := 1
-				if p == "main.ts" {
-					want = len(chunks)
-				}
-				if seen[p] != want {
-					t.Errorf("%s appears %d times, want %d", p, seen[p], want)
+				if seen[p] != 1 {
+					t.Errorf("%s appears %d times, want 1", p, seen[p])
 				}
 			}
 		})

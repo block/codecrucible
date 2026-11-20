@@ -864,12 +864,13 @@ Small repositories keep the single-chunk path. Larger scans keep whole files
 together where the token budget permits, assign dependencies alongside their
 importers, and use short declaration summaries for dependencies in other
 chunks. Graph grouping is compared with directory grouping at the same budget.
-It is selected only when it improves chunk count, unique dependency-edge
-co-location, or duplicated bytes without worsening another measure; ties and
-tradeoffs keep directory grouping. Both candidates retain cross-chunk summaries
-and are checked against the rendered XML budget. These are packing measures,
-not evidence of better vulnerability detection.
-A few small, high-priority files can be shared. Files larger than a
+It is selected only when it improves chunk count or unique dependency-edge
+co-location without worsening the other; ties and tradeoffs keep directory
+grouping. Both candidates retain cross-chunk summaries and are checked against
+the rendered XML budget. These are packing measures, not evidence of better
+vulnerability detection.
+Each admitted file is analyzed in exactly one chunk, so one defect is not
+reported again by every chunk that could see its file. Files larger than a
 chunk budget remain in the coverage report and cause an incomplete-analysis
 warning; a manifest entry alone does not count as analyzed source.
 

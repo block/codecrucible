@@ -161,43 +161,21 @@ func (c *defaultChunker) Chunk(input ingest.FlattenResult, budget int, opts *Chu
 		return nil, fmt.Errorf("chunk: budget %d too small after overhead %d", budget, overheadTokens)
 	}
 
-	// Identify shared files: high priority + small enough to duplicate.
-	sharedBudget := effectiveBudget / 10 // 10% of chunk budget
-	const maxSharedPerChunk = 3
-	const sharedTokenCap = 500
-	const sharedPriorityMin = 80
-
-	var sharedFiles []*fileEntry
-	sharedTokenTotal := 0
-	for _, e := range entries {
-		if e.priority >= sharedPriorityMin && e.tokens <= sharedTokenCap {
-			if sharedTokenTotal+e.tokens <= sharedBudget && len(sharedFiles) < maxSharedPerChunk {
-				sharedFiles = append(sharedFiles, e)
-				sharedTokenTotal += e.tokens
-			}
-		}
-	}
-
-	sharedSet := make(map[string]bool, len(sharedFiles))
-	for _, sf := range sharedFiles {
-		sharedSet[sf.path] = true
-	}
-
-	// Both candidates use the same admitted files, shared files and budget.
-	// Reject oversized files once, so comparing strategies cannot change coverage.
-	packingBudget := effectiveBudget - sharedTokenTotal
+	// Each admitted file is analysed in exactly one chunk, so a finding is
+	// reported by the chunk that owns its file and by no other. Cross-chunk
+	// context comes from related summaries, not from copying files.
+	// Both candidates use the same admitted files and budget. Reject oversized
+	// files once, so comparing strategies cannot change coverage.
+	packingBudget := effectiveBudget
 	// Per-file estimates do not capture the full wrapper, path listing, or
 	// changes in the token heuristic's content sample. Check rendered groups
 	// before scoring either candidate. Reserve the largest metadata width.
 	fits := func(group []*fileEntry) bool {
-		_, paths, filesXML := renderGroup(group, sharedFiles)
+		_, paths, filesXML := renderGroup(group)
 		return c.counter.Count(buildChunkXMLWithFiles(len(entries), len(entries), paths, nil, filesXML)) <= budget
 	}
 	var packable []*fileEntry
 	for _, e := range entries {
-		if sharedSet[e.path] {
-			continue
-		}
 		if e.tokens > packingBudget || !fits([]*fileEntry{e}) {
 			c.logger.Warn("file exceeds chunk budget, skipping", "path", e.path, "file_tokens", e.tokens, "budget", packingBudget)
 			continue
@@ -207,8 +185,8 @@ func (c *defaultChunker) Chunk(input ingest.FlattenResult, budget int, opts *Chu
 	groups := fitGroups(c.directoryGroups(packable, packingBudget), fits)
 	if len(opts.ImportGraph) > 0 && len(packable) > 0 {
 		graphGroups := fitGroups(c.importGroups(packable, packingBudget), fits)
-		directoryScore := scorePacking(groups, sharedFiles)
-		graphScore := scorePacking(graphGroups, sharedFiles)
+		directoryScore := scorePacking(groups)
+		graphScore := scorePacking(graphGroups)
 		strategy := "directory"
 		if graphScore.betterThan(directoryScore) {
 			groups = graphGroups
@@ -216,13 +194,7 @@ func (c *defaultChunker) Chunk(input ingest.FlattenResult, budget int, opts *Chu
 		}
 		c.logger.Info("compared chunk grouping strategies", "selected", strategy,
 			"directory_chunks", directoryScore.chunks, "import_chunks", graphScore.chunks,
-			"directory_colocated_edges", directoryScore.colocatedEdges, "import_colocated_edges", graphScore.colocatedEdges,
-			"directory_duplicated_bytes", directoryScore.duplicatedBytes, "import_duplicated_bytes", graphScore.duplicatedBytes)
-	}
-
-	// Shared files still need an analysis chunk when no ordinary group fits.
-	if len(groups) == 0 && len(sharedFiles) > 0 {
-		groups = append(groups, nil)
+			"directory_colocated_edges", directoryScore.colocatedEdges, "import_colocated_edges", graphScore.colocatedEdges)
 	}
 
 	// If all files were skipped, return a single empty chunk.
@@ -241,7 +213,7 @@ func (c *defaultChunker) Chunk(input ingest.FlattenResult, budget int, opts *Chu
 	total := len(groups)
 	chunks := make([]Chunk, total)
 	for i, group := range groups {
-		fullGroup, paths, filesXML := renderGroup(group, sharedFiles)
+		fullGroup, paths, filesXML := renderGroup(group)
 
 		// Compute cross-chunk summaries.
 		var relatedSummaries []string

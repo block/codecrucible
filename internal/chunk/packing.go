@@ -32,11 +32,9 @@ func fitGroups(groups [][]*fileEntry, fits func([]*fileEntry) bool) [][]*fileEnt
 	return out
 }
 
-// Shared entries are excluded from ordinary groups before packing.
-func renderGroup(group, shared []*fileEntry) ([]*fileEntry, []string, string) {
-	full := make([]*fileEntry, 0, len(group)+len(shared))
-	full = append(full, group...)
-	full = append(full, shared...)
+// renderGroup orders a group's files by path and renders their contents.
+func renderGroup(group []*fileEntry) ([]*fileEntry, []string, string) {
+	full := append([]*fileEntry(nil), group...)
 	sort.Slice(full, func(i, j int) bool { return full[i].path < full[j].path })
 	paths := make([]string, len(full))
 	var content strings.Builder
@@ -102,25 +100,21 @@ func (c *defaultChunker) importGroups(entries []*fileEntry, budget int) [][]*fil
 }
 
 type packingScore struct {
-	chunks, colocatedEdges, duplicatedBytes int
+	chunks, colocatedEdges int
 }
 
 // Prefer the directory baseline on ties or tradeoffs. Graph grouping must
-// improve at least one measure without worsening the others.
+// improve at least one measure without worsening the other.
 func (s packingScore) betterThan(baseline packingScore) bool {
-	return s.chunks <= baseline.chunks && s.colocatedEdges >= baseline.colocatedEdges &&
-		s.duplicatedBytes <= baseline.duplicatedBytes && s != baseline
+	return s.chunks <= baseline.chunks && s.colocatedEdges >= baseline.colocatedEdges && s != baseline
 }
 
-func scorePacking(groups [][]*fileEntry, shared []*fileEntry) packingScore {
+func scorePacking(groups [][]*fileEntry) packingScore {
 	score := packingScore{chunks: len(groups)}
 	seenEdges := make(map[[2]string]bool)
 	for _, group := range groups {
-		members := make(map[string]*fileEntry, len(group)+len(shared))
+		members := make(map[string]*fileEntry, len(group))
 		for _, e := range group {
-			members[e.path] = e
-		}
-		for _, e := range shared {
 			members[e.path] = e
 		}
 		for _, e := range members {
@@ -132,8 +126,5 @@ func scorePacking(groups [][]*fileEntry, shared []*fileEntry) packingScore {
 		}
 	}
 	score.colocatedEdges = len(seenEdges)
-	for _, e := range shared {
-		score.duplicatedBytes += len(e.content) * max(0, len(groups)-1)
-	}
 	return score
 }
