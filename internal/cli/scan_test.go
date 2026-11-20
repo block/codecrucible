@@ -58,6 +58,9 @@ json_formatting_rules: "Return JSON: {schema}"
 		t.Fatal(err)
 	}
 
+	if err := os.WriteFile(filepath.Join(promptsDir, "audit.yaml"), []byte("system_message: Audit findings\nuser_prompt_template: '{findings_json} {code_context} {schema}'\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
 	return dir
 }
 
