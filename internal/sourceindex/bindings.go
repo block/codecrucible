@@ -231,19 +231,18 @@ func pythonBindings(text string) (map[string]string, [][2]int) {
 	return names, spans
 }
 
-// jsAliasTargets matches a non-relative specifier to admitted files, with
-// directory index files. After a project alias (@/ or ~/) it matches at
-// complete path segments. Any other specifier names a package unless it is
-// a repository-relative path: a local file that only shares the package's
-// name (src/auth-lib.ts for 'auth-lib') is not evidence of what the import
-// means. Partial segments never match.
+// jsAliasTargets matches a project-alias specifier (@/ or ~/) to admitted
+// files at complete path segments, with directory index files. Any other
+// non-relative specifier names a package, including scoped packages and
+// package subpaths. A local file that shares its name or path is not
+// evidence of what the import means, so it has no local targets.
 func jsAliasTargets(paths []string, spec string) []string {
-	if strings.HasPrefix(spec, ".") {
-		return nil
-	}
 	module, alias := strings.CutPrefix(spec, "@/")
 	if !alias {
 		module, alias = strings.CutPrefix(spec, "~/")
+	}
+	if !alias {
+		return nil
 	}
 	module = strings.TrimSuffix(module, path.Ext(module))
 	var out []string
@@ -252,7 +251,7 @@ func jsAliasTargets(paths []string, spec string) []string {
 			continue
 		}
 		file := strings.TrimSuffix(strings.TrimSuffix(p, path.Ext(p)), "/index")
-		if file == module || (alias && strings.HasSuffix(file, "/"+module)) {
+		if file == module || strings.HasSuffix(file, "/"+module) {
 			out = append(out, p)
 		}
 	}
