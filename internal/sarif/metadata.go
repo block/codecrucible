@@ -16,6 +16,7 @@ type ScanMetadata struct {
 }
 
 type ScanRecipe struct {
+	ScopePlannerFingerprint       string                 `json:"scopePlannerFingerprint,omitempty"`
 	ToolVersion                   string                 `json:"toolVersion"`
 	ToolCommit                    string                 `json:"toolCommit"`
 	Phases                        map[string]PhaseRecipe `json:"phases"`
@@ -66,6 +67,7 @@ type ModelPricing struct {
 }
 
 type ScanControls struct {
+	ScopePlanning            bool     `json:"scopePlanning,omitempty"`
 	Paths                    []string `json:"paths"`
 	Include                  []string `json:"include"`
 	Exclude                  []string `json:"exclude"`
@@ -104,6 +106,7 @@ type ContextIdentity struct {
 }
 
 type ScanExecution struct {
+	ScopePlan                 *ScopePlan                `json:"scopePlan,omitempty"`
 	InputTokens               int64                     `json:"inputTokens,omitempty"`
 	InputTokenBudgetExhausted bool                      `json:"inputTokenBudgetExhausted,omitempty"`
 	AuditAdditionsDropped     int                       `json:"auditAdditionsDropped,omitempty"`
@@ -125,6 +128,34 @@ type ScanExecution struct {
 	// AuditLeads are the v2 audit's notes on possible issues outside the
 	// audited findings, for a human to follow up. They are not findings.
 	AuditLeads []string `json:"auditLeads,omitempty"`
+}
+
+// ScopePlan records intentional scope reductions, never successful analysis.
+// Samples and raw model responses are not included in this receipt.
+type ScopePlan struct {
+	PromptTokens         int              `json:"promptTokens"`
+	CompletionTokens     int              `json:"completionTokens"`
+	EstimatedCost        float64          `json:"estimatedCost"`
+	PromptFingerprint    string           `json:"promptFingerprint"`
+	Version              int              `json:"version"`
+	Status               string           `json:"status"`
+	Reason               string           `json:"reason,omitempty"`
+	Candidates           int              `json:"candidates"`
+	FilesBefore          int              `json:"filesBefore"`
+	FilesAfter           int              `json:"filesAfter"`
+	EstimatedTokensSaved int              `json:"estimatedTokensSaved"`
+	InputFingerprint     string           `json:"inputFingerprint,omitempty"`
+	Exclusions           []ScopeExclusion `json:"exclusions"`
+	Rejected             int              `json:"rejected"`
+}
+
+type ScopeExclusion struct {
+	ID                 string `json:"id"`
+	Path               string `json:"path"`
+	Category           string `json:"category"`
+	Reason             string `json:"reason"`
+	ContentFingerprint string `json:"contentFingerprint"`
+	EstimatedTokens    int    `json:"estimatedTokens"`
 }
 
 // SourceBundle fingerprints the source context assembled for one phase call.

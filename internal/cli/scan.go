@@ -71,6 +71,7 @@ pipeline and produces SARIF output suitable for GitHub Code Scanning integration
 	cmd.Flags().Bool("fail-on-incomplete", false, "exit 4 if analysis or audit coverage is incomplete (writes partial SARIF first)")
 	cmd.Flags().Int64("max-input-tokens", 0, "stop new LLM requests once reported scan-wide input tokens reach this limit (0 = unlimited)")
 	cmd.Flags().Float64("max-cost", config.DefaultMaxCost, "maximum cost budget in dollars (0 = unlimited)")
+	cmd.Flags().Bool("scope-planning", false, "nominate low-value artifacts before budget checks (uses feature-detection model)")
 	cmd.Flags().Bool("dry-run", false, "show what would be analyzed without making LLM calls")
 	cmd.Flags().String("custom-requirements", "", "additional analysis requirements to include in the prompt")
 	cmd.Flags().StringArray("context-source", nil, "supplementary context as key=value pairs: name=X,type=<path|repo|url|inline>,location=Y,priority=N,compress=true (one source per flag; repeatable)")
@@ -152,7 +153,7 @@ var phaseLeaves = map[string]string{
 func bindScanFlags(cmd *cobra.Command) {
 	// Flat flags map to same-named viper keys.
 	flags := []string{
-		"paths", "fail-on-severity", "fail-on-incomplete", "max-cost", "max-input-tokens", "dry-run",
+		"paths", "fail-on-severity", "fail-on-incomplete", "max-cost", "max-input-tokens", "dry-run", "scope-planning",
 		"include-tests", "include-docs", "compress", "custom-requirements",
 		"output", "phase-output-dir", "prompts-dir", "include", "exclude", "custom-headers",
 		"skip-feature-detection", "concurrency", "max-file-size",
@@ -368,6 +369,26 @@ func runScan(cmd *cobra.Command, args []string) error {
 		"files_kept", stats.Kept,
 	)
 
+	// Scope planning intentionally precedes both the source index and preflight:
+	// excluded files must never be counted as analyzed or consume chunk budgets.
+	metadata := newScanMetadata(cfg)
+	usage := newModelUsage()
+	usage.maxInputTokens = cfg.MaxInputTokens
+	artifacts := newPhaseArtifactWriter(cfg)
+	artifacts.startedAt, artifacts.metadata, artifacts.usage = startedAt, metadata, usage
+	var scopeUsage llm.TokenUsage
+	var scopeCost float64
+	if cfg.ScopePlanning {
+		filtered, scopeUsage, scopeCost, err = planScope(cmd.Context(), cfg, filtered, usage, metadata, artifacts)
+		if err != nil {
+			return fmt.Errorf("writing scope receipt: %w", err)
+		}
+		if err := cmd.Context().Err(); err != nil {
+			return err
+		}
+		stats.Kept = len(filtered)
+	}
+
 	// --- Stage 3: Build FileMap (defer full XML generation) ---
 	flattenCfg := ingest.FlattenConfig{Compress: cfg.Compress}
 	flatResult := ingest.FlattenFileMapOnly(filtered)
@@ -399,7 +420,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 
 	if len(filtered) == 0 {
 		slog.Info("no source files after filtering, producing empty SARIF")
-		return outputEmptySARIF(cfg, startedAt)
+		return outputEmptySARIFWithMetadata(cfg, startedAt, metadata, usage)
 	}
 	costEstimate := estimateScanCost(totalTokens, cfg)
 	if cfg.DryRun || cfg.MaxCost > 0 {
@@ -412,6 +433,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 			return err
 		}
 	}
+	costEstimate = costEstimate.withPriorCost(scopeCost)
 	scopeAttrs := []any{
 		"files", len(filtered),
 		"tokens", totalTokens,
@@ -422,6 +444,9 @@ func runScan(cmd *cobra.Command, args []string) error {
 
 	if cfg.DryRun {
 		fmt.Printf("Dry run — analysis scope:\n")
+		if cfg.ScopePlanning {
+			fmt.Println("  Scope planning: not evaluated (dry run makes no model calls)")
+		}
 		fmt.Printf("  Files: %d (of %d total)\n", stats.Kept, stats.Total)
 		fmt.Printf("  Tokens: %d\n", totalTokens)
 		fmt.Printf("  Model: %s (context limit: %d)\n", modelCfg.Name, modelCfg.ContextLimit)
@@ -442,9 +467,6 @@ func runScan(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	usage := newModelUsage()
-	usage.maxInputTokens = cfg.MaxInputTokens
-
 	slog.Info("LLM provider configured", "provider", analysis.Provider, "model", modelCfg.Name)
 
 	promptLoader, err := resolvePromptLoader(cfg.PromptsDir)
@@ -459,17 +481,12 @@ func runScan(cmd *cobra.Command, args []string) error {
 	outputMode := llm.OutputModeForConfig(modelCfg)
 	repoName := filepath.Base(repoRoot)
 
-	metadata := newScanMetadata(cfg)
 	snapshot := source.Snapshot()
 	metadata.Execution.SourceIndex = &snapshot
 	metadata.Recipe.Prompts.Fingerprint, err = promptLoader.Fingerprint()
 	if err != nil {
 		return err
 	}
-	artifacts := newPhaseArtifactWriter(cfg)
-	artifacts.startedAt = startedAt
-	artifacts.metadata = metadata
-	artifacts.usage = usage
 	lineage, lineageFile, err := openLineage(artifacts, metadata)
 	if err != nil {
 		warnLineage(err)
@@ -531,6 +548,10 @@ func runScan(cmd *cobra.Command, args []string) error {
 		}
 		merged, totalUsage, totalCost = outcome.doc, outcome.usage, outcome.cost
 	}
+
+	totalUsage.PromptTokens += scopeUsage.PromptTokens
+	totalUsage.CompletionTokens += scopeUsage.CompletionTokens
+	totalCost += scopeCost
 
 	// --- Stage 6.75: Audit phase (CWE-specific scrutiny) ---
 	if !cfg.SkipAudit && len(merged.Runs[0].Results) > 0 {

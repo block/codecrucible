@@ -25,6 +25,7 @@ type Config struct {
 	MaxInputTokens        int64          `mapstructure:"max-input-tokens"`
 	MaxCost               float64        `mapstructure:"max-cost"`
 	DryRun                bool           `mapstructure:"dry-run"`
+	ScopePlanning         bool           `mapstructure:"scope-planning"`
 	IncludeTests          bool           `mapstructure:"include-tests"`
 	IncludeDocs           bool           `mapstructure:"include-docs"`
 	Compress              bool           `mapstructure:"compress"`
@@ -175,6 +176,7 @@ func SetDefaults(v *viper.Viper) {
 	v.SetDefault("max-input-tokens", 0)
 	v.SetDefault("max-cost", DefaultMaxCost) //Set to $25 as a default
 	v.SetDefault("dry-run", false)
+	v.SetDefault("scope-planning", false)
 	v.SetDefault("include-tests", false)
 	v.SetDefault("include-docs", false)
 	v.SetDefault("compress", false)

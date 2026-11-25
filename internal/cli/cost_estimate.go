@@ -246,3 +246,10 @@ func (e scanCostEstimate) checkConfiguredBudget(limit float64, explicit bool) er
 	}
 	return e.checkBudget(limit)
 }
+
+// Include actual prepass spend when checking the remaining scan allowance.
+func (e scanCostEstimate) withPriorCost(cost float64) scanCostEstimate {
+	e.TotalInput += cost
+	e.Planning += cost
+	return e
+}

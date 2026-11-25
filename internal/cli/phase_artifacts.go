@@ -40,6 +40,7 @@ func newPhaseArtifactWriter(cfg *config.Config) phaseArtifactWriter {
 	if strings.TrimSpace(cfg.PhaseOutputDir) != "" {
 		dir := cfg.PhaseOutputDir
 		return phaseArtifactWriter{paths: map[string]string{
+			"scope-planning":    filepath.Join(dir, "scope-planning.json"),
 			"feature-detection": filepath.Join(dir, "feature-detection.json"),
 			"analysis":          filepath.Join(dir, "analysis.sarif"),
 			"audit":             filepath.Join(dir, "audit.sarif"),
@@ -60,6 +61,7 @@ func newPhaseArtifactWriter(cfg *config.Config) phaseArtifactWriter {
 	}
 
 	return phaseArtifactWriter{paths: map[string]string{
+		"scope-planning":    filepath.Join(dir, stem+".scope-planning.json"),
 		"feature-detection": filepath.Join(dir, stem+".feature-detection.json"),
 		"analysis":          filepath.Join(dir, stem+".analysis.sarif"),
 		"audit":             filepath.Join(dir, stem+".audit.sarif"),

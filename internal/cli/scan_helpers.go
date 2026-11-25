@@ -196,12 +196,19 @@ func capManifest(paths []string, charBudget int) []string {
 
 // outputEmptySARIF produces a valid SARIF document with zero findings.
 func outputEmptySARIF(cfg *config.Config, startedAt time.Time) error {
-	metadata := newScanMetadata(cfg)
+	return outputEmptySARIFWithMetadata(cfg, startedAt, newScanMetadata(cfg), nil)
+}
+
+func outputEmptySARIFWithMetadata(cfg *config.Config, startedAt time.Time, metadata *sarif.ScanMetadata, usage *modelUsage) error {
+	usage.apply(metadata)
 	source := sourceindex.New(nil)
 	snapshot := source.Snapshot()
 	metadata.Execution.SourceIndex = &snapshot
 	metadata.Execution.SourceCoverage = newSourceCoverage(source).report()
 	for phase := range metadata.Execution.Phases {
+		if phase == "scope-planning" && metadata.Execution.ScopePlan != nil {
+			continue
+		}
 		setPhaseStatus(metadata, phase, "skipped", "no source files")
 	}
 	// Capture local template identity when available, without requiring
@@ -223,6 +230,14 @@ func outputEmptySARIF(cfg *config.Config, startedAt time.Time) error {
 		}},
 	}}
 
+	if usage != nil {
+		if err := usage.budgetError(); err != nil {
+			doc = markInvocationFailed(doc, err.Error())
+		}
+	}
+	if plan := metadata.Execution.ScopePlan; plan != nil && cfg.MaxCost > 0 && plan.EstimatedCost > cfg.MaxCost {
+		doc = markInvocationFailed(doc, "scope planning exceeded cost budget")
+	}
 	if err := artifacts.WriteSARIF("analysis", doc); err != nil {
 		return err
 	}
@@ -237,10 +252,18 @@ func outputEmptySARIF(cfg *config.Config, startedAt time.Time) error {
 	}
 
 	if cfg.Output != "" {
-		return os.WriteFile(cfg.Output, output, 0600)
+		if err := os.WriteFile(cfg.Output, output, 0600); err != nil {
+			return err
+		}
+	} else {
+		fmt.Println(string(output))
 	}
-	fmt.Println(string(output))
-	return nil
+	if cfg.FailOnIncomplete {
+		if err := scanCompletenessError(doc, metadata); err != nil {
+			return err
+		}
+	}
+	return scanExecutionError(doc)
 }
 
 // maxContextBudgetPct is the hard ceiling on how much of the context window

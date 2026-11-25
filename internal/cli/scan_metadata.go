@@ -44,7 +44,7 @@ func newScanMetadata(cfg *config.Config) *sarif.ScanMetadata {
 			ContextSources: []sarif.ContextIdentity{},
 			Controls: sarif.ScanControls{
 				Paths: append([]string{}, cfg.Paths...), Include: append([]string{}, cfg.Include...), Exclude: append([]string{}, cfg.Exclude...),
-				IncludeTests: cfg.IncludeTests, IncludeDocs: cfg.IncludeDocs, MaxFileSize: cfg.MaxFileSize,
+				ScopePlanning: cfg.ScopePlanning, IncludeTests: cfg.IncludeTests, IncludeDocs: cfg.IncludeDocs, MaxFileSize: cfg.MaxFileSize,
 				Compress: cfg.Compress, Concurrency: concurrency, MaxCost: cfg.MaxCost, MaxInputTokens: cfg.MaxInputTokens, FailOnIncomplete: cfg.FailOnIncomplete, FailOnSeverity: cfg.FailOnSeverity,
 				SkipFeatureDetection: cfg.SkipFeatureDetection, SkipAudit: cfg.SkipAudit,
 				AuditConfidenceThreshold: cfg.AuditConfidenceThreshold, AuditBatchSize: cfg.AuditBatchSize, SemanticDedup: cfg.SemanticDedup,
@@ -62,6 +62,11 @@ func newScanMetadata(cfg *config.Config) *sarif.ScanMetadata {
 	} {
 		m.Recipe.Phases[name] = phaseRecipe(phase, cfg)
 		m.Execution.Phases[name] = sarif.PhaseExecution{Status: "pending"}
+	}
+	if cfg.ScopePlanning {
+		m.Recipe.ScopePlannerFingerprint = fingerprint([]byte(scopeSystemPrompt + string(scopeSchema)))
+		m.Recipe.Phases["scope-planning"] = phaseRecipe(cfg.Phases.FeatureDetection, cfg)
+		m.Execution.Phases["scope-planning"] = sarif.PhaseExecution{Status: "pending"}
 	}
 	if cfg.SkipAudit {
 		setPhaseStatus(m, "audit", "skipped", "disabled")

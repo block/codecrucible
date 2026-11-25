@@ -167,6 +167,43 @@ context compression, retries, and repeated audit batches are excluded.
 The existing preflight budget check uses source-input cost; runtime accounting
 uses reported token usage. All dollar values depend on configured model rates.
 
+### Optional scope planning
+
+Enable `--scope-planning` (or `SCOPE_PLANNING=true`) to ask the configured
+feature-detection model to nominate low-value, high-token artifacts **before**
+the final budget check and chunking. It runs independently of
+`--skip-feature-detection`. Existing scans retain their scope unless enabled.
+
+The planner ranks admitted files locally and sends at most 32 candidates of at
+least 4,096 estimated source tokens. Each has a file ID, path, token estimate,
+and at most 1,536 header bytes plus 512 tail bytes. The JSON inventory is capped
+at 64 KiB and the estimated request at 16,000 input tokens, reduced further to
+fit the model's context with output and safety reservations. No full large file
+is sent just to decide whether to scan it.
+
+Valid nominations are applied automatically, without per-run approval. The first
+version accepts only recognizable MySQL/MariaDB/PostgreSQL dumps, valid JSON
+under `fixtures/` or `__snapshots__/`, and byte-identical generated duplicates
+whose original remains in scope. Each nomination needs an exact sampled quote
+and a reason; size alone is insufficient. Unknown IDs, paths/globs, unsupported
+categories and unverifiable evidence cannot remove files. Explicit `--include`
+patterns always win. Other large or uncertain files stay in scope.
+
+The `scope-planning.json` phase artifact (or `results.scope-planning.json`
+sidecar) and SARIF `execution.scopePlan` record every applied exclusion, content
+fingerprint, reason and estimated source tokens saved. These files are excluded,
+not analyzed or declared safe. Source coverage counts only the remaining scope.
+The receipt also records rejected nominations, model usage and fallback status;
+it is saved even if the subsequent budget check rejects the scan.
+
+`--dry-run` makes no model calls and reports scope planning as unevaluated.
+Audit replay preserves its original source scope and skips the planner. A failed,
+truncated or malformed planner response retains the original scope. Planner
+usage counts against the scan-wide input-token threshold and dollar allowance.
+A bounded planner request may therefore incur cost even when the final scan
+budget check fails. Missing planner pricing with a positive dollar limit skips
+the planner; prepaid deployments can use `--max-cost 0 --max-input-tokens N`.
+
 ### Strict coverage exit status
 
 Use `--fail-on-incomplete` (or `FAIL_ON_INCOMPLETE=true`) in automation that
