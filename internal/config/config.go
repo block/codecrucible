@@ -22,6 +22,7 @@ type Config struct {
 	Model                 string         `mapstructure:"model"`
 	FailOnSeverity        float64        `mapstructure:"fail-on-severity"`
 	FailOnIncomplete      bool           `mapstructure:"fail-on-incomplete"`
+	MaxInputTokens        int64          `mapstructure:"max-input-tokens"`
 	MaxCost               float64        `mapstructure:"max-cost"`
 	DryRun                bool           `mapstructure:"dry-run"`
 	IncludeTests          bool           `mapstructure:"include-tests"`
@@ -104,6 +105,10 @@ func Load(v *viper.Viper) (*Config, error) {
 		return nil, fmt.Errorf("unmarshaling config: %w", err)
 	}
 
+	if cfg.MaxInputTokens < 0 {
+		return nil, fmt.Errorf("max-input-tokens must be non-negative")
+	}
+
 	if cfg.ModelParams == nil {
 		cfg.ModelParams = map[string]any{}
 	}
@@ -146,6 +151,7 @@ func SetDefaults(v *viper.Viper) {
 	v.SetDefault("verbose", false)
 	v.SetDefault("model", "")
 	v.SetDefault("fail-on-severity", float64(0))
+	v.SetDefault("max-input-tokens", 0)
 	v.SetDefault("max-cost", DefaultMaxCost) //Set to $25 as a default
 	v.SetDefault("dry-run", false)
 	v.SetDefault("include-tests", false)

@@ -1331,3 +1331,22 @@ analysis, and valid `unverified` audit verdicts do not by themselves fail this
 check. Other errors (configuration or output I/O) still exit 1; findings above
 `--fail-on-severity` still exit 2. Without this option, existing exit behavior
 is unchanged.
+
+### Input-token budget for unpriced deployments
+
+`--max-input-tokens N` (environment: `MAX_INPUT_TOKENS`) sets a scan-wide
+**reported input-token threshold**, independent of model prices. It includes
+feature detection, context compression, analysis, audit, and model repair or
+recovery requests. Use `--max-cost 0` alongside it when a deployment is prepaid
+or has no configured dollar rates; an explicitly requested dollar budget still
+requires pricing.
+
+New requests stop once reported prompt-token usage reaches the threshold.
+Requests already running may finish over it, so this is a request-boundary
+budget, not a strict provider billing ceiling. All reported usage from those
+responses is retained. Internal transport retries without a usage response
+cannot be measured. A denied request or reported usage above the threshold
+produces partial SARIF and a failed scan, even if an optional phase normally
+falls back after an error. Exactly reaching the threshold on the last required
+request is successful. Zero (default) disables this limit; negative values are
+rejected. Output/reasoning tokens do not count against this input-only budget.

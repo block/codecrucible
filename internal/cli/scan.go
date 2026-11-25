@@ -69,6 +69,7 @@ pipeline and produces SARIF output suitable for GitHub Code Scanning integration
 	// Analysis behaviour
 	cmd.Flags().Float64("fail-on-severity", 0, "exit non-zero if any finding meets or exceeds this severity (0-10)")
 	cmd.Flags().Bool("fail-on-incomplete", false, "exit 4 if analysis or audit coverage is incomplete (writes partial SARIF first)")
+	cmd.Flags().Int64("max-input-tokens", 0, "stop new LLM requests once reported scan-wide input tokens reach this limit (0 = unlimited)")
 	cmd.Flags().Float64("max-cost", config.DefaultMaxCost, "maximum cost budget in dollars (0 = unlimited)")
 	cmd.Flags().Bool("dry-run", false, "show what would be analyzed without making LLM calls")
 	cmd.Flags().String("custom-requirements", "", "additional analysis requirements to include in the prompt")
@@ -151,7 +152,7 @@ var phaseLeaves = map[string]string{
 func bindScanFlags(cmd *cobra.Command) {
 	// Flat flags map to same-named viper keys.
 	flags := []string{
-		"paths", "fail-on-severity", "fail-on-incomplete", "max-cost", "dry-run",
+		"paths", "fail-on-severity", "fail-on-incomplete", "max-cost", "max-input-tokens", "dry-run",
 		"include-tests", "include-docs", "compress", "custom-requirements",
 		"output", "phase-output-dir", "prompts-dir", "include", "exclude", "custom-headers",
 		"skip-feature-detection", "concurrency", "max-file-size",
@@ -442,6 +443,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	usage := newModelUsage()
+	usage.maxInputTokens = cfg.MaxInputTokens
 
 	slog.Info("LLM provider configured", "provider", analysis.Provider, "model", modelCfg.Name)
 
@@ -602,6 +604,11 @@ func runScan(cmd *cobra.Command, args []string) error {
 	}
 	if err := lineage.Finish(merged); err != nil {
 		warnLineage(err)
+	}
+
+	// Persist budget failures even if an optional phase swallowed its error.
+	if budgetErr := usage.budgetError(); budgetErr != nil {
+		merged = markInvocationFailed(merged, budgetErr.Error())
 	}
 
 	// --- Stage 7: Output ---

@@ -224,3 +224,84 @@ func TestScanMetadataRecordsModelsSent(t *testing.T) {
 		t.Fatalf("run models = %v", got)
 	}
 }
+
+func TestInputTokenBudgetAcrossPhasesAndFallback(t *testing.T) {
+	usage := newModelUsage()
+	usage.maxInputTokens = 20
+	calls := 0
+	base := auditClientFunc(func(context.Context, llm.ChatRequest) (*llm.ChatResponse, error) {
+		calls++
+		return &llm.ChatResponse{Usage: llm.TokenUsage{PromptTokens: 10, CompletionTokens: 1000, ReasoningTokens: 900}}, nil
+	})
+	analysis := usage.wrap("analysis", base, config.ModelConfig{})
+	for _, phase := range []string{"feature-detection", "analysis"} {
+		if _, err := usage.wrap(phase, analysis, config.ModelConfig{}).ChatCompletion(context.Background(), llm.ChatRequest{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := usage.budgetError(); err != nil {
+		t.Fatalf("exact final limit must be allowed: %v", err)
+	}
+	for _, phase := range []string{"audit", "context-compress", "analysis"} {
+		if _, err := usage.wrap(phase, analysis, config.ModelConfig{}).ChatCompletion(context.Background(), llm.ChatRequest{}); err == nil {
+			t.Fatal("expected budget denial")
+		}
+	}
+	if calls != 2 || usage.budgetError() == nil {
+		t.Fatalf("calls=%d error=%v", calls, usage.budgetError())
+	}
+	metadata := newScanMetadata(&config.Config{})
+	usage.apply(metadata)
+	if metadata.Execution.InputTokens != 20 || !metadata.Execution.InputTokenBudgetExhausted {
+		t.Fatalf("metadata=%+v", metadata.Execution)
+	}
+	if len(metadata.Execution.Phases["audit"].Models) != 0 {
+		t.Fatal("denied work must not count as a provider call")
+	}
+}
+
+func TestInputBudgetRecordsUsageWithError(t *testing.T) {
+	usage := newModelUsage()
+	usage.maxInputTokens = 5
+	client := usage.wrap("analysis", stubClient{resp: &llm.ChatResponse{Usage: llm.TokenUsage{PromptTokens: 6}}, err: errors.New("partial")}, config.ModelConfig{})
+	_, _ = client.ChatCompletion(context.Background(), llm.ChatRequest{})
+	if usage.inputTokens != 6 || usage.budgetError() == nil {
+		t.Fatal("lost partial response usage")
+	}
+}
+
+func TestInputBudgetConcurrentRequestsCountOnce(t *testing.T) {
+	usage := newModelUsage()
+	usage.maxInputTokens = 15
+	entered := make(chan struct{}, 2)
+	release := make(chan struct{})
+	done := make(chan error, 2)
+	base := auditClientFunc(func(context.Context, llm.ChatRequest) (*llm.ChatResponse, error) {
+		entered <- struct{}{}
+		<-release
+		return &llm.ChatResponse{Usage: llm.TokenUsage{PromptTokens: 10}}, nil
+	})
+	client := usage.wrap("analysis", base, config.ModelConfig{})
+	for range 2 {
+		go func() { _, err := client.ChatCompletion(context.Background(), llm.ChatRequest{}); done <- err }()
+	}
+	<-entered
+	<-entered
+	close(release)
+	for range 2 {
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if usage.inputTokens != 20 || usage.budgetError() == nil {
+		t.Fatalf("usage=%d error=%v", usage.inputTokens, usage.budgetError())
+	}
+	if _, err := client.ChatCompletion(context.Background(), llm.ChatRequest{}); err == nil {
+		t.Fatal("new request admitted after threshold")
+	}
+	metadata := newScanMetadata(&config.Config{})
+	usage.apply(metadata)
+	if metadata.Execution.Phases["analysis"].Models[0].Calls != 2 {
+		t.Fatal("in-flight work counted incorrectly")
+	}
+}
