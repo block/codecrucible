@@ -194,12 +194,14 @@ type PhaseExecution struct {
 type ModelExecution struct {
 	Model string `json:"model"` // sent ID, after any model-params override
 	// ResponseModels are the IDs the provider reported serving the calls.
-	ResponseModels   []string `json:"responseModels"`
-	Calls            int      `json:"calls"`
-	Failures         int      `json:"failures"`
-	PromptTokens     int      `json:"promptTokens"`
-	CompletionTokens int      `json:"completionTokens"`
-	ReasoningTokens  int      `json:"reasoningTokens,omitempty"`
+	ResponseModels      []string `json:"responseModels"`
+	Calls               int      `json:"calls"`
+	Failures            int      `json:"failures"`
+	PromptTokens        int      `json:"promptTokens"`
+	CacheCreationTokens int      `json:"cacheCreationTokens,omitempty"`
+	CacheReadTokens     int      `json:"cacheReadTokens,omitempty"`
+	CompletionTokens    int      `json:"completionTokens"`
+	ReasoningTokens     int      `json:"reasoningTokens,omitempty"`
 	// EstimatedCost applies the phase's configured prices; it is not billed spend.
 	EstimatedCost float64 `json:"estimatedCost"`
 	// Successful calls by setting as sent, after the client's fallbacks.
