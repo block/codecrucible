@@ -59,8 +59,10 @@ type claudeCLIResult struct {
 	StructuredOutput json.RawMessage `json:"structured_output"`
 	StopReason       string          `json:"stop_reason"`
 	Usage            struct {
-		InputTokens  int `json:"input_tokens"`
-		OutputTokens int `json:"output_tokens"`
+		InputTokens              int `json:"input_tokens"`
+		OutputTokens             int `json:"output_tokens"`
+		CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+		CacheReadInputTokens     int `json:"cache_read_input_tokens"`
 	} `json:"usage"`
 	ModelUsage map[string]json.RawMessage `json:"modelUsage"`
 }
@@ -124,8 +126,9 @@ func (c *claudeCLIClient) ChatCompletion(ctx context.Context, req ChatRequest) (
 	}
 
 	return &ChatResponse{
-		Content:      content,
-		Usage:        TokenUsage{PromptTokens: result.Usage.InputTokens, CompletionTokens: result.Usage.OutputTokens},
+		Content: content,
+		Usage: TokenUsage{PromptTokens: result.Usage.InputTokens, CompletionTokens: result.Usage.OutputTokens,
+			CacheCreationTokens: result.Usage.CacheCreationInputTokens, CacheReadTokens: result.Usage.CacheReadInputTokens},
 		FinishReason: mapClaudeCLIStopReason(result.StopReason),
 		Model:        firstClaudeCLIModel(result.ModelUsage, req.Model),
 	}, nil

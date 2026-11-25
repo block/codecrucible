@@ -305,3 +305,48 @@ func TestInputBudgetConcurrentRequestsCountOnce(t *testing.T) {
 		t.Fatal("in-flight work counted incorrectly")
 	}
 }
+
+func TestInputBudgetIncludesCachedTokens(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		tokens llm.TokenUsage
+		total  int64
+	}{
+		{"cache-read", llm.TokenUsage{PromptTokens: 100, CacheReadTokens: 20000}, 20100},
+		{"cache-write", llm.TokenUsage{PromptTokens: 100, CacheCreationTokens: 12000}, 12100},
+		{"mixed", llm.TokenUsage{PromptTokens: 100, CacheCreationTokens: 1000, CacheReadTokens: 20000}, 21100},
+		{"exact", llm.TokenUsage{PromptTokens: 100, CacheCreationTokens: 900, CacheReadTokens: 9000}, 10000},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			usage := newModelUsage()
+			usage.maxInputTokens = 10000
+			calls := 0
+			base := auditClientFunc(func(context.Context, llm.ChatRequest) (*llm.ChatResponse, error) {
+				calls++
+				return &llm.ChatResponse{Usage: tc.tokens}, nil
+			})
+			client := usage.wrap("analysis", base, config.ModelConfig{})
+			if _, err := client.ChatCompletion(context.Background(), llm.ChatRequest{}); err != nil {
+				t.Fatal(err)
+			}
+			if usage.inputTokens != tc.total {
+				t.Fatalf("input=%d want=%d", usage.inputTokens, tc.total)
+			}
+			if (usage.budgetError() != nil) != (tc.total > 10000) {
+				t.Fatal("wrong exact-limit behavior")
+			}
+			if _, err := usage.wrap("audit", client, config.ModelConfig{}).ChatCompletion(context.Background(), llm.ChatRequest{}); err == nil {
+				t.Fatal("cached input did not stop new request")
+			}
+			if calls != 1 {
+				t.Fatal("unexpected second provider call")
+			}
+			metadata := newScanMetadata(&config.Config{})
+			usage.apply(metadata)
+			got := metadata.Execution.Phases["analysis"].Models[0]
+			if metadata.Execution.InputTokens != tc.total || got.CacheCreationTokens != tc.tokens.CacheCreationTokens || got.CacheReadTokens != tc.tokens.CacheReadTokens {
+				t.Fatal("cache usage missing from metadata")
+			}
+		})
+	}
+}
