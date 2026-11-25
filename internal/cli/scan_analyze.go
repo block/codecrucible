@@ -17,6 +17,12 @@ import (
 	"github.com/block/codecrucible/internal/sourceindex"
 )
 
+// errOutputExhausted marks a chunk whose answer stopped at the output-token
+// limit before it could be parsed. The caller may retry its files in smaller
+// groups; the returned document still records the failure and the returned
+// usage is what the attempt cost.
+var errOutputExhausted = errors.New("analysis output exhausted")
+
 // analyzeChunk processes a single chunk: assembles the prompt, calls the LLM, parses
 // the response, and builds a per-chunk SARIF document. Safe for concurrent use.
 func analyzeChunk(
@@ -160,7 +166,7 @@ func analyzeChunk(
 	slog.Info("chunk analysis complete", attrs...)
 
 	// Warn if output was truncated — findings may be incomplete.
-	if resp.FinishReason == "length" {
+	if resp.OutputLimited() {
 		slog.Warn("LLM output was truncated (finish_reason=length), findings may be incomplete",
 			"chunk", fmt.Sprintf("%d/%d", c.Index+1, c.Total),
 			"completion_tokens", usage.CompletionTokens,
@@ -188,7 +194,7 @@ func analyzeChunk(
 			}
 		}
 	}
-	if parseErr != nil && resp.FinishReason == "length" {
+	if parseErr != nil && resp.OutputLimited() {
 		// Truncation, not drift. The JSON was cut mid-object when it hit
 		// max_tokens. Model-repair gets the same cap — it would re-truncate
 		// or emit {"security_issues":[]} to fit, which is worse than honest
@@ -209,7 +215,7 @@ func analyzeChunk(
 					"chunk %d/%d: %s", c.Index+1, c.Total, message)},
 			}},
 		}}
-		return sarif.ValidateSourceLocations(doc, sarif.FileMap(fileMap)), usage, chunkCost, nil
+		return sarif.ValidateSourceLocations(doc, sarif.FileMap(fileMap)), usage, chunkCost, errOutputExhausted
 	}
 	if parseErr != nil {
 		slog.Warn("local JSON repair failed; asking model to reformat",

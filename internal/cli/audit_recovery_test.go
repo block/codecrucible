@@ -93,12 +93,15 @@ func TestAuditResponseRecoveryAndExhaustion(t *testing.T) {
 		name, bad string
 		finish    string
 		recover   bool
+		calls     int
 	}{
-		{"malformed recovers", `{"audited_findings":`, "", true},
-		{"missing verdict recovers", `{"audited_findings":[]}`, "", true},
-		{"missing verdict exhausted", `{}`, "", false},
-		{"truncated exhausted", `{"audited_findings":[]}`, "length", false},
-		{"unknown verdict exhausted", `{"audited_findings":[{"original_issue":"First","file_path":"a.go","start_line":1,"verdict":"maybe"}]}`, "", false},
+		{"malformed recovers", `{"audited_findings":`, "", true, 2},
+		{"missing verdict recovers", `{"audited_findings":[]}`, "", true, 2},
+		{"missing verdict exhausted", `{}`, "", false, 2},
+		// Resending a lone claim that exhausted the output limit would
+		// exhaust it again, so it is not retried.
+		{"truncated exhausted", `{"audited_findings":[]}`, "length", false, 1},
+		{"unknown verdict exhausted", `{"audited_findings":[{"original_issue":"First","file_path":"a.go","start_line":1,"verdict":"maybe"}]}`, "", false, 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			doc := auditFixture()
@@ -112,10 +115,10 @@ func TestAuditResponseRecoveryAndExhaustion(t *testing.T) {
 				return &llm.ChatResponse{Content: tc.bad, FinishReason: tc.finish, Usage: llm.TokenUsage{PromptTokens: 10, CompletionTokens: 5}}, nil
 			})
 			got, usage, cost, err := runFixtureAudit(context.Background(), doc, client)
-			if calls != 2 || (err == nil) != tc.recover || got == nil {
+			if calls != tc.calls || (err == nil) != tc.recover || got == nil {
 				t.Fatalf("calls=%d doc=%v error=%v", calls, got, err)
 			}
-			if usage.PromptTokens != 20 || usage.CompletionTokens != 10 || cost != .00004 {
+			if usage.PromptTokens != 10*calls || usage.CompletionTokens != 5*calls || cost != .00002*float64(calls) {
 				t.Fatalf("retry usage=%+v cost=%v", usage, cost)
 			}
 			if !tc.recover && got.Runs[0].Results[0].Properties.AuditStatus != "not_audited" {

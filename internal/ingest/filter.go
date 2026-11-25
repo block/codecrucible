@@ -242,19 +242,20 @@ const (
 func classifyFile(f SourceFile, cfg FilterConfig) fileCategory {
 	ext := strings.ToLower(filepath.Ext(f.Path))
 
-	// Always-include extensions bypass all filters.
-	if alwaysIncludeExtensions[ext] {
-		return categoryKept
-	}
-
 	// Custom include patterns: if any match, the file is force-included.
 	if matchesAnyGlob(f.Path, cfg.Include) {
 		return categoryKept
 	}
 
-	// Custom exclude patterns: checked before default heuristics.
+	// Custom exclude patterns: explicit configuration wins over every
+	// default, including the always-include extensions below.
 	if matchesAnyGlob(f.Path, cfg.Exclude) {
 		return categoryCustom
+	}
+
+	// Always-include extensions bypass the default heuristics.
+	if alwaysIncludeExtensions[ext] {
+		return categoryKept
 	}
 
 	// Oversized file check.

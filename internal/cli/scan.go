@@ -985,7 +985,6 @@ func runAnalysisPhases(ctx context.Context, in analysisInputs) (out analysisOutc
 	}
 
 	type chunkResult struct {
-		index      int
 		doc        sarif.SARIFDocument
 		usage      llm.TokenUsage
 		cost       float64
@@ -993,37 +992,57 @@ func runAnalysisPhases(ctx context.Context, in analysisInputs) (out analysisOutc
 		lineageErr error
 	}
 
-	results := make([]chunkResult, len(chunks))
-	var wg sync.WaitGroup
-	sem := make(chan struct{}, maxConcurrency)
+	// analyzeAll runs chunks concurrently and returns results in chunk order.
+	analyzeAll := func(chunks []chunk.Chunk, lineagePrefix string) []chunkResult {
+		results := make([]chunkResult, len(chunks))
+		var wg sync.WaitGroup
+		sem := make(chan struct{}, maxConcurrency)
+		for i, c := range chunks {
+			wg.Add(1)
+			go func(idx int, ch chunk.Chunk) {
+				defer wg.Done()
+				sem <- struct{}{}        // acquire
+				defer func() { <-sem }() // release
 
-	for i, c := range chunks {
-		wg.Add(1)
-		go func(idx int, ch chunk.Chunk) {
-			defer wg.Done()
-			sem <- struct{}{}        // acquire
-			defer func() { <-sem }() // release
-
-			doc, usage, cost, aErr := analyzeChunk(
-				ctx, ch, repoName, client, endpoint,
-				modelCfg, promptLoader, schema, outputMode,
-				cfg.CustomRequirements, analysisCtx.Rendered, detectedFeatures, flatResult.FileMap, analysis.ModelParams,
-			)
-			var lineageErr error
-			if in.lineage != nil {
-				lineageErr = in.lineage.Observe(fmt.Sprintf("analysis/chunk/%d", idx), &doc)
-			}
-			results[idx] = chunkResult{index: idx, doc: doc, usage: usage, cost: cost, err: aErr, lineageErr: lineageErr}
-		}(i, c)
+				doc, usage, cost, aErr := analyzeChunk(
+					ctx, ch, repoName, client, endpoint,
+					modelCfg, promptLoader, schema, outputMode,
+					cfg.CustomRequirements, analysisCtx.Rendered, detectedFeatures, flatResult.FileMap, analysis.ModelParams,
+				)
+				var lineageErr error
+				if in.lineage != nil {
+					lineageErr = in.lineage.Observe(fmt.Sprintf("%s/chunk/%d", lineagePrefix, idx), &doc)
+				}
+				results[idx] = chunkResult{doc: doc, usage: usage, cost: cost, err: aErr, lineageErr: lineageErr}
+			}(i, c)
+		}
+		wg.Wait()
+		return results
 	}
-	wg.Wait()
 
-	// Collect results in order.
+	// Collect results in order. Every response is paid for, so its usage
+	// counts once whether or not its findings are kept.
 	var sarifDocs []sarif.SARIFDocument
 	var totalUsage llm.TokenUsage
 	var totalCost float64
+	addUsage := func(r chunkResult) {
+		totalUsage.PromptTokens += r.usage.PromptTokens
+		totalUsage.CompletionTokens += r.usage.CompletionTokens
+		totalCost += r.cost
+	}
+	// keep records a chunk's final outcome in coverage, metadata and SARIF.
+	keep := func(c chunk.Chunk, r chunkResult) {
+		coverage.complete(c.Paths, r.doc, r.err)
+		recordChunkOutcome(metadata, r.doc, r.err)
+		sarifDocs = append(sarifDocs, r.doc)
+	}
+	type exhaustedChunk struct {
+		chunk  chunk.Chunk
+		result chunkResult
+	}
 	var overflowPaths []string
-	for i, r := range results {
+	var exhausted []exhaustedChunk
+	for i, r := range analyzeAll(chunks, "analysis") {
 		if r.lineageErr != nil {
 			warnLineage(r.lineageErr)
 		}
@@ -1032,19 +1051,31 @@ func runAnalysisPhases(ctx context.Context, in analysisInputs) (out analysisOutc
 			metadata.Execution.Chunks.Overflowed++
 			continue
 		}
-		coverage.complete(chunks[i].Paths, r.doc, r.err)
-		recordChunkOutcome(metadata, r.doc, r.err)
-		sarifDocs = append(sarifDocs, r.doc)
-		totalUsage.PromptTokens += r.usage.PromptTokens
-		totalUsage.CompletionTokens += r.usage.CompletionTokens
-		totalCost += r.cost
+		addUsage(r)
+		if errors.Is(r.err, errOutputExhausted) {
+			metadata.Execution.Chunks.OutputExhausted++
+			if len(chunks[i].Paths) > 1 {
+				exhausted = append(exhausted, exhaustedChunk{chunks[i], r})
+				continue
+			}
+			slog.Error("single-file chunk exhausted the output limit; it cannot be split further",
+				"paths", chunks[i].Paths, "max_output_tokens", modelCfg.MaxOutputTokens)
+		}
+		keep(chunks[i], r)
 	}
 
-	// Recovery pass: any chunk that hit the server-side context limit gets
-	// re-chunked at 60% budget and retried once. Overflow 400s fail fast
-	// (no generation), so the wasted cost is just one cheap round-trip.
-	// One round is enough when calibration is working — if 60% still
-	// overflows, the heuristic is off by >40% and we'd rather fail loudly.
+	// Recovery pass: one reduced-workload round, never recursive.
+	//
+	// A chunk that hit the server-side context limit is re-chunked at 60%
+	// budget. Overflow 400s fail fast (no generation), so the wasted cost is
+	// just one cheap round-trip. One round is enough when calibration is
+	// working — if 60% still overflows, the heuristic is off by >40% and we'd
+	// rather fail loudly.
+	//
+	// A chunk whose answer stopped at the output limit is split in two, so
+	// each request asks for roughly half the analysis. A half that still
+	// exhausts the limit stays a failure.
+	var retryChunks []chunk.Chunk
 	if len(overflowPaths) > 0 {
 		retryBudget := chunkBudget * 6 / 10
 		metadata.Execution.Chunks.RecoveryBudget = retryBudget
@@ -1060,41 +1091,51 @@ func runAnalysisPhases(ctx context.Context, in analysisInputs) (out analysisOutc
 				retryMap[p] = content
 			}
 		}
-		retryChunks, rErr := chunker.Chunk(ingest.FlattenResult{FileMap: retryMap}, retryBudget, chunkOpts)
+		overflowChunks, rErr := chunker.Chunk(ingest.FlattenResult{FileMap: retryMap}, retryBudget, chunkOpts)
 		if rErr != nil {
 			slog.Error("overflow recovery re-chunking failed; files skipped", "error", rErr, "files", len(overflowPaths))
 			metadata.Execution.Chunks.Failed += metadata.Execution.Chunks.Overflowed
 		} else {
-			slog.Info("overflow recovery pass starting", "chunks", len(retryChunks))
-			metadata.Execution.Chunks.Recovery = len(retryChunks)
-			coverage.plan(retryChunks)
-			recordAnalysisBundles(metadata, retryChunks, modelCfg.ContextLimit, true)
-			for _, rc := range retryChunks {
-				doc, usage, cost, aErr := analyzeChunk(
-					ctx, rc, repoName, client, endpoint,
-					modelCfg, promptLoader, schema, outputMode,
-					cfg.CustomRequirements, analysisCtx.Rendered, detectedFeatures, flatResult.FileMap, analysis.ModelParams,
-				)
-				if in.lineage != nil {
-					if err := in.lineage.Observe(fmt.Sprintf("recovery/chunk/%d", rc.Index), &doc); err != nil {
-						warnLineage(err)
-					}
-				}
-				coverage.complete(rc.Paths, doc, aErr)
-				recordChunkOutcome(metadata, doc, aErr)
-				if errors.Is(aErr, llm.ErrContextLengthExceeded) {
-					slog.Error("overflow recovery chunk still exceeds context; files skipped",
-						"files", len(rc.Paths),
-						"estimated_tokens", rc.Tokens,
-						"hint", "lower --context-limit or raise the tokenizer safety margin",
-					)
-					continue
-				}
-				sarifDocs = append(sarifDocs, doc)
-				totalUsage.PromptTokens += usage.PromptTokens
-				totalUsage.CompletionTokens += usage.CompletionTokens
-				totalCost += cost
+			retryChunks = append(retryChunks, overflowChunks...)
+		}
+	}
+	for _, e := range exhausted {
+		halves, sErr := splitExhaustedChunk(chunker, e.chunk, flatResult.FileMap, chunkBudget, chunkOpts)
+		if sErr != nil {
+			slog.Error("output-limit recovery re-chunking failed", "error", sErr, "files", len(e.chunk.Paths))
+			keep(e.chunk, e.result)
+			continue
+		}
+		slog.Warn("splitting chunk that exhausted the output limit",
+			"chunk", fmt.Sprintf("%d/%d", e.chunk.Index+1, e.chunk.Total),
+			"files", len(e.chunk.Paths),
+			"recovery_chunks", len(halves),
+		)
+		retryChunks = append(retryChunks, halves...)
+	}
+	if len(retryChunks) > 0 {
+		retryChunks = chunk.Renumber(retryChunks)
+		slog.Info("analysis recovery pass starting", "chunks", len(retryChunks))
+		metadata.Execution.Chunks.Recovery = len(retryChunks)
+		coverage.plan(retryChunks)
+		recordAnalysisBundles(metadata, retryChunks, modelCfg.ContextLimit, true)
+		for i, r := range analyzeAll(retryChunks, "recovery") {
+			if r.lineageErr != nil {
+				warnLineage(r.lineageErr)
 			}
+			rc := retryChunks[i]
+			if errors.Is(r.err, llm.ErrContextLengthExceeded) {
+				coverage.complete(rc.Paths, r.doc, r.err)
+				recordChunkOutcome(metadata, r.doc, r.err)
+				slog.Error("overflow recovery chunk still exceeds context; files skipped",
+					"files", len(rc.Paths),
+					"estimated_tokens", rc.Tokens,
+					"hint", "lower --context-limit or raise the tokenizer safety margin",
+				)
+				continue
+			}
+			addUsage(r)
+			keep(rc, r)
 		}
 	}
 

@@ -253,6 +253,25 @@ func (c *defaultChunker) Chunk(input ingest.FlattenResult, budget int, opts *Chu
 	return chunks, nil
 }
 
+// Renumber gives chunks produced by separate Chunk calls one shared sequence,
+// so each chunk's index, total and XML metadata describe the combined set.
+func Renumber(chunks []Chunk) []Chunk {
+	out := make([]Chunk, len(chunks))
+	for i, ch := range chunks {
+		old := chunkHeader(ch.Index, ch.Total)
+		if strings.HasPrefix(ch.XML, old) {
+			ch.XML = chunkHeader(i, len(chunks)) + ch.XML[len(old):]
+		}
+		ch.Index, ch.Total = i, len(chunks)
+		out[i] = ch
+	}
+	return out
+}
+
+func chunkHeader(index, total int) string {
+	return fmt.Sprintf("<chunk>\n<metadata index=\"%d\" total=\"%d\" />\n", index, total)
+}
+
 // mergeGroups combines small file-entry groups to maximize context window utilization.
 // Groups are merged greedily: adjacent groups are combined as long as their total
 // token count fits within the budget.
@@ -402,8 +421,7 @@ func buildChunkXMLWithFiles(index, total int, paths, manifest []string, filesCon
 	var b strings.Builder
 	b.Grow(len(filesContent) + 512)
 
-	b.WriteString("<chunk>\n")
-	b.WriteString(fmt.Sprintf("<metadata index=\"%d\" total=\"%d\" />\n", index, total))
+	b.WriteString(chunkHeader(index, total))
 
 	if len(paths) > 0 {
 		b.WriteString("<paths>\n")

@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/block/codecrucible/internal/chunk"
+	"github.com/block/codecrucible/internal/ingest"
 	"github.com/block/codecrucible/internal/sarif"
 	"github.com/block/codecrucible/internal/sourceindex"
 )
@@ -76,4 +77,37 @@ func (c *sourceCoverage) report() *sarif.SourceCoverage {
 		}
 	}
 	return r
+}
+
+// splitExhaustedChunk divides a multi-file chunk into two groups of about
+// equal size, keeping its path order, and chunks each group at the original
+// budget. Every replacement has fewer files than the chunk it replaces and
+// keeps the original manifest, so the model still sees the whole repository.
+func splitExhaustedChunk(chunker chunk.Chunker, c chunk.Chunk, files ingest.FileMap, budget int, opts *chunk.ChunkOptions) ([]chunk.Chunk, error) {
+	total := 0
+	for _, p := range c.Paths {
+		total += len(files[p])
+	}
+	first, second := ingest.FileMap{}, ingest.FileMap{}
+	seen := 0
+	for i, p := range c.Paths {
+		if i == 0 || (i < len(c.Paths)-1 && seen < total/2) {
+			first[p] = files[p]
+		} else {
+			second[p] = files[p]
+		}
+		seen += len(files[p])
+	}
+	var out []chunk.Chunk
+	for _, half := range []ingest.FileMap{first, second} {
+		chunks, err := chunker.Chunk(ingest.FlattenResult{FileMap: half}, budget, opts)
+		if err != nil {
+			return nil, err
+		}
+		for _, ch := range chunks {
+			ch.Manifest = c.Manifest
+			out = append(out, ch)
+		}
+	}
+	return out, nil
 }

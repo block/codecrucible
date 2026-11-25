@@ -70,6 +70,12 @@ type ChatResponse struct {
 	Sent *SentRequest `json:"-"`
 }
 
+// OutputLimited reports whether generation stopped at the output-token cap.
+// Reasoning tokens count against that cap, so the answer may be empty.
+func (r *ChatResponse) OutputLimited() bool {
+	return r != nil && (r.FinishReason == "length" || r.FinishReason == "max_tokens")
+}
+
 // SentRequest records request settings as sent on the wire.
 type SentRequest struct {
 	TemperatureOmitted bool   // The body carried no temperature.

@@ -495,6 +495,10 @@ exclude:
   - "**/generated/**"
 ```
 
+`exclude` patterns apply to every file, including `.sql`, `.proto` and GraphQL
+files, which otherwise bypass the default test, vendor and size filters. An
+`include` pattern still overrides an `exclude` pattern.
+
 ### Per-Phase Configuration
 
 The pipeline has four LLM phases: **feature detection** (gating, skipped for
@@ -873,6 +877,15 @@ Each admitted file is analyzed in exactly one chunk, so one defect is not
 reported again by every chunk that could see its file. Files larger than a
 chunk budget remain in the coverage report and cause an incomplete-analysis
 warning; a manifest entry alone does not count as analyzed source.
+
+A chunk gets one recovery round. One that exceeds the model's context is
+re-chunked at 60% of the budget. One whose answer stops at the output-token
+limit (reasoning counts against it) is split into two groups of its files,
+which keep the full manifest. A recovered chunk counts as analyzed, and its
+failed attempt stays in the usage totals and the lineage. A single-file chunk,
+or a recovery chunk that fails again, remains an execution failure. The audit
+works the same way: a batch that stops at the output limit is retried one
+claim per request, and a single claim that stops there is not retried.
 
 Audit can request additional numbered excerpts from the same indexed bytes,
 independent of the original analysis chunk. `--audit-from` builds a fresh index

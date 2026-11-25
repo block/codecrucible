@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"os"
 	"reflect"
 	"strings"
@@ -104,6 +105,52 @@ func TestLegacyAuditRetainsValidVerdictsWhileRetryingOnlyMissingClaims(t *testin
 			}
 			if results[1].Properties.AuditStatus != wantSecond || usage.PromptTokens != 10*paidResponses || cost != .00002*float64(paidResponses) {
 				t.Fatalf("status=%s usage=%+v cost=%v", results[1].Properties.AuditStatus, usage, cost)
+			}
+		})
+	}
+}
+
+func TestLegacyAuditSplitsClaimsAfterOutputLimit(t *testing.T) {
+	for _, recovers := range []bool{true, false} {
+		t.Run(map[bool]string{true: "recovers", false: "singleton exhausted"}[recovers], func(t *testing.T) {
+			doc := sarif.AssignFindingIDs(auditFixture())
+			ids := auditFindingIDs(doc.Runs[0].Results)
+			var sent [][]string
+			var labels []string
+			client := auditClientFunc(func(_ context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+				sent = append(sent, claimIDs(t, req))
+				labels = append(labels, req.Label)
+				if strings.Contains(req.Messages[len(req.Messages)-1].Content, "prior response failed validation") {
+					t.Fatal("split requests are fresh, not repairs")
+				}
+				claims := sent[len(sent)-1]
+				if len(claims) > 1 || (!recovers && claims[0] == ids[1]) {
+					return &llm.ChatResponse{FinishReason: "length", Usage: llm.TokenUsage{PromptTokens: 10, CompletionTokens: 5}}, nil
+				}
+				return legacyResponse(AuditedFinding{FindingID: claims[0], Verdict: "confirmed", Confidence: .9}), nil
+			})
+			got, usage, cost, err := runLegacyFixture(doc, client)
+			if want := [][]string{ids, ids[:1], ids[1:]}; !reflect.DeepEqual(sent, want) {
+				t.Fatalf("claims sent = %v, want %v", sent, want)
+			}
+			if want := []string{"audit", "audit claim 1/2", "audit claim 2/2"}; !reflect.DeepEqual(labels, want) {
+				t.Fatalf("labels = %v, want %v", labels, want)
+			}
+			if usage.PromptTokens != 30 || usage.CompletionTokens != 15 || math.Abs(cost-.00006) > 1e-12 {
+				t.Fatalf("every paid response must count once: usage=%+v cost=%v", usage, cost)
+			}
+			results := got.Runs[0].Results
+			if results[0].Properties.AuditStatus != "confirmed" {
+				t.Fatal("lost the recovered peer verdict", results[0].Properties)
+			}
+			if recovers {
+				if err != nil || results[1].Properties.AuditStatus != "confirmed" {
+					t.Fatalf("error=%v second=%+v", err, results[1].Properties)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), "output token limit") || results[1].Properties.AuditStatus != "not_audited" {
+				t.Fatalf("error=%v second=%+v", err, results[1].Properties)
 			}
 		})
 	}

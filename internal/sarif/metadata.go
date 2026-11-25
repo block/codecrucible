@@ -173,13 +173,16 @@ type ModelExecution struct {
 }
 
 type ChunkExecution struct {
-	Initial        int `json:"initial"`
-	Recovery       int `json:"recovery"`
-	Completed      int `json:"completed"`
-	Failed         int `json:"failed"`
-	Overflowed     int `json:"overflowed"`
-	Budget         int `json:"budget"`
-	RecoveryBudget int `json:"recoveryBudget"`
+	Initial    int `json:"initial"`
+	Recovery   int `json:"recovery"`
+	Completed  int `json:"completed"`
+	Failed     int `json:"failed"`
+	Overflowed int `json:"overflowed"`
+	// OutputExhausted counts initial chunks whose answer stopped at the
+	// output-token limit; splittable ones are retried in the recovery pass.
+	OutputExhausted int `json:"outputExhausted"`
+	Budget          int `json:"budget"`
+	RecoveryBudget  int `json:"recoveryBudget"`
 }
 
 type ContextExecution struct {
