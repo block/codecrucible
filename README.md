@@ -1319,3 +1319,15 @@ make vet         # go vet
 ## License
 
 See [LICENSE](LICENSE) for the full license text.
+
+### Strict coverage exit status
+
+Use `--fail-on-incomplete` (or `FAIL_ON_INCOMPLETE=true`) in automation that
+requires all admitted source and requested audit work to finish. CodeCrucible
+writes partial SARIF and phase artifacts first, then exits **4** for incomplete
+analysis/audit coverage or a failed scan invocation. Successfully recovered
+requests, explicit scope exclusions, `--skip-audit`, audit replay's skipped
+analysis, and valid `unverified` audit verdicts do not by themselves fail this
+check. Other errors (configuration or output I/O) still exit 1; findings above
+`--fail-on-severity` still exit 2. Without this option, existing exit behavior
+is unchanged.

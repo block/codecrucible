@@ -45,7 +45,7 @@ func newScanMetadata(cfg *config.Config) *sarif.ScanMetadata {
 			Controls: sarif.ScanControls{
 				Paths: append([]string{}, cfg.Paths...), Include: append([]string{}, cfg.Include...), Exclude: append([]string{}, cfg.Exclude...),
 				IncludeTests: cfg.IncludeTests, IncludeDocs: cfg.IncludeDocs, MaxFileSize: cfg.MaxFileSize,
-				Compress: cfg.Compress, Concurrency: concurrency, MaxCost: cfg.MaxCost, FailOnSeverity: cfg.FailOnSeverity,
+				Compress: cfg.Compress, Concurrency: concurrency, MaxCost: cfg.MaxCost, FailOnIncomplete: cfg.FailOnIncomplete, FailOnSeverity: cfg.FailOnSeverity,
 				SkipFeatureDetection: cfg.SkipFeatureDetection, SkipAudit: cfg.SkipAudit,
 				AuditConfidenceThreshold: cfg.AuditConfidenceThreshold, AuditBatchSize: cfg.AuditBatchSize, SemanticDedup: cfg.SemanticDedup,
 				ContextBudgetPct: contextPct,

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -82,6 +83,9 @@ func Execute() {
 func executeCommand(rootCmd *cobra.Command, stderr io.Writer) int {
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintf(stderr, "Error: %v\n", err)
+		if errors.Is(err, ErrIncompleteScan) {
+			return 4
+		}
 		return 1
 	}
 	return 0

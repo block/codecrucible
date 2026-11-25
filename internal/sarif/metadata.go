@@ -74,6 +74,7 @@ type ScanControls struct {
 	MaxFileSize              int      `json:"maxFileSize"`
 	Compress                 bool     `json:"compress"`
 	Concurrency              int      `json:"concurrency"`
+	FailOnIncomplete         bool     `json:"failOnIncomplete,omitempty"`
 	MaxCost                  float64  `json:"maxCost"`
 	FailOnSeverity           float64  `json:"failOnSeverity"`
 	SkipFeatureDetection     bool     `json:"skipFeatureDetection"`

@@ -21,6 +21,7 @@ type Config struct {
 	Paths                 []string       `mapstructure:"paths"`
 	Model                 string         `mapstructure:"model"`
 	FailOnSeverity        float64        `mapstructure:"fail-on-severity"`
+	FailOnIncomplete      bool           `mapstructure:"fail-on-incomplete"`
 	MaxCost               float64        `mapstructure:"max-cost"`
 	DryRun                bool           `mapstructure:"dry-run"`
 	IncludeTests          bool           `mapstructure:"include-tests"`
