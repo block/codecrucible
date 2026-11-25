@@ -764,12 +764,16 @@ func (c *httpClient) handleResponse(resp *http.Response) (*ChatResponse, time.Du
 			return nil, 0, &errMaxTokensParamIncompatible{err: fmt.Errorf("llm: request failed (status %d): %s", resp.StatusCode, truncate(string(respBody), 200))}
 		}
 
-		// Check for context_length_exceeded in OpenAI error response.
+		// OpenAI nests errors; some compatible providers (including Cerebras)
+		// return the same fields at the top level. Inspect the full structured
+		// body before truncating it for diagnostics.
+		var topLevel apiError
+		if json.Unmarshal(respBody, &topLevel) == nil && isContextLengthError(topLevel) {
+			return nil, 0, ErrContextLengthExceeded
+		}
 		var apiResp apiResponse
 		if json.Unmarshal(respBody, &apiResp) == nil && apiResp.Error != nil {
-			if strings.Contains(apiResp.Error.Code, "context_length_exceeded") ||
-				strings.Contains(apiResp.Error.Message, "context_length_exceeded") ||
-				strings.Contains(apiResp.Error.Message, "maximum context length") {
+			if isContextLengthError(*apiResp.Error) {
 				return nil, 0, ErrContextLengthExceeded
 			}
 		}
@@ -816,6 +820,12 @@ func (c *httpClient) handleResponse(resp *http.Response) (*ChatResponse, time.Du
 		FinishReason: choice.FinishReason,
 		Model:        apiResp.Model,
 	}, 0, nil
+}
+
+func isContextLengthError(err apiError) bool {
+	return err.Code == "context_length_exceeded" || err.Type == "context_length_exceeded" ||
+		strings.Contains(err.Message, "context_length_exceeded") ||
+		strings.Contains(err.Message, "maximum context length")
 }
 
 func isHTMLResponse(header http.Header, body []byte) bool {

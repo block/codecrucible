@@ -488,6 +488,18 @@ func TestChatCompletion_ContextLengthExceeded(t *testing.T) {
 		respBody string
 	}{
 		{
+			name:     "top_level_code",
+			respBody: `{"code":"context_length_exceeded","message":"Current length is 260000 while limit is 250000"}`,
+		},
+		{
+			name:     "top_level_type",
+			respBody: `{"type":"context_length_exceeded","message":"request exceeds deployment limit"}`,
+		},
+		{
+			name:     "top_level_long_message",
+			respBody: `{"message":"` + strings.Repeat("padding ", 40) + `maximum context length exceeded"}`,
+		},
+		{
 			name:     "code_field",
 			respBody: `{"error": {"message": "some error", "type": "invalid_request_error", "code": "context_length_exceeded"}}`,
 		},
@@ -503,7 +515,9 @@ func TestChatCompletion_ContextLengthExceeded(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			var calls atomic.Int32
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
 				w.WriteHeader(http.StatusBadRequest)
 				fmt.Fprint(w, tt.respBody)
 			}))
@@ -521,6 +535,9 @@ func TestChatCompletion_ContextLengthExceeded(t *testing.T) {
 			})
 			if err != ErrContextLengthExceeded {
 				t.Errorf("err = %v, want ErrContextLengthExceeded", err)
+			}
+			if calls.Load() != 1 {
+				t.Fatalf("context overflow must reach orchestration without transport retries; calls=%d", calls.Load())
 			}
 		})
 	}
@@ -1367,5 +1384,29 @@ func TestRequestModel(t *testing.T) {
 		if got := RequestModel(tc.req); got != tc.want {
 			t.Errorf("RequestModel(%+v) = %q, want %q", tc.req, got, tc.want)
 		}
+	}
+}
+
+func TestChatCompletion_UnrelatedTopLevelError(t *testing.T) {
+	for _, body := range []string{
+		`{"code":"invalid_api_key","message":"authentication failed"}`,
+		`{"code":"invalid_request_error","message":"request too long in an unrelated field"}`,
+		`{"code":"not_context_length_exceeded"}`,
+		`{"code":"context_length_exceeded"`,
+	} {
+		t.Run(body, func(t *testing.T) {
+			var calls atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				w.WriteHeader(http.StatusBadRequest)
+				fmt.Fprint(w, body)
+			}))
+			defer srv.Close()
+			client := NewClient(ClientConfig{BaseURL: srv.URL, Token: "test", MaxRetries: 3, Timeout: time.Second})
+			_, err := client.ChatCompletion(context.Background(), ChatRequest{})
+			if err == nil || errors.Is(err, ErrContextLengthExceeded) || calls.Load() != 1 {
+				t.Fatalf("unrelated error: err=%v calls=%d", err, calls.Load())
+			}
+		})
 	}
 }
