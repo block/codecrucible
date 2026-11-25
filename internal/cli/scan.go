@@ -1113,7 +1113,7 @@ func runAnalysisPhases(ctx context.Context, in analysisInputs) (out analysisOutc
 		}
 	}
 	for _, e := range exhausted {
-		halves, sErr := splitExhaustedChunk(chunker, e.chunk, flatResult.FileMap, chunkBudget, chunkOpts)
+		halves, sErr := chunker.Split(e.chunk, flatResult.FileMap, chunkBudget, chunkOpts)
 		if sErr != nil {
 			slog.Error("output-limit recovery re-chunking failed", "error", sErr, "files", len(e.chunk.Paths))
 			keep(e.chunk, e.result)
@@ -1127,7 +1127,11 @@ func runAnalysisPhases(ctx context.Context, in analysisInputs) (out analysisOutc
 		retryChunks = append(retryChunks, halves...)
 	}
 	if len(retryChunks) > 0 {
-		retryChunks = chunk.Renumber(retryChunks)
+		var indexErr error
+		retryChunks, indexErr = chunker.Reindex(retryChunks, flatResult.FileMap)
+		if indexErr != nil {
+			return out, fmt.Errorf("indexing recovery chunks: %w", indexErr)
+		}
 		slog.Info("analysis recovery pass starting", "chunks", len(retryChunks))
 		metadata.Execution.Chunks.Recovery = len(retryChunks)
 		coverage.plan(retryChunks)

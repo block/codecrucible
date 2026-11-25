@@ -32,6 +32,8 @@ type ChunkOptions struct {
 // Chunker splits a FlattenResult into token-budget-safe chunks.
 type Chunker interface {
 	Chunk(input ingest.FlattenResult, budget int, opts *ChunkOptions) ([]Chunk, error)
+	Split(parent Chunk, files ingest.FileMap, budget int, opts *ChunkOptions) ([]Chunk, error)
+	Reindex(chunks []Chunk, files ingest.FileMap) ([]Chunk, error)
 }
 
 // defaultChunker implements Chunker with directory-proximity grouping.
@@ -251,21 +253,6 @@ func (c *defaultChunker) Chunk(input ingest.FlattenResult, budget int, opts *Chu
 	}
 
 	return chunks, nil
-}
-
-// Renumber gives chunks produced by separate Chunk calls one shared sequence,
-// so each chunk's index, total and XML metadata describe the combined set.
-func Renumber(chunks []Chunk) []Chunk {
-	out := make([]Chunk, len(chunks))
-	for i, ch := range chunks {
-		old := chunkHeader(ch.Index, ch.Total)
-		if strings.HasPrefix(ch.XML, old) {
-			ch.XML = chunkHeader(i, len(chunks)) + ch.XML[len(old):]
-		}
-		ch.Index, ch.Total = i, len(chunks)
-		out[i] = ch
-	}
-	return out
 }
 
 func chunkHeader(index, total int) string {
