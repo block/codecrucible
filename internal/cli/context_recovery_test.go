@@ -22,7 +22,7 @@ func TestTopLevelContextErrorRecoversOnlyFailedAnalysis(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if calls.Add(1) == 1 {
 			w.WriteHeader(http.StatusBadRequest)
-			fmt.Fprint(w, `{"code":"context_length_exceeded","message":"Current length is 260000 while limit is 250000"}`)
+			fmt.Fprint(w, `{"code":"context_length_exceeded","message":"request exceeds deployment limit"}`)
 			return
 		}
 		fmt.Fprint(w, `{"choices":[{"message":{"content":"{\"security_issues\":[]}"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5}}`)

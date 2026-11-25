@@ -533,7 +533,7 @@ func TestChatCompletion_ContextLengthExceeded(t *testing.T) {
 			_, err := c.ChatCompletion(context.Background(), ChatRequest{
 				Messages: []Message{{Role: "user", Content: "hi"}},
 			})
-			if err != ErrContextLengthExceeded {
+			if !errors.Is(err, ErrContextLengthExceeded) {
 				t.Errorf("err = %v, want ErrContextLengthExceeded", err)
 			}
 			if calls.Load() != 1 {

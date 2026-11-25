@@ -920,7 +920,11 @@ chunk budget remain in the coverage report and cause an incomplete-analysis
 warning; a manifest entry alone does not count as analyzed source.
 
 A chunk gets one recovery round. One that exceeds the model's context is
-re-chunked at 60% of the budget. One whose answer stops at the output-token
+re-chunked using the provider's reported total request size and context limit
+when available. The retry reserves output tokens and prompt/manifest overhead,
+keeps 20% headroom, and never exceeds 60% of the original source budget. Unknown
+size diagnostics fall back to 60%. Only failed chunks are retried; a limit too
+small for the unchanged reservations remains incomplete. One whose answer stops at the output-token
 limit (reasoning counts against it) is split into two groups of its files,
 which keep the full manifest. A recovered chunk counts as analyzed, and its
 failed attempt stays in the usage totals and the lineage. A single-file chunk,

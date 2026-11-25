@@ -1053,6 +1053,17 @@ func runAnalysisPhases(ctx context.Context, in analysisInputs) (out analysisOutc
 		chunk  chunk.Chunk
 		result chunkResult
 	}
+	// Recovery may turn a single chunk into multiple chunks, introducing a
+	// manifest that the initial prompt did not need. Reserve it in that case.
+	recoveryOverhead := promptOverhead
+	if totalTokens <= worstCaseBudget {
+		allPaths := make([]string, 0, len(flatResult.FileMap))
+		for p := range flatResult.FileMap {
+			allPaths = append(allPaths, p)
+		}
+		recoveryOverhead += min(counter.Count(strings.Join(allPaths, "\n")), manifestBudget)
+	}
+	retryBudget := chunkBudget * 6 / 10
 	var overflowPaths []string
 	var exhausted []exhaustedChunk
 	for i, r := range analyzeAll(chunks, "analysis") {
@@ -1061,6 +1072,10 @@ func runAnalysisPhases(ctx context.Context, in analysisInputs) (out analysisOutc
 		}
 		if errors.Is(r.err, llm.ErrContextLengthExceeded) {
 			overflowPaths = append(overflowPaths, chunks[i].Paths...)
+			// Pooled recovery must honor the most restrictive diagnosis.
+			retryBudget = contextRecoveryBudget(retryBudget, chunks[i].Tokens, promptOverhead, recoveryOverhead, r.err)
+			slog.Warn("context overflow recovery sizing", "chunk", i,
+				"retry_budget", retryBudget, "error", r.err)
 			metadata.Execution.Chunks.Overflowed++
 			continue
 		}
@@ -1079,18 +1094,15 @@ func runAnalysisPhases(ctx context.Context, in analysisInputs) (out analysisOutc
 
 	// Recovery pass: one reduced-workload round, never recursive.
 	//
-	// A chunk that hit the server-side context limit is re-chunked at 60%
-	// budget. Overflow 400s fail fast (no generation), so the wasted cost is
-	// just one cheap round-trip. One round is enough when calibration is
-	// working — if 60% still overflows, the heuristic is off by >40% and we'd
-	// rather fail loudly.
+	// Context overflow uses the provider's reported request size/limit when
+	// available, otherwise 60% of the original budget. No generation occurred
+	// for these rejected requests. A second overflow remains a hard failure.
 	//
 	// A chunk whose answer stopped at the output limit is split in two, so
 	// each request asks for roughly half the analysis. A half that still
 	// exhausts the limit stays a failure.
 	var retryChunks []chunk.Chunk
 	if len(overflowPaths) > 0 {
-		retryBudget := chunkBudget * 6 / 10
 		metadata.Execution.Chunks.RecoveryBudget = retryBudget
 		slog.Warn("re-chunking files from overflowed chunks at reduced budget",
 			"files", len(overflowPaths),

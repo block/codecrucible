@@ -327,7 +327,7 @@ func (c *httpClient) ChatCompletion(ctx context.Context, req ChatRequest) (*Chat
 			continue
 		}
 
-		chatResp, retryAfter, err := c.handleResponse(resp)
+		chatResp, retryAfter, err := c.handleResponse(resp, body)
 		if err != nil {
 			// Some endpoints reject forced tool_choice for specific models.
 			// Retry once without forcing tool use while still providing tools.
@@ -723,7 +723,7 @@ type apiError struct {
 
 // handleResponse processes the HTTP response, returning the chat response, retry-after duration,
 // and any error. A non-nil error with retryAfter > 0 indicates a retryable error.
-func (c *httpClient) handleResponse(resp *http.Response) (*ChatResponse, time.Duration, error) {
+func (c *httpClient) handleResponse(resp *http.Response, requestBody []byte) (*ChatResponse, time.Duration, error) {
 	defer resp.Body.Close()
 
 	// Streaming responses (Anthropic only for now). Dispatch on Content-Type so
@@ -769,12 +769,12 @@ func (c *httpClient) handleResponse(resp *http.Response) (*ChatResponse, time.Du
 		// body before truncating it for diagnostics.
 		var topLevel apiError
 		if json.Unmarshal(respBody, &topLevel) == nil && isContextLengthError(topLevel) {
-			return nil, 0, ErrContextLengthExceeded
+			return nil, 0, contextLengthError(topLevel.Message, requestBody)
 		}
 		var apiResp apiResponse
 		if json.Unmarshal(respBody, &apiResp) == nil && apiResp.Error != nil {
 			if isContextLengthError(*apiResp.Error) {
-				return nil, 0, ErrContextLengthExceeded
+				return nil, 0, contextLengthError(apiResp.Error.Message, requestBody)
 			}
 		}
 		// Check for Anthropic error format.
