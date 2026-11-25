@@ -117,8 +117,13 @@ func (u *modelUsage) record(phase, model string, cfg config.ModelConfig, resp *l
 	if resp == nil {
 		return
 	}
-	u.inputTokens += int64(max(0, resp.Usage.PromptTokens))
+	// Anthropic reports uncached input, cache writes and cache reads as
+	// disjoint counters. All are input tokens, even when billed differently.
+	u.inputTokens += int64(max(0, resp.Usage.PromptTokens)) +
+		int64(max(0, resp.Usage.CacheCreationTokens)) + int64(max(0, resp.Usage.CacheReadTokens))
 	m.PromptTokens += resp.Usage.PromptTokens
+	m.CacheCreationTokens += resp.Usage.CacheCreationTokens
+	m.CacheReadTokens += resp.Usage.CacheReadTokens
 	m.CompletionTokens += resp.Usage.CompletionTokens
 	m.ReasoningTokens += resp.Usage.ReasoningTokens
 	m.EstimatedCost += cfg.EstimateCost(resp.Usage.PromptTokens, resp.Usage.CompletionTokens)

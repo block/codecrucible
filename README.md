@@ -196,7 +196,9 @@ cannot be measured. A denied request or reported usage above the threshold
 produces partial SARIF and a failed scan, even if an optional phase normally
 falls back after an error. Exactly reaching the threshold on the last required
 request is successful. Zero (default) disables this limit; negative values are
-rejected. Output/reasoning tokens do not count against this input-only budget.
+rejected. Uncached input, cache-creation input and cache-read input all count, including
+when using Claude CLI login. Output/reasoning tokens do not count against this
+input-only budget.
 
 ### Scope lists from environment variables
 
