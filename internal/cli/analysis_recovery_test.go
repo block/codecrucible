@@ -112,3 +112,63 @@ func TestAnalysisOutputExhaustionRecovery(t *testing.T) {
 		})
 	}
 }
+
+// A model-reformat response that stops at the output limit is incomplete too,
+// even when it parses.
+func TestAnalysisRepairAtOutputLimitIsExhausted(t *testing.T) {
+	var mu sync.Mutex
+	var labels []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Messages []struct{ Content string }
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		mu.Lock()
+		n := len(labels)
+		repair := strings.Contains(req.Messages[len(req.Messages)-1].Content, "failed to parse against the required schema")
+		labels = append(labels, map[bool]string{true: "repair", false: "analysis"}[repair])
+		mu.Unlock()
+		choice := map[string]any{"message": map[string]any{"content": `{"security_issues":[]}`}, "finish_reason": "stop"}
+		switch {
+		case n == 0:
+			choice["message"] = map[string]any{"content": "not json"}
+		case repair:
+			choice["finish_reason"] = "length"
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{choice},
+			"usage": map[string]int{"prompt_tokens": 100, "completion_tokens": 50}})
+	}))
+	defer server.Close()
+
+	out := filepath.Join(t.TempDir(), "scan.sarif")
+	old := v
+	t.Cleanup(func() { v = old })
+	v = viper.New()
+	config.SetDefaults(v)
+	v.Set("provider", "openai")
+	v.Set("model", "gpt-5.5")
+	v.Set("openai-api-key", "test-key")
+	v.Set("base-url", server.URL)
+	v.Set("prompts-dir", "../../prompts/default")
+	v.Set("skip-feature-detection", true)
+	v.Set("output", out)
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
+	if err := runScan(cmd, []string{createTestRepo(t)}); err != nil {
+		t.Fatalf("scan error = %v", err)
+	}
+	if strings.Join(labels, ",") != "analysis,repair,analysis,analysis" {
+		t.Fatalf("requests = %v, want the cut-off repair to send the chunk to recovery", labels)
+	}
+	data, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc sarif.SARIFDocument
+	if err := json.Unmarshal(data, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if chunks := doc.Runs[0].Properties.CodeCrucible.Execution.Chunks; chunks.OutputExhausted != 1 || chunks.Completed != 2 {
+		t.Fatalf("chunks = %+v", chunks)
+	}
+}
