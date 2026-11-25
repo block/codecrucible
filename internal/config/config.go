@@ -109,6 +109,27 @@ func Load(v *viper.Viper) (*Config, error) {
 		return nil, fmt.Errorf("max-input-tokens must be non-negative")
 	}
 
+	// Viper's default string-to-slice decoding splits commas. Preserve JSON
+	// lists from environment/config strings, including spaces and commas in
+	// individual glob patterns. Read through Viper to retain flag precedence.
+	for key, target := range map[string]*[]string{"paths": &cfg.Paths, "include": &cfg.Include, "exclude": &cfg.Exclude} {
+		if raw, ok := v.Get(key).(string); ok && strings.HasPrefix(strings.TrimSpace(raw), "[") {
+			var entries []any
+			if err := json.Unmarshal([]byte(raw), &entries); err != nil {
+				return nil, fmt.Errorf("%s must be a JSON array of strings: %w", key, err)
+			}
+			values := make([]string, len(entries))
+			for i, entry := range entries {
+				value, ok := entry.(string)
+				if !ok {
+					return nil, fmt.Errorf("%s[%d] must be a string", key, i)
+				}
+				values[i] = value
+			}
+			*target = values
+		}
+	}
+
 	if cfg.ModelParams == nil {
 		cfg.ModelParams = map[string]any{}
 	}

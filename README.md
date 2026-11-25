@@ -167,6 +167,47 @@ context compression, retries, and repeated audit batches are excluded.
 The existing preflight budget check uses source-input cost; runtime accounting
 uses reported token usage. All dollar values depend on configured model rates.
 
+### Strict coverage exit status
+
+Use `--fail-on-incomplete` (or `FAIL_ON_INCOMPLETE=true`) in automation that
+requires all admitted source and requested audit work to finish. CodeCrucible
+writes partial SARIF and phase artifacts first, then exits **4** for incomplete
+analysis/audit coverage or a failed scan invocation. Successfully recovered
+requests, explicit scope exclusions, `--skip-audit`, audit replay's skipped
+analysis, and valid `unverified` audit verdicts do not by themselves fail this
+check. Other errors (configuration or output I/O) still exit 1; findings above
+`--fail-on-severity` still exit 2. Without this option, existing exit behavior
+is unchanged.
+
+### Input-token budget for unpriced deployments
+
+`--max-input-tokens N` (environment: `MAX_INPUT_TOKENS`) sets a scan-wide
+**reported input-token threshold**, independent of model prices. It includes
+feature detection, context compression, analysis, audit, and model repair or
+recovery requests. Use `--max-cost 0` alongside it when a deployment is prepaid
+or has no configured dollar rates; an explicitly requested dollar budget still
+requires pricing.
+
+New requests stop once reported prompt-token usage reaches the threshold.
+Requests already running may finish over it, so this is a request-boundary
+budget, not a strict provider billing ceiling. All reported usage from those
+responses is retained. Internal transport retries without a usage response
+cannot be measured. A denied request or reported usage above the threshold
+produces partial SARIF and a failed scan, even if an optional phase normally
+falls back after an error. Exactly reaching the threshold on the last required
+request is successful. Zero (default) disables this limit; negative values are
+rejected. Output/reasoning tokens do not count against this input-only budget.
+
+### Scope lists from environment variables
+
+`EXCLUDE`, `INCLUDE`, and `PATHS` also accept JSON arrays of strings, for
+example `EXCLUDE='["generated files/**", "data/a,b.sql"]'`. `[]` explicitly
+clears the list. Native YAML arrays and repeated CLI flags continue to work;
+explicit CLI flags override environment values. A string beginning with `[` is
+parsed as JSON and invalid/non-string elements fail configuration loading.
+For a literal bracket-prefixed glob, put it inside a JSON/YAML array or pass it
+with the corresponding CLI flag.
+
 ## Installation
 
 ### From Source
@@ -1319,34 +1360,3 @@ make vet         # go vet
 ## License
 
 See [LICENSE](LICENSE) for the full license text.
-
-### Strict coverage exit status
-
-Use `--fail-on-incomplete` (or `FAIL_ON_INCOMPLETE=true`) in automation that
-requires all admitted source and requested audit work to finish. CodeCrucible
-writes partial SARIF and phase artifacts first, then exits **4** for incomplete
-analysis/audit coverage or a failed scan invocation. Successfully recovered
-requests, explicit scope exclusions, `--skip-audit`, audit replay's skipped
-analysis, and valid `unverified` audit verdicts do not by themselves fail this
-check. Other errors (configuration or output I/O) still exit 1; findings above
-`--fail-on-severity` still exit 2. Without this option, existing exit behavior
-is unchanged.
-
-### Input-token budget for unpriced deployments
-
-`--max-input-tokens N` (environment: `MAX_INPUT_TOKENS`) sets a scan-wide
-**reported input-token threshold**, independent of model prices. It includes
-feature detection, context compression, analysis, audit, and model repair or
-recovery requests. Use `--max-cost 0` alongside it when a deployment is prepaid
-or has no configured dollar rates; an explicitly requested dollar budget still
-requires pricing.
-
-New requests stop once reported prompt-token usage reaches the threshold.
-Requests already running may finish over it, so this is a request-boundary
-budget, not a strict provider billing ceiling. All reported usage from those
-responses is retained. Internal transport retries without a usage response
-cannot be measured. A denied request or reported usage above the threshold
-produces partial SARIF and a failed scan, even if an optional phase normally
-falls back after an error. Exactly reaching the threshold on the last required
-request is successful. Zero (default) disables this limit; negative values are
-rejected. Output/reasoning tokens do not count against this input-only budget.
