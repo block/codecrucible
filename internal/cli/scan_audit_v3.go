@@ -265,7 +265,9 @@ func (r *auditV3Run) assessCall(ctx context.Context, claims []auditcore.Claim, l
 		copyResp.Content = content
 		resp = &copyResp
 	}
-	if err == nil && (resp.FinishReason == "length" || resp.FinishReason == "max_tokens") {
+	// An output-limit stop explains a parse failure, so it must not be
+	// masked by the JSON error it causes.
+	if pErr == nil && resp.OutputLimited() {
 		err = fmt.Errorf("truncated audit response")
 	}
 	counts := map[string]int{}
