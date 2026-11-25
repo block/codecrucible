@@ -35,7 +35,7 @@ func TestClaudeCLIClient_ChatCompletionStructuredOutput(t *testing.T) {
 printf '%s\n' "$@" >"$TEST_ARGS_FILE"
 cat >"$TEST_STDIN_FILE"
 cat <<'JSON'
-{"type":"result","subtype":"success","is_error":false,"result":"","structured_output":{"ok":true},"stop_reason":"max_tokens","usage":{"input_tokens":123,"output_tokens":45},"modelUsage":{"claude-sonnet-5":{"inputTokens":123,"outputTokens":45}}}
+{"type":"result","subtype":"success","is_error":false,"result":"","structured_output":{"ok":true},"stop_reason":"max_tokens","usage":{"input_tokens":123,"output_tokens":45,"cache_creation_input_tokens":456,"cache_read_input_tokens":789},"modelUsage":{"claude-sonnet-5":{"inputTokens":123,"outputTokens":45}}}
 JSON
 `
 	if err := os.WriteFile(claudePath, []byte(script), 0755); err != nil {
@@ -77,7 +77,7 @@ JSON
 	if resp.Model != "claude-sonnet-5" {
 		t.Fatalf("Model = %q, want %q", resp.Model, "claude-sonnet-5")
 	}
-	if resp.Usage.PromptTokens != 123 || resp.Usage.CompletionTokens != 45 {
+	if resp.Usage.PromptTokens != 123 || resp.Usage.CompletionTokens != 45 || resp.Usage.CacheCreationTokens != 456 || resp.Usage.CacheReadTokens != 789 {
 		t.Fatalf("Usage = %+v, want prompt=123 completion=45", resp.Usage)
 	}
 
