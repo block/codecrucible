@@ -22,8 +22,18 @@ import (
 // the recovery requests are counted. A half that still exhausts the limit
 // stays an execution failure rather than being resent or split again.
 func TestAnalysisOutputExhaustionRecovery(t *testing.T) {
-	for _, recovers := range []bool{true, false} {
-		t.Run(map[bool]string{true: "recovered", false: "exhausted"}[recovers], func(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		truncated string // the answer that stopped at the limit
+		recovers  bool
+	}{
+		{"recovered", "", true},
+		// A cut-off answer that happens to parse is still incomplete.
+		{"parseable truncation recovered", `{"security_issues":[]}`, true},
+		{"exhausted", "", false},
+	} {
+		recovers := tc.recovers
+		t.Run(tc.name, func(t *testing.T) {
 			var mu sync.Mutex
 			var requests []int // files sent in each request
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -41,7 +51,7 @@ func TestAnalysisOutputExhaustionRecovery(t *testing.T) {
 				mu.Unlock()
 				choice := map[string]any{"message": map[string]any{"content": `{"security_issues":[]}`}, "finish_reason": "stop"}
 				if initial || !recovers {
-					choice = map[string]any{"message": map[string]any{"content": ""}, "finish_reason": "length"}
+					choice = map[string]any{"message": map[string]any{"content": tc.truncated}, "finish_reason": "length"}
 				}
 				_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{choice},
 					"usage": map[string]int{"prompt_tokens": 100, "completion_tokens": 50}})
