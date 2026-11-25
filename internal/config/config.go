@@ -21,8 +21,11 @@ type Config struct {
 	Paths                 []string       `mapstructure:"paths"`
 	Model                 string         `mapstructure:"model"`
 	FailOnSeverity        float64        `mapstructure:"fail-on-severity"`
+	FailOnIncomplete      bool           `mapstructure:"fail-on-incomplete"`
+	MaxInputTokens        int64          `mapstructure:"max-input-tokens"`
 	MaxCost               float64        `mapstructure:"max-cost"`
 	DryRun                bool           `mapstructure:"dry-run"`
+	ScopePlanning         bool           `mapstructure:"scope-planning"`
 	IncludeTests          bool           `mapstructure:"include-tests"`
 	IncludeDocs           bool           `mapstructure:"include-docs"`
 	Compress              bool           `mapstructure:"compress"`
@@ -103,6 +106,31 @@ func Load(v *viper.Viper) (*Config, error) {
 		return nil, fmt.Errorf("unmarshaling config: %w", err)
 	}
 
+	if cfg.MaxInputTokens < 0 {
+		return nil, fmt.Errorf("max-input-tokens must be non-negative")
+	}
+
+	// Viper's default string-to-slice decoding splits commas. Preserve JSON
+	// lists from environment/config strings, including spaces and commas in
+	// individual glob patterns. Read through Viper to retain flag precedence.
+	for key, target := range map[string]*[]string{"paths": &cfg.Paths, "include": &cfg.Include, "exclude": &cfg.Exclude} {
+		if raw, ok := v.Get(key).(string); ok && strings.HasPrefix(strings.TrimSpace(raw), "[") {
+			var entries []any
+			if err := json.Unmarshal([]byte(raw), &entries); err != nil {
+				return nil, fmt.Errorf("%s must be a JSON array of strings: %w", key, err)
+			}
+			values := make([]string, len(entries))
+			for i, entry := range entries {
+				value, ok := entry.(string)
+				if !ok {
+					return nil, fmt.Errorf("%s[%d] must be a string", key, i)
+				}
+				values[i] = value
+			}
+			*target = values
+		}
+	}
+
 	if cfg.ModelParams == nil {
 		cfg.ModelParams = map[string]any{}
 	}
@@ -145,8 +173,10 @@ func SetDefaults(v *viper.Viper) {
 	v.SetDefault("verbose", false)
 	v.SetDefault("model", "")
 	v.SetDefault("fail-on-severity", float64(0))
+	v.SetDefault("max-input-tokens", 0)
 	v.SetDefault("max-cost", DefaultMaxCost) //Set to $25 as a default
 	v.SetDefault("dry-run", false)
+	v.SetDefault("scope-planning", false)
 	v.SetDefault("include-tests", false)
 	v.SetDefault("include-docs", false)
 	v.SetDefault("compress", false)

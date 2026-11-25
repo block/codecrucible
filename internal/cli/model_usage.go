@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"slices"
 	"sort"
@@ -17,9 +18,12 @@ import (
 // clients run concurrently, so calls update this guarded state and apply
 // copies it into the scan metadata from the scan goroutine.
 type modelUsage struct {
-	mu      sync.Mutex
-	phases  map[string]map[string]*sarif.ModelExecution
-	lineage *provenance.Ledger
+	maxInputTokens int64
+	inputTokens    int64
+	budgetDenied   bool
+	mu             sync.Mutex
+	phases         map[string]map[string]*sarif.ModelExecution
+	lineage        *provenance.Ledger
 }
 
 func newModelUsage() *modelUsage {
@@ -57,6 +61,9 @@ type recordingClient struct {
 }
 
 func (c *recordingClient) ChatCompletion(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+	if err := c.usage.admit(); err != nil {
+		return nil, err
+	}
 	resp, err := c.next.ChatCompletion(ctx, req)
 	c.usage.record(c.phase, llm.RequestModel(req), c.model, resp, err)
 	logModelResponse(c.phase, req, resp)
@@ -106,9 +113,17 @@ func (u *modelUsage) record(phase, model string, cfg config.ModelConfig, resp *l
 	m.Calls++
 	if err != nil || resp == nil {
 		m.Failures++
+	}
+	if resp == nil {
 		return
 	}
+	// Anthropic reports uncached input, cache writes and cache reads as
+	// disjoint counters. All are input tokens, even when billed differently.
+	u.inputTokens += int64(max(0, resp.Usage.PromptTokens)) +
+		int64(max(0, resp.Usage.CacheCreationTokens)) + int64(max(0, resp.Usage.CacheReadTokens))
 	m.PromptTokens += resp.Usage.PromptTokens
+	m.CacheCreationTokens += resp.Usage.CacheCreationTokens
+	m.CacheReadTokens += resp.Usage.CacheReadTokens
 	m.CompletionTokens += resp.Usage.CompletionTokens
 	m.ReasoningTokens += resp.Usage.ReasoningTokens
 	m.EstimatedCost += cfg.EstimateCost(resp.Usage.PromptTokens, resp.Usage.CompletionTokens)
@@ -133,6 +148,8 @@ func (u *modelUsage) apply(m *sarif.ScanMetadata) {
 	}
 	u.mu.Lock()
 	defer u.mu.Unlock()
+	m.Execution.InputTokens = u.inputTokens
+	m.Execution.InputTokenBudgetExhausted = u.budgetDenied || u.maxInputTokens > 0 && u.inputTokens > u.maxInputTokens
 	used := map[string]bool{}
 	for phase, models := range u.phases {
 		list := make([]sarif.ModelExecution, 0, len(models))
@@ -157,4 +174,25 @@ func (u *modelUsage) apply(m *sarif.ScanMetadata) {
 		m.Execution.Models = append(m.Execution.Models, model)
 	}
 	sort.Strings(m.Execution.Models)
+}
+
+// admit checks reported usage at request boundaries. Already-running requests
+// may finish over the threshold; they remain accounted and are never cancelled.
+func (u *modelUsage) admit() error {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.maxInputTokens > 0 && u.inputTokens >= u.maxInputTokens {
+		u.budgetDenied = true
+		return fmt.Errorf("input token budget exhausted: used %d, limit %d", u.inputTokens, u.maxInputTokens)
+	}
+	return nil
+}
+
+func (u *modelUsage) budgetError() error {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.budgetDenied || u.maxInputTokens > 0 && u.inputTokens > u.maxInputTokens {
+		return fmt.Errorf("input token budget exhausted: used %d, limit %d; partial results retained", u.inputTokens, u.maxInputTokens)
+	}
+	return nil
 }

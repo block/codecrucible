@@ -16,6 +16,7 @@ type ScanMetadata struct {
 }
 
 type ScanRecipe struct {
+	ScopePlannerFingerprint       string                 `json:"scopePlannerFingerprint,omitempty"`
 	ToolVersion                   string                 `json:"toolVersion"`
 	ToolCommit                    string                 `json:"toolCommit"`
 	Phases                        map[string]PhaseRecipe `json:"phases"`
@@ -66,6 +67,7 @@ type ModelPricing struct {
 }
 
 type ScanControls struct {
+	ScopePlanning            bool     `json:"scopePlanning,omitempty"`
 	Paths                    []string `json:"paths"`
 	Include                  []string `json:"include"`
 	Exclude                  []string `json:"exclude"`
@@ -74,6 +76,8 @@ type ScanControls struct {
 	MaxFileSize              int      `json:"maxFileSize"`
 	Compress                 bool     `json:"compress"`
 	Concurrency              int      `json:"concurrency"`
+	FailOnIncomplete         bool     `json:"failOnIncomplete,omitempty"`
+	MaxInputTokens           int64    `json:"maxInputTokens,omitempty"`
 	MaxCost                  float64  `json:"maxCost"`
 	FailOnSeverity           float64  `json:"failOnSeverity"`
 	SkipFeatureDetection     bool     `json:"skipFeatureDetection"`
@@ -102,25 +106,56 @@ type ContextIdentity struct {
 }
 
 type ScanExecution struct {
-	AuditAdditionsDropped int                       `json:"auditAdditionsDropped,omitempty"`
-	LineageIncomplete     bool                      `json:"lineageIncomplete,omitempty"`
-	RunID                 string                    `json:"runId,omitempty"`
-	SourceIndex           *sourceindex.Snapshot     `json:"sourceIndex,omitempty"`
-	SourceBundles         []SourceBundle            `json:"sourceBundles,omitempty"`
-	SourceCoverage        *SourceCoverage           `json:"sourceCoverage,omitempty"`
-	ArtifactStage         string                    `json:"artifactStage"`
-	Phases                map[string]PhaseExecution `json:"phases"`
-	DetectedFeatures      []string                  `json:"detectedFeatures"`
-	TokenCorrection       float64                   `json:"tokenCorrection"`
-	Chunks                ChunkExecution            `json:"chunks"`
-	ContextSources        []ContextExecution        `json:"contextSources"`
-	ContextPacking        map[string]ContextPacking `json:"contextPacking"`
+	ScopePlan                 *ScopePlan                `json:"scopePlan,omitempty"`
+	InputTokens               int64                     `json:"inputTokens,omitempty"`
+	InputTokenBudgetExhausted bool                      `json:"inputTokenBudgetExhausted,omitempty"`
+	AuditAdditionsDropped     int                       `json:"auditAdditionsDropped,omitempty"`
+	LineageIncomplete         bool                      `json:"lineageIncomplete,omitempty"`
+	RunID                     string                    `json:"runId,omitempty"`
+	SourceIndex               *sourceindex.Snapshot     `json:"sourceIndex,omitempty"`
+	SourceBundles             []SourceBundle            `json:"sourceBundles,omitempty"`
+	SourceCoverage            *SourceCoverage           `json:"sourceCoverage,omitempty"`
+	ArtifactStage             string                    `json:"artifactStage"`
+	Phases                    map[string]PhaseExecution `json:"phases"`
+	DetectedFeatures          []string                  `json:"detectedFeatures"`
+	TokenCorrection           float64                   `json:"tokenCorrection"`
+	Chunks                    ChunkExecution            `json:"chunks"`
+	ContextSources            []ContextExecution        `json:"contextSources"`
+	ContextPacking            map[string]ContextPacking `json:"contextPacking"`
 	// Models lists the distinct models that served this scan's requests: the
 	// provider-reported IDs, or the requested ID when a provider reports none.
 	Models []string `json:"models"`
 	// AuditLeads are the v2 audit's notes on possible issues outside the
 	// audited findings, for a human to follow up. They are not findings.
 	AuditLeads []string `json:"auditLeads,omitempty"`
+}
+
+// ScopePlan records intentional scope reductions, never successful analysis.
+// Samples and raw model responses are not included in this receipt.
+type ScopePlan struct {
+	PromptTokens         int              `json:"promptTokens"`
+	CompletionTokens     int              `json:"completionTokens"`
+	EstimatedCost        float64          `json:"estimatedCost"`
+	PromptFingerprint    string           `json:"promptFingerprint"`
+	Version              int              `json:"version"`
+	Status               string           `json:"status"`
+	Reason               string           `json:"reason,omitempty"`
+	Candidates           int              `json:"candidates"`
+	FilesBefore          int              `json:"filesBefore"`
+	FilesAfter           int              `json:"filesAfter"`
+	EstimatedTokensSaved int              `json:"estimatedTokensSaved"`
+	InputFingerprint     string           `json:"inputFingerprint,omitempty"`
+	Exclusions           []ScopeExclusion `json:"exclusions"`
+	Rejected             int              `json:"rejected"`
+}
+
+type ScopeExclusion struct {
+	ID                 string `json:"id"`
+	Path               string `json:"path"`
+	Category           string `json:"category"`
+	Reason             string `json:"reason"`
+	ContentFingerprint string `json:"contentFingerprint"`
+	EstimatedTokens    int    `json:"estimatedTokens"`
 }
 
 // SourceBundle fingerprints the source context assembled for one phase call.
@@ -159,12 +194,14 @@ type PhaseExecution struct {
 type ModelExecution struct {
 	Model string `json:"model"` // sent ID, after any model-params override
 	// ResponseModels are the IDs the provider reported serving the calls.
-	ResponseModels   []string `json:"responseModels"`
-	Calls            int      `json:"calls"`
-	Failures         int      `json:"failures"`
-	PromptTokens     int      `json:"promptTokens"`
-	CompletionTokens int      `json:"completionTokens"`
-	ReasoningTokens  int      `json:"reasoningTokens,omitempty"`
+	ResponseModels      []string `json:"responseModels"`
+	Calls               int      `json:"calls"`
+	Failures            int      `json:"failures"`
+	PromptTokens        int      `json:"promptTokens"`
+	CacheCreationTokens int      `json:"cacheCreationTokens,omitempty"`
+	CacheReadTokens     int      `json:"cacheReadTokens,omitempty"`
+	CompletionTokens    int      `json:"completionTokens"`
+	ReasoningTokens     int      `json:"reasoningTokens,omitempty"`
 	// EstimatedCost applies the phase's configured prices; it is not billed spend.
 	EstimatedCost float64 `json:"estimatedCost"`
 	// Successful calls by setting as sent, after the client's fallbacks.

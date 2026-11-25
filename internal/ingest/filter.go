@@ -408,6 +408,12 @@ func matchesAnyGlob(path string, patterns []string) bool {
 	return false
 }
 
+// ForceIncluded reports explicit user includes using the same matching rules
+// as ingestion. Later scope planning must never override these includes.
+func ForceIncluded(path string, patterns []string) bool {
+	return matchesAnyGlob(path, patterns)
+}
+
 // isLowValueFile checks whether a file is in a low-value directory, has a
 // low-value extension, or has a low-value filename (CI/CD, tooling, key files).
 func isLowValueFile(path string) bool {
