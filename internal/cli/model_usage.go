@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"log/slog"
 	"slices"
 	"sort"
 	"sync"
@@ -58,7 +59,35 @@ type recordingClient struct {
 func (c *recordingClient) ChatCompletion(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
 	resp, err := c.next.ChatCompletion(ctx, req)
 	c.usage.record(c.phase, llm.RequestModel(req), c.model, resp, err)
+	logModelResponse(c.phase, req, resp)
 	return resp, err
+}
+
+// logModelResponse records every response's completion metadata before any
+// caller parses its content, so an output-limit stop is visible even when the
+// answer is empty. It logs counts only: never prompts, content or reasoning.
+func logModelResponse(phase string, req llm.ChatRequest, resp *llm.ChatResponse) {
+	if resp == nil {
+		return
+	}
+	attrs := []any{
+		"phase", phase,
+		"label", req.Label,
+		"finish_reason", resp.FinishReason,
+		"max_output_tokens", req.MaxTokens,
+		"completion_tokens", resp.Usage.CompletionTokens,
+		"reasoning_tokens", resp.Usage.ReasoningTokens,
+		"content_bytes", len(resp.Content),
+		"model", llm.RequestModel(req),
+	}
+	if resp.Model != "" {
+		attrs = append(attrs, "resolved_model", resp.Model)
+	}
+	if resp.OutputLimited() {
+		slog.Warn("model response stopped at output limit", attrs...)
+		return
+	}
+	slog.Info("model response received", attrs...)
 }
 
 func (u *modelUsage) record(phase, model string, cfg config.ModelConfig, resp *llm.ChatResponse, err error) {

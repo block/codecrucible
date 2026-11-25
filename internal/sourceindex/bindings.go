@@ -231,15 +231,19 @@ func pythonBindings(text string) (map[string]string, [][2]int) {
 	return names, spans
 }
 
-// jsAliasTargets matches a non-relative specifier to admitted files at
-// complete path segments, after common project aliases (@/ and ~/), with
-// directory index files. A package dependency must not match a local file
-// of a different name, so partial segments never match.
+// jsAliasTargets matches a project-alias specifier (@/ or ~/) to admitted
+// files at complete path segments, with directory index files. Any other
+// non-relative specifier names a package, including scoped packages and
+// package subpaths. A local file that shares its name or path is not
+// evidence of what the import means, so it has no local targets.
 func jsAliasTargets(paths []string, spec string) []string {
-	if strings.HasPrefix(spec, ".") {
+	module, alias := strings.CutPrefix(spec, "@/")
+	if !alias {
+		module, alias = strings.CutPrefix(spec, "~/")
+	}
+	if !alias {
 		return nil
 	}
-	module := strings.TrimPrefix(strings.TrimPrefix(spec, "@/"), "~/")
 	module = strings.TrimSuffix(module, path.Ext(module))
 	var out []string
 	for _, p := range paths {

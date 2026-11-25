@@ -17,6 +17,12 @@ import (
 	"github.com/block/codecrucible/internal/sourceindex"
 )
 
+// errOutputExhausted marks a chunk whose answer stopped at the output-token
+// limit before it could be parsed. The caller may retry its files in smaller
+// groups; the returned document still records the failure and the returned
+// usage is what the attempt cost.
+var errOutputExhausted = errors.New("analysis output exhausted")
+
 // analyzeChunk processes a single chunk: assembles the prompt, calls the LLM, parses
 // the response, and builds a per-chunk SARIF document. Safe for concurrent use.
 func analyzeChunk(
@@ -159,13 +165,12 @@ func analyzeChunk(
 	}
 	slog.Info("chunk analysis complete", attrs...)
 
-	// Warn if output was truncated — findings may be incomplete.
-	if resp.FinishReason == "length" {
-		slog.Warn("LLM output was truncated (finish_reason=length), findings may be incomplete",
-			"chunk", fmt.Sprintf("%d/%d", c.Index+1, c.Total),
-			"completion_tokens", usage.CompletionTokens,
-			"max_output_tokens", modelCfg.MaxOutputTokens,
-		)
+	if resp.OutputLimited() {
+		// The provider's stop reason is authoritative: an answer cut off at
+		// the output limit is incomplete even when what arrived parses.
+		// Model-repair gets the same cap — it would re-truncate or emit
+		// {"security_issues":[]} to fit, which is worse than honest failure.
+		return outputExhausted(c, repoName, resp.Usage.CompletionTokens, modelCfg.MaxOutputTokens, fileMap, usage, chunkCost)
 	}
 
 	// Parse LLM response. Three escalating attempts:
@@ -187,29 +192,6 @@ func analyzeChunk(
 				parseErr = nil
 			}
 		}
-	}
-	if parseErr != nil && resp.FinishReason == "length" {
-		// Truncation, not drift. The JSON was cut mid-object when it hit
-		// max_tokens. Model-repair gets the same cap — it would re-truncate
-		// or emit {"security_issues":[]} to fit, which is worse than honest
-		// failure. Distinguish a lower reported cutoff from the configured limit.
-		message := truncationMessage(usage.CompletionTokens, modelCfg.MaxOutputTokens)
-		slog.Error("output truncated; skipping model repair",
-			"chunk", c.Index,
-			"completion_tokens", usage.CompletionTokens,
-			"max_output_tokens", modelCfg.MaxOutputTokens,
-			"detail", message,
-		)
-		doc := sarif.Build(sarif.AnalysisResult{RepoName: repoName}, nil, sarif.BuilderConfig{})
-		doc.Runs[0].Invocations = []sarif.SARIFInvocation{{
-			ExecutionSuccessful: false,
-			ToolExecutionNotifications: []sarif.SARIFNotification{{
-				Level: "error",
-				Message: sarif.SARIFMessage{Text: fmt.Sprintf(
-					"chunk %d/%d: %s", c.Index+1, c.Total, message)},
-			}},
-		}}
-		return sarif.ValidateSourceLocations(doc, sarif.FileMap(fileMap)), usage, chunkCost, nil
 	}
 	if parseErr != nil {
 		slog.Warn("local JSON repair failed; asking model to reformat",
@@ -241,6 +223,9 @@ func analyzeChunk(
 			usage.PromptTokens += repairResp.Usage.PromptTokens
 			usage.CompletionTokens += repairResp.Usage.CompletionTokens
 			chunkCost += modelCfg.EstimateCost(repairResp.Usage.PromptTokens, repairResp.Usage.CompletionTokens)
+			if repairResp.OutputLimited() {
+				return outputExhausted(c, repoName, repairResp.Usage.CompletionTokens, modelCfg.MaxOutputTokens, fileMap, usage, chunkCost)
+			}
 			repaired, _ := llm.RepairJSON(repairResp.Content)
 			if err := json.Unmarshal([]byte(repaired), &result); err == nil {
 				slog.Info("recovered malformed LLM response via model reformat", "chunk", c.Index)
@@ -270,6 +255,29 @@ func analyzeChunk(
 	})
 	doc.ProducerID = producer
 	return sarif.ValidateSourceLocations(doc, sarif.FileMap(fileMap)), usage, chunkCost, nil
+}
+
+// outputExhausted records a chunk whose answer stopped at the output limit.
+// The caller can retry its files in smaller groups. completion is what the
+// stopped response reported; usage and cost cover every attempt so far.
+func outputExhausted(c chunk.Chunk, repoName string, completion, maxOutput int, fileMap ingest.FileMap, usage llm.TokenUsage, cost float64) (sarif.SARIFDocument, llm.TokenUsage, float64, error) {
+	// Distinguish a lower reported cutoff from the configured limit.
+	message := truncationMessage(completion, maxOutput)
+	slog.Error("output truncated; discarding the incomplete answer",
+		"chunk", c.Index,
+		"completion_tokens", completion,
+		"max_output_tokens", maxOutput,
+		"detail", message,
+	)
+	doc := sarif.Build(sarif.AnalysisResult{RepoName: repoName}, nil, sarif.BuilderConfig{})
+	doc.Runs[0].Invocations = []sarif.SARIFInvocation{{
+		ExecutionSuccessful: false,
+		ToolExecutionNotifications: []sarif.SARIFNotification{{
+			Level:   "error",
+			Message: sarif.SARIFMessage{Text: fmt.Sprintf("chunk %d/%d: %s", c.Index+1, c.Total, message)},
+		}},
+	}}
+	return sarif.ValidateSourceLocations(doc, sarif.FileMap(fileMap)), usage, cost, errOutputExhausted
 }
 
 // runFeatureDetection performs a lightweight LLM call to detect which security-relevant

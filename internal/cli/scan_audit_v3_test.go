@@ -195,6 +195,19 @@ func TestAuditV3TransportFailureRetainsFindings(t *testing.T) {
 	}
 }
 
+func TestAuditV3OutputLimitIsNotReportedAsInvalidJSON(t *testing.T) {
+	doc, files, l, buf := v3Fixture(t, []sarif.SecurityIssue{{Issue: "unsafe", FilePath: "a.go", StartLine: 2, TechnicalDetails: "one"}})
+	got, _ := runV3(t, doc, files, l, auditClientFunc(func(context.Context, llm.ChatRequest) (*llm.ChatResponse, error) {
+		return &llm.ChatResponse{FinishReason: "length", Usage: llm.TokenUsage{PromptTokens: 12, CompletionTokens: 4096}}, nil
+	}), "off")
+	if got.Runs[0].Results[0].Properties.AuditStatus != "not_audited" {
+		t.Fatal(got.Runs[0].Results[0].Properties)
+	}
+	if !strings.Contains(buf.String(), "truncated audit response") || strings.Contains(buf.String(), "unexpected end of JSON input") {
+		t.Fatalf("lineage hid the output-limit stop: %s", buf.String())
+	}
+}
+
 func TestV3RefinementPreservesSeverityAndCanonicalCWE(t *testing.T) {
 	for _, cwe := range []string{"invalid", "cwe-79: XSS"} {
 		sev := 8.0

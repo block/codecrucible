@@ -97,8 +97,13 @@ func TestCallerImportPathBoundaries(t *testing.T) {
 		{"@/identity", "src/identity.ts", true},
 		{"@/identity", "src/identity/index.ts", true},
 		{"~/identity", "src/identity.ts", true},
-		{"src/identity", "src/identity.ts", true},
 		{"auth-lib", "src/auth.ts", false},
+		// A bare specifier names a package; a local file sharing its name or
+		// path is not resolution evidence.
+		{"auth-lib", "src/auth-lib.ts", false},
+		{"auth-lib", "auth-lib.ts", false},
+		{"@scope/auth-lib", "@scope/auth-lib.ts", false},
+		{"src/identity", "src/identity.ts", false},
 		{"lib", "src/mylib.ts", false},
 	} {
 		t.Run(tc.module, func(t *testing.T) {

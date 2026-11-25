@@ -14,67 +14,64 @@ import (
 	"github.com/block/codecrucible/internal/sarif"
 )
 
+// errAuditOutputLimit marks a response that stopped at the output-token cap.
+var errAuditOutputLimit = errors.New("audit response exceeded output token limit")
+
 // runLegacyAuditBatch preserves accepted verdicts and retries only unassessed
-// claims. Transport retries remain the client's responsibility.
+// claims, at most once. A retry after a validation failure resends the pending
+// claims with repair feedback. A retry after an output-limit stop sends each
+// pending claim on its own instead, because resending the same workload would
+// exhaust the same limit; a single claim that exhausts it is not retried.
+// Transport retries remain the client's responsibility.
 func runLegacyAuditBatch(ctx context.Context, batch []auditClaim, label string, model config.ModelConfig,
 	call func(batch []auditClaim, label, repair string) (*llm.ChatResponse, error),
 	observers ...func([]auditClaim, *llm.ChatResponse, map[string]json.RawMessage, map[string]bool, error) error,
 ) (result AuditResult, usage llm.TokenUsage, cost float64, returnErr error) {
 	defer func() { result.NewFindings, result.DiscardedAdditions = deduplicateLegacyAdditions(result.NewFindings) }()
-	var lastErr error
-	pending := batch
-	for attempt := 0; attempt < 2 && len(pending) > 0; attempt++ {
-		if err := ctx.Err(); err != nil {
-			return result, usage, cost, err
-		}
-		if attempt > 0 {
-			slog.Warn("audit response incomplete; retrying unassessed claims", "label", label, "claims", len(pending), "error", lastErr)
-		}
-		repair := ""
-		if attempt > 0 {
-			repair = legacyRepairFeedback(pending, lastErr)
-		}
-		resp, err := call(pending, label, repair)
-		if err != nil {
-			for _, observe := range observers {
-				if e := observe(pending, resp, nil, nil, err); e != nil {
-					return result, usage, cost, e
-				}
+	observe := func(claims []auditClaim, resp *llm.ChatResponse, raw map[string]json.RawMessage, accepted map[string]bool, err error) error {
+		for _, o := range observers {
+			if e := o(claims, resp, raw, accepted, err); e != nil {
+				return e
 			}
-			return result, usage, cost, fmt.Errorf("LLM call: %w", err)
+		}
+		return nil
+	}
+	// request sends claims once and returns those still unassessed and why.
+	// A non-nil fatal error ends the batch.
+	requests := 0
+	request := func(claims []auditClaim, label, repair string) (remaining []auditClaim, problem, fatal error) {
+		requests++
+		resp, err := call(claims, label, repair)
+		if err != nil {
+			if e := observe(claims, resp, nil, nil, err); e != nil {
+				return claims, nil, e
+			}
+			return claims, nil, fmt.Errorf("LLM call: %w", err)
 		}
 		usage.PromptTokens += resp.Usage.PromptTokens
 		usage.CompletionTokens += resp.Usage.CompletionTokens
 		cost += model.EstimateCost(resp.Usage.PromptTokens, resp.Usage.CompletionTokens)
 		var parsed AuditResult
-		lastErr = json.Unmarshal([]byte(resp.Content), &parsed)
-		if lastErr != nil {
+		problem = json.Unmarshal([]byte(resp.Content), &parsed)
+		if problem != nil {
 			if content, changed := llm.RepairJSON(resp.Content); changed {
 				parsed = AuditResult{}
-				lastErr = json.Unmarshal([]byte(content), &parsed)
+				problem = json.Unmarshal([]byte(content), &parsed)
 			}
 		}
-		if resp.FinishReason == "length" || resp.FinishReason == "max_tokens" {
-			lastErr = fmt.Errorf("audit response exceeded output token limit")
+		if resp.OutputLimited() {
+			problem = errAuditOutputLimit
 		}
-		if lastErr != nil {
-			for _, observe := range observers {
-				if e := observe(pending, resp, nil, nil, lastErr); e != nil {
-					return result, usage, cost, e
-				}
-			}
-			continue
+		if problem != nil {
+			return claims, problem, observe(claims, resp, nil, nil, problem)
 		}
-		accepted, err := acceptLegacyVerdicts(pending, parsed.AuditedFindings)
-		lastErr = err
+		accepted, err := acceptLegacyVerdicts(claims, parsed.AuditedFindings)
 		acceptedIDs := map[string]bool{}
 		for _, a := range accepted {
 			acceptedIDs[a.FindingID] = true
 		}
-		for _, observe := range observers {
-			if e := observe(pending, resp, rawAssessments(parsed.AuditedFindings, func(a AuditedFinding) string { return a.FindingID }), acceptedIDs, err); e != nil {
-				return result, usage, cost, e
-			}
+		if e := observe(claims, resp, rawAssessments(parsed.AuditedFindings, func(a AuditedFinding) string { return a.FindingID }), acceptedIDs, err); e != nil {
+			return claims, err, e
 		}
 		result.AuditedFindings = append(result.AuditedFindings, accepted...)
 		if err != nil {
@@ -88,20 +85,52 @@ func runLegacyAuditBatch(ctx context.Context, batch []auditClaim, label string, 
 		if parsed.AuditSummary != "" {
 			result.AuditSummary = strings.TrimSpace(result.AuditSummary + "\n\n" + parsed.AuditSummary)
 		}
-		got := make(map[string]bool, len(accepted))
-		for _, finding := range accepted {
-			got[finding.FindingID] = true
-		}
-		var remaining []auditClaim
-		for _, claim := range pending {
-			if !got[claim.FindingID] {
+		for _, claim := range claims {
+			if !acceptedIDs[claim.FindingID] {
 				remaining = append(remaining, claim)
 			}
 		}
-		pending = remaining
+		return remaining, err, nil
+	}
+
+	if err := ctx.Err(); err != nil {
+		return result, usage, cost, err
+	}
+	pending, lastErr, fatal := request(batch, label, "")
+	if fatal != nil {
+		return result, usage, cost, fatal
+	}
+	switch {
+	case len(pending) == 0:
+	case errors.Is(lastErr, errAuditOutputLimit) && len(pending) == 1:
+		slog.Warn("single-claim audit exhausted the output limit; not retrying", "label", label, "max_output_tokens", model.MaxOutputTokens)
+	case errors.Is(lastErr, errAuditOutputLimit):
+		slog.Warn("audit response exhausted the output limit; retrying each claim separately", "label", label, "claims", len(pending))
+		var remaining []auditClaim
+		var problems error
+		for i, claim := range pending {
+			if err := ctx.Err(); err != nil {
+				return result, usage, cost, err
+			}
+			left, problem, fatal := request([]auditClaim{claim}, fmt.Sprintf("%s claim %d/%d", label, i+1, len(pending)), "")
+			if fatal != nil {
+				return result, usage, cost, fatal
+			}
+			remaining = append(remaining, left...)
+			problems = errors.Join(problems, problem)
+		}
+		pending, lastErr = remaining, problems
+	default:
+		if err := ctx.Err(); err != nil {
+			return result, usage, cost, err
+		}
+		slog.Warn("audit response incomplete; retrying unassessed claims", "label", label, "claims", len(pending), "error", lastErr)
+		if pending, lastErr, fatal = request(pending, label, legacyRepairFeedback(pending, lastErr)); fatal != nil {
+			return result, usage, cost, fatal
+		}
 	}
 	if len(pending) > 0 {
-		return result, usage, cost, fmt.Errorf("audit left %d of %d findings unassessed after 2 attempts: %w", len(pending), len(batch), lastErr)
+		return result, usage, cost, fmt.Errorf("audit left %d of %d findings unassessed after %d requests: %w", len(pending), len(batch), requests, lastErr)
 	}
 	slog.Info("audit batch complete", "label", label, "audited", len(result.AuditedFindings),
 		"prompt_tokens", usage.PromptTokens, "completion_tokens", usage.CompletionTokens, "cost", fmt.Sprintf("$%.4f", cost))

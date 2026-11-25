@@ -307,20 +307,31 @@ func TestFilterFiles_CustomExcludeAddsExclusions(t *testing.T) {
 	}
 }
 
-func TestFilterFiles_CustomExcludeDoesNotOverrideAlwaysInclude(t *testing.T) {
+func TestFilterFiles_CustomExcludeOverridesAlwaysInclude(t *testing.T) {
 	files := []SourceFile{
+		makeFile("db/migrations/001.sql"),
+		makeFile("docker/mysql/data/after-migration.sql"),
 		makeFile("schema.proto"),
-		makeFile("migration.sql"),
-		makeFile("types.graphql"),
+		makeFile("keep/dump.sql"),
 	}
 
-	// Custom exclude should NOT override always-include extensions.
-	kept, _ := FilterFiles(files, FilterConfig{
-		Exclude: []string{"*.proto", "*.sql", "*.graphql"},
+	kept, stats := FilterFiles(files, FilterConfig{
+		Include: []string{"keep/**"},
+		Exclude: []string{"docker/mysql/data/after-migration.sql", "*.proto", "keep/**"},
 	})
 
-	if len(kept) != 3 {
-		t.Fatalf("expected 3 always-include files kept despite custom exclude, got %d", len(kept))
+	// The exact exclusion drops only the dump; ordinary SQL stays admitted,
+	// and an explicit include still beats an explicit exclude.
+	var got []string
+	for _, f := range kept {
+		got = append(got, f.Path)
+	}
+	want := []string{"db/migrations/001.sql", "keep/dump.sql"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("kept = %v, want %v", got, want)
+	}
+	if stats.Custom != 2 {
+		t.Errorf("custom exclusions = %d, want 2", stats.Custom)
 	}
 }
 
