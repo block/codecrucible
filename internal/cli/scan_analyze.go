@@ -120,7 +120,7 @@ func analyzeChunk(
 				Message: sarif.SARIFMessage{Text: fmt.Sprintf("chunk %d/%d failed: %v", c.Index+1, c.Total, err)},
 			}},
 		}}
-		return doc, llm.TokenUsage{}, 0, nil
+		return doc, llm.TokenUsage{}, 0, err
 	}
 
 	usage := resp.Usage

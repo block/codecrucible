@@ -473,12 +473,12 @@ func TestChatCompletion_MaxRetriesExhausted(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error after max retries, got nil")
 	}
-	if !strings.Contains(err.Error(), "exhausted 3 retries") {
-		t.Errorf("error = %q, want it to contain 'exhausted 3 retries'", err.Error())
+	if !errors.Is(err, ErrTransientExhausted) {
+		t.Errorf("error = %q, want ErrTransientExhausted", err.Error())
 	}
-	// 1 initial + 3 retries = 4 total attempts
-	if int(attempts.Load()) != 4 {
-		t.Errorf("attempts = %d, want 4", attempts.Load())
+	// 1 initial + 8 retries = 9 total attempts
+	if int(attempts.Load()) != 9 {
+		t.Errorf("attempts = %d, want 9", attempts.Load())
 	}
 }
 

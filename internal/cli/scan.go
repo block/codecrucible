@@ -1087,6 +1087,7 @@ func runAnalysisPhases(ctx context.Context, in analysisInputs) (out analysisOutc
 	retryBudget := chunkBudget * 6 / 10
 	var overflowPaths []string
 	var exhausted []exhaustedChunk
+	var retryChunks []chunk.Chunk
 	for i, r := range analyzeAll(chunks, "analysis") {
 		if r.lineageErr != nil {
 			warnLineage(r.lineageErr)
@@ -1101,6 +1102,11 @@ func runAnalysisPhases(ctx context.Context, in analysisInputs) (out analysisOutc
 			continue
 		}
 		addUsage(r)
+		if errors.Is(r.err, llm.ErrTransientExhausted) {
+			slog.Warn("queuing transiently failed chunk for recovery", "chunk", i, "error", r.err)
+			retryChunks = append(retryChunks, chunks[i])
+			continue
+		}
 		if errors.Is(r.err, errOutputExhausted) {
 			metadata.Execution.Chunks.OutputExhausted++
 			if len(chunks[i].Paths) > 1 {
@@ -1113,7 +1119,8 @@ func runAnalysisPhases(ctx context.Context, in analysisInputs) (out analysisOutc
 		keep(chunks[i], r)
 	}
 
-	// Recovery pass: one reduced-workload round, never recursive.
+	// Recovery pass: one round, never recursive. Transient HTTP failures
+	// retry the original chunk unsplit; a second failure remains a hard failure.
 	//
 	// Context overflow uses the provider's reported request size/limit when
 	// available, otherwise 60% of the original budget. No generation occurred
@@ -1122,7 +1129,6 @@ func runAnalysisPhases(ctx context.Context, in analysisInputs) (out analysisOutc
 	// A chunk whose answer stopped at the output limit is split in two, so
 	// each request asks for roughly half the analysis. A half that still
 	// exhausts the limit stays a failure.
-	var retryChunks []chunk.Chunk
 	if len(overflowPaths) > 0 {
 		metadata.Execution.Chunks.RecoveryBudget = retryBudget
 		slog.Warn("re-chunking files from overflowed chunks at reduced budget",

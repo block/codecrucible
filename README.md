@@ -958,7 +958,8 @@ reported again by every chunk that could see its file. Files larger than a
 chunk budget remain in the coverage report and cause an incomplete-analysis
 warning; a manifest entry alone does not count as analyzed source.
 
-A chunk gets one recovery round. One that exceeds the model's context is
+A chunk gets one recovery round. Exhausted HTTP 408/429/5xx failures retry
+the original chunk unsplit. One that exceeds the model's context is
 re-chunked using the provider's reported total request size and context limit
 when available. The retry reserves output tokens and prompt/manifest overhead,
 keeps 20% headroom, and never exceeds 60% of the original source budget. Unknown
@@ -1035,10 +1036,11 @@ contains a warning notification and its audit phase metadata has status
 It does not turn an analysis failure or cancellation into a successful scan.
 The `--fail-on-severity` threshold still applies to retained findings.
 
-HTTP requests use up to three retries for network/read failures, request
-timeouts, HTTP 408/429, and all 5xx responses. Retries use exponential backoff
-with jitter and respect `Retry-After`. HTML 403 responses from intermediaries
-use the same policy; JSON/plain-text permission errors and HTTP 401 fail
+HTTP requests use three retries by default for network/read failures, request
+timeouts, and HTML 403 responses from intermediaries. HTTP 408/429 and all 5xx
+responses raise the retry limit to at least eight: 121 seconds of exponential
+backoff plus up to 25% jitter. `Retry-After` takes precedence over those delays;
+this is not a wall-clock deadline. JSON/plain-text permission errors and HTTP 401 fail
 immediately. Cancellation stops retries. Audit additionally retries malformed,
 truncated, or incomplete verdict output once after attempting local JSON repair.
 Valid verdicts are retained, and only unassessed claims are retried. Both audit
