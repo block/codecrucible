@@ -142,6 +142,16 @@ const (
 // Callers should re-chunk and retry rather than retrying the same request.
 var ErrContextLengthExceeded = fmt.Errorf("llm: context length exceeded")
 
+// ErrTransientExhausted marks exhausted HTTP 408/429/5xx retries. Callers may
+// retry the unchanged work later; permanent errors and cancellation do not match.
+var ErrTransientExhausted = errors.New("llm: transient HTTP retries exhausted")
+
+var errTransientHTTP = errors.New("llm: transient HTTP error")
+
+// Eight retries wait 121 seconds before jitter (1+2+4+8+16+30+30+30).
+// Retry-After still takes precedence and context cancellation stops the wait.
+const transientMaxRetries = 8
+
 // errNonRetryable wraps an error to indicate it should not be retried.
 type errNonRetryable struct {
 	err error
@@ -206,7 +216,7 @@ type ClientConfig struct {
 	Token      string        // Bearer token for authentication.
 	Provider   string        // "databricks", "anthropic", "openai" — controls URL construction and request format.
 	Headers    http.Header   // Additional headers to include in every request.
-	MaxRetries int           // Maximum number of retries for transient errors (default: 3).
+	MaxRetries int           // Retry limit (default: 3); HTTP 408/429/5xx use at least 8.
 	Timeout    time.Duration // Per-request timeout (default: 600s).
 	Logger     *slog.Logger  // Structured logger.
 }
@@ -225,7 +235,7 @@ type httpClient struct {
 	logger       *slog.Logger
 	extraHeaders http.Header
 	client       *http.Client
-	backoffFunc  func(ctx context.Context, attempt int, retryAfter time.Duration) // override for testing
+	backoffFunc  func(ctx context.Context, attempt int, delay time.Duration) // override sleep for testing
 
 	// Learned constraints: set once when the API rejects a request feature,
 	// then applied to all subsequent requests to avoid wasted round-trips.
@@ -285,6 +295,7 @@ func (c *httpClient) ChatCompletion(ctx context.Context, req ChatRequest) (*Chat
 	url := c.buildURL(req.Endpoint)
 
 	var lastErr error
+	maxRetries := c.maxRetries
 	disableForcedToolChoice := c.noForcedToolChoice.Load()
 	// Anthropic rejects an explicit temperature whenever thinking is enabled,
 	// including Opus requests that opt into adaptive thinking via model params.
@@ -292,7 +303,7 @@ func (c *httpClient) ChatCompletion(ctx context.Context, req ChatRequest) (*Chat
 		(c.provider == "anthropic" && hasModelParam(req.ModelParams, "thinking"))
 	useMaxCompletionTokens := c.forceMaxCompletionTokens || c.provider == "cerebras" || c.useMaxCompletionTokens.Load() || req.UseMaxCompletionTokens
 
-	for attempt := 0; attempt <= c.maxRetries; attempt++ {
+	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return nil, fmt.Errorf("llm: context cancelled: %w", err)
 		}
@@ -300,7 +311,7 @@ func (c *httpClient) ChatCompletion(ctx context.Context, req ChatRequest) (*Chat
 			c.logger.Info("retrying LLM request",
 				"label", req.Label,
 				"attempt", attempt,
-				"max_retries", c.maxRetries,
+				"max_retries", maxRetries,
 			)
 		}
 
@@ -321,7 +332,7 @@ func (c *httpClient) ChatCompletion(ctx context.Context, req ChatRequest) (*Chat
 				"attempt", attempt,
 				"error", err,
 			)
-			if attempt < c.maxRetries {
+			if attempt < maxRetries {
 				c.backoff(ctx, attempt, 0)
 			}
 			continue
@@ -385,6 +396,9 @@ func (c *httpClient) ChatCompletion(ctx context.Context, req ChatRequest) (*Chat
 				return nil, nonRetryable.err
 			}
 
+			if errors.Is(err, errTransientHTTP) {
+				maxRetries = max(maxRetries, transientMaxRetries)
+			}
 			lastErr = err
 			statusCode := 0
 			if resp != nil {
@@ -397,7 +411,7 @@ func (c *httpClient) ChatCompletion(ctx context.Context, req ChatRequest) (*Chat
 				"error", err,
 			)
 
-			if attempt < c.maxRetries {
+			if attempt < maxRetries {
 				c.backoff(ctx, attempt, retryAfter)
 			}
 			continue
@@ -407,7 +421,10 @@ func (c *httpClient) ChatCompletion(ctx context.Context, req ChatRequest) (*Chat
 		return chatResp, nil
 	}
 
-	return nil, fmt.Errorf("llm: exhausted %d retries: %w", c.maxRetries, lastErr)
+	if errors.Is(lastErr, errTransientHTTP) {
+		return nil, fmt.Errorf("%w after %d retries: %w", ErrTransientExhausted, maxRetries, lastErr)
+	}
+	return nil, fmt.Errorf("llm: exhausted %d retries: %w", maxRetries, lastErr)
 }
 
 func (c *httpClient) buildURL(endpoint string) string {
@@ -748,8 +765,11 @@ func (c *httpClient) handleResponse(resp *http.Response, requestBody []byte) (*C
 	// permanent JSON/plain-text authentication and authorization failures
 	// still fail immediately, even when a proxy adds Cloudflare headers.
 	htmlForbidden := resp.StatusCode == http.StatusForbidden && isHTMLResponse(resp.Header, respBody)
-	if htmlForbidden || resp.StatusCode == http.StatusRequestTimeout || resp.StatusCode == http.StatusTooManyRequests || (resp.StatusCode >= 500 && resp.StatusCode < 600) {
+	if htmlForbidden {
 		return nil, retryAfter, fmt.Errorf("llm: retryable error (status %d): %s", resp.StatusCode, truncate(string(respBody), 200))
+	}
+	if resp.StatusCode == http.StatusRequestTimeout || resp.StatusCode == http.StatusTooManyRequests || (resp.StatusCode >= 500 && resp.StatusCode < 600) {
+		return nil, retryAfter, fmt.Errorf("%w (status %d): %s", errTransientHTTP, resp.StatusCode, truncate(string(respBody), 200))
 	}
 
 	// Non-retryable client errors (400, 401, 403, 404, etc.).
@@ -1288,11 +1308,6 @@ func isMaxTokensParamIncompatibleError(body string) bool {
 // backoff sleeps for an exponentially increasing duration with jitter.
 // If retryAfter > 0, it respects the server-specified delay instead.
 func (c *httpClient) backoff(ctx context.Context, attempt int, retryAfter time.Duration) {
-	if c.backoffFunc != nil {
-		c.backoffFunc(ctx, attempt, retryAfter)
-		return
-	}
-
 	var delay time.Duration
 	if retryAfter > 0 {
 		delay = retryAfter
@@ -1311,6 +1326,11 @@ func (c *httpClient) backoff(ctx context.Context, attempt int, retryAfter time.D
 		"delay", delay,
 		"attempt", attempt,
 	)
+
+	if c.backoffFunc != nil {
+		c.backoffFunc(ctx, attempt, delay)
+		return
+	}
 
 	timer := time.NewTimer(delay)
 	defer timer.Stop()

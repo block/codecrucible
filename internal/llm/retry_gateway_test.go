@@ -32,7 +32,7 @@ func TestGatewayRetryClassification(t *testing.T) {
 		{"bad gateway recovers", "text/html", "<html>Bad Gateway</html>", 502, 1, 2, false},
 		{"service unavailable recovers", "application/json", `{"error":"temporarily unavailable"}`, 503, 1, 2, false},
 		{"gateway timeout recovers", "text/plain", "gateway timeout", 504, 1, 2, false},
-		{"service unavailable exhausts", "text/plain", "service unavailable", 503, 10, 4, true},
+		{"service unavailable exhausts", "text/plain", "service unavailable", 503, 10, 9, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var calls atomic.Int32
@@ -66,7 +66,7 @@ func TestGatewayRetryClassification(t *testing.T) {
 					t.Fatal("Retry-After not respected", delay)
 				}
 			}
-			if tc.failures == 10 && !strings.Contains(err.Error(), "exhausted 3 retries") {
+			if tc.failures == 10 && tc.status == 503 && !errors.Is(err, ErrTransientExhausted) {
 				t.Fatal(err)
 			}
 		})
